@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod widgets;
 
 use app::GitpulsarApp;

@@ -1,11 +1,12 @@
 use adw::prelude::*;
 
 use gitpulsar_core::models::{CommitInfo, DiffFile};
+use crate::config::DateFormat;
 
 /// Create an expandable commit row.
 /// The detail section is hidden by default; click to toggle.
 /// `is_head` marks the first commit (HEAD) for the edit-message button.
-pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool, is_head: bool) -> gtk::ListBoxRow {
+pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool, is_head: bool, date_format: DateFormat) -> gtk::ListBoxRow {
     let outer_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // === Compact summary row ===
@@ -52,7 +53,7 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
 
     info_box.append(&msg_row);
 
-    let meta = format!("{} {}", commit.author.name, format_relative_time(&commit.time));
+    let meta = format!("{} {}", commit.author.name, format_relative_time(&commit.time, date_format));
     let meta_label = gtk::Label::builder()
         .label(&meta)
         .xalign(0.0)
@@ -62,6 +63,18 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
     info_box.append(&meta_label);
 
     row_box.append(&info_box);
+
+    // Edit message button (pencil icon, only for HEAD commit)
+    if is_head {
+        let edit_msg_btn = gtk::Button::builder()
+            .icon_name("document-edit-symbolic")
+            .css_classes(["flat", "circular"])
+            .tooltip_text("Edit Commit Message")
+            .valign(gtk::Align::Center)
+            .build();
+        edit_msg_btn.set_widget_name("edit-message-btn");
+        row_box.append(&edit_msg_btn);
+    }
 
     // Expand indicator
     let expand_icon = gtk::Image::builder()
@@ -149,7 +162,7 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
         .css_classes(["caption", "dim-label"])
         .build());
     date_row.append(&gtk::Label::builder()
-        .label(&commit.time.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .label(&date_format.format_datetime(&commit.time))
         .css_classes(["caption"])
         .xalign(0.0)
         .build());
@@ -167,25 +180,6 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
             .selectable(true)
             .build();
         detail_inner.append(&msg_label);
-    }
-
-    // Action buttons row
-    if is_head {
-        detail_inner.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        let actions_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions_row.set_margin_top(6);
-        actions_row.set_margin_bottom(2);
-
-        let edit_msg_btn = gtk::Button::builder()
-            .icon_name("document-edit-symbolic")
-            .label("Edit Message")
-            .css_classes(["suggested-action", "pill"])
-            .build();
-        edit_msg_btn.set_widget_name("edit-message-btn");
-        actions_row.append(&edit_msg_btn);
-
-        detail_inner.append(&actions_row);
     }
 
     // Placeholder for file list — will be populated by window.rs
@@ -335,7 +329,7 @@ fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {
     None
 }
 
-fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {
+fn format_relative_time(time: &chrono::DateTime<chrono::Utc>, date_format: DateFormat) -> String {
     let now = chrono::Utc::now();
     let duration = now.signed_duration_since(*time);
 
@@ -350,6 +344,6 @@ fn format_relative_time(time: &chrono::DateTime<chrono::Utc>) -> String {
     } else if duration.num_weeks() < 5 {
         format!("{}w ago", duration.num_weeks())
     } else {
-        time.format("%Y-%m-%d").to_string()
+        date_format.format_date(time)
     }
 }

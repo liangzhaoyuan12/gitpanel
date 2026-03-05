@@ -1,19 +1,39 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use gitpulsar_core::models::{CommitInfo, RepoStatus};
+use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus};
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
+
+use crate::config::AppConfig;
+
+struct BackgroundRepoData {
+    commits: Vec<CommitInfo>,
+    tags_map: HashMap<String, Vec<String>>,
+    status: Option<RepoStatus>,
+    branches: Vec<gitpulsar_core::models::BranchInfo>,
+    tags: Vec<gitpulsar_core::models::TagInfo>,
+    ahead: usize,
+    behind: usize,
+    branch_name: Option<String>,
+    unstaged_diffs: Vec<DiffFile>,
+    staged_diffs: Vec<DiffFile>,
+}
 
 struct BackgroundRefreshResult {
     status: Option<RepoStatus>,
     status_hash: u64,
     workspace_entries: Option<Vec<WorkspaceEntry>>,
     workspace_hash: u64,
+    ahead: usize,
+    behind: usize,
+    unstaged_diffs: Vec<DiffFile>,
+    staged_diffs: Vec<DiffFile>,
 }
 
 fn hash_status(status: &RepoStatus) -> u64 {
@@ -27,8 +47,14 @@ fn hash_status(status: &RepoStatus) -> u64 {
     for p in &status.untracked {
         p.hash(&mut hasher);
     }
-    status.ahead.hash(&mut hasher);
-    status.behind.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_commits(commits: &[CommitInfo]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for c in commits {
+        c.id.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -48,6 +74,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 use super::branches_tags_panel;
 use super::changes_view;
 use super::commit_list;
+use super::preferences_dialog;
 use super::repo_tree;
 
 mod imp {
@@ -59,9 +86,21 @@ mod imp {
         pub commits: RefCell<Vec<CommitInfo>>,
         pub selected_commit_id: RefCell<Option<String>>,
         /// Hash of last status to skip redundant UI updates.
-        pub last_status_hash: std::cell::Cell<u64>,
+        pub last_status_hash: Cell<u64>,
         /// Hash of last workspace entries to skip redundant UI updates.
-        pub last_workspace_hash: std::cell::Cell<u64>,
+        pub last_workspace_hash: Cell<u64>,
+        /// Hash of last commit list to skip redundant rebuilds.
+        pub last_commits_hash: Cell<u64>,
+        /// Guard to prevent concurrent background refreshes.
+        pub refresh_in_progress: Cell<bool>,
+        /// Cached unstaged diffs from last refresh.
+        pub cached_unstaged_diffs: RefCell<Vec<DiffFile>>,
+        /// Cached staged diffs from last refresh.
+        pub cached_staged_diffs: RefCell<Vec<DiffFile>>,
+        /// Application configuration.
+        pub config: RefCell<AppConfig>,
+        /// Source ID of the auto-refresh timer (to restart on config change).
+        pub refresh_source_id: RefCell<Option<glib::SourceId>>,
         // Layout refs
         pub outer_split: RefCell<Option<adw::OverlaySplitView>>,
         pub inner_split: RefCell<Option<adw::OverlaySplitView>>,
@@ -95,8 +134,14 @@ mod imp {
                 workspace_entries: RefCell::new(Vec::new()),
                 commits: RefCell::new(Vec::new()),
                 selected_commit_id: RefCell::new(None),
-                last_status_hash: std::cell::Cell::new(0),
-                last_workspace_hash: std::cell::Cell::new(0),
+                last_status_hash: Cell::new(0),
+                last_workspace_hash: Cell::new(0),
+                last_commits_hash: Cell::new(0),
+                refresh_in_progress: Cell::new(false),
+                cached_unstaged_diffs: RefCell::new(Vec::new()),
+                cached_staged_diffs: RefCell::new(Vec::new()),
+                config: RefCell::new(AppConfig::load()),
+                refresh_source_id: RefCell::new(None),
                 outer_split: RefCell::new(None),
                 inner_split: RefCell::new(None),
                 toast_overlay: adw::ToastOverlay::new(),
@@ -210,6 +255,14 @@ impl GitpulsarWindow {
         stash_btn.add_controller(stash_gesture);
         header.pack_start(&stash_btn);
 
+        // Left: preferences (gear) button
+        let prefs_btn = gtk::Button::builder()
+            .icon_name("preferences-system-symbolic")
+            .tooltip_text("Preferences")
+            .build();
+        prefs_btn.set_action_name(Some("win.preferences"));
+        header.pack_start(&prefs_btn);
+
         // Left: toggle left sidebar (repo tree)
         let toggle_repo_tree = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -279,7 +332,7 @@ impl GitpulsarWindow {
         // Right: branch label (display only, no popover — branches are in right sidebar now)
         let branch_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         imp.branch_label.set_label("—");
-        branch_content.append(&gtk::Image::from_icon_name("network-workgroup-symbolic"));
+        branch_content.append(&gtk::Image::from_icon_name("view-list-symbolic"));
         branch_content.append(&imp.branch_label);
         header.pack_end(&branch_content);
 
@@ -699,6 +752,14 @@ impl GitpulsarWindow {
             window.on_stash_pop();
         });
         self.add_action(&stash_pop_action);
+
+        // Preferences
+        let prefs_action = gio::SimpleAction::new("preferences", None);
+        let window = self.clone();
+        prefs_action.connect_activate(move |_, _| {
+            window.open_preferences();
+        });
+        self.add_action(&prefs_action);
     }
 
     /// Open a workspace folder (or single repo).
@@ -765,52 +826,93 @@ impl GitpulsarWindow {
         }
     }
 
-    /// Load data for the currently selected repo.
+    /// Load data for the currently selected repo asynchronously.
     fn load_repo_data(&self, repo: &GitRepo) {
         let imp = self.imp();
 
-        // Update branch & indicators
-        if let Some(branch) = repo.current_branch_name() {
-            imp.branch_label.set_label(&branch);
-        }
-        let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
-        imp.ahead_label.set_label(&format!("▲ {}", ahead));
-        imp.behind_label.set_label(&format!("▼ {}", behind));
-
-        // Load commits
-        let commits = repo.log(200).unwrap_or_default();
-        self.populate_commit_list(&commits, ahead);
-        *imp.commits.borrow_mut() = commits;
-
-        // Load status for changes view
-        if let Ok(status) = repo.status() {
-            self.refresh_changes_list(&status);
-        }
-
-        // Reset search
+        // Reset search immediately
         *imp.selected_commit_id.borrow_mut() = None;
         imp.search_entry.set_text("");
         imp.commit_list_box.set_filter_func(|_| true);
 
-        // Populate branches & tags in right sidebar
-        self.populate_branches_tags(repo);
+        let path = repo.path().to_string_lossy().to_string();
+
+        let (tx, rx) = async_channel::bounded::<BackgroundRepoData>(1);
+        std::thread::spawn(move || {
+            let Ok(repo) = GitRepo::open(&path) else { return };
+            let commits = repo.log(200).unwrap_or_default();
+            let tags_map = repo.tags_by_commit().unwrap_or_default();
+            let status = repo.status().ok();
+            let branches = repo.branches().unwrap_or_default();
+            let tags = repo.tags().unwrap_or_default();
+            let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
+            let branch_name = repo.current_branch_name();
+            let unstaged_diffs = repo.diff_unstaged().unwrap_or_default();
+            let staged_diffs = repo.diff_staged().unwrap_or_default();
+            tx.send_blocking(BackgroundRepoData {
+                commits,
+                tags_map,
+                status,
+                branches,
+                tags,
+                ahead,
+                behind,
+                branch_name,
+                unstaged_diffs,
+                staged_diffs,
+            }).ok();
+        });
+
+        let win = self.clone();
+        glib::spawn_future_local(async move {
+            if let Ok(data) = rx.recv().await {
+                let imp = win.imp();
+
+                // Update branch & indicators
+                if let Some(ref branch) = data.branch_name {
+                    imp.branch_label.set_label(branch);
+                }
+                imp.ahead_label.set_label(&format!("▲ {}", data.ahead));
+                imp.behind_label.set_label(&format!("▼ {}", data.behind));
+
+                // Load commits
+                win.populate_commit_list(&data.commits, data.ahead, &data.tags_map);
+                *imp.commits.borrow_mut() = data.commits;
+
+                // Load status for changes view
+                if let Some(ref status) = data.status {
+                    win.refresh_changes_list(status);
+                }
+
+                // Cache diffs
+                *imp.cached_unstaged_diffs.borrow_mut() = data.unstaged_diffs;
+                *imp.cached_staged_diffs.borrow_mut() = data.staged_diffs;
+
+                // Populate branches & tags in right sidebar
+                win.populate_branches_tags_data(&data.branches, &data.tags);
+            }
+        });
     }
 
-    fn populate_commit_list(&self, commits: &[CommitInfo], ahead: usize) {
-        let list_box = &self.imp().commit_list_box;
+    fn populate_commit_list(
+        &self,
+        commits: &[CommitInfo],
+        ahead: usize,
+        tags_map: &HashMap<String, Vec<String>>,
+    ) {
+        let imp = self.imp();
+        let list_box = &imp.commit_list_box;
+
+        // Skip rebuild if commits haven't changed
+        let new_hash = hash_commits(commits);
+        if new_hash == imp.last_commits_hash.get() {
+            return;
+        }
+        imp.last_commits_hash.set(new_hash);
 
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
-
-        // Load tags map
-        let tags_map = {
-            let repo_ref = self.imp().repo.borrow();
-            repo_ref
-                .as_ref()
-                .and_then(|r| r.tags_by_commit().ok())
-                .unwrap_or_default()
-        };
 
         for (idx, commit_info) in commits.iter().enumerate() {
             let tags = tags_map
@@ -819,7 +921,20 @@ impl GitpulsarWindow {
                 .unwrap_or(&[]);
             let is_unpushed = idx < ahead;
             let is_head = idx == 0;
-            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head);
+            let date_format = imp.config.borrow().date_format;
+            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head, date_format);
+
+            // Connect edit-message button for HEAD commit
+            if is_head {
+                if let Some(btn) = commit_list::find_edit_message_btn(&row) {
+                    let win = self.clone();
+                    let msg = commit_info.message.clone();
+                    btn.connect_clicked(move |_| {
+                        win.show_edit_message_dialog(&msg);
+                    });
+                }
+            }
+
             list_box.append(&row);
         }
     }
@@ -830,7 +945,6 @@ impl GitpulsarWindow {
 
         if let Some(commit) = commits.get(index) {
             let commit_id = commit.id.clone();
-            let full_message = commit.message.clone();
             drop(commits);
 
             // Toggle detail expand on the selected row
@@ -848,16 +962,6 @@ impl GitpulsarWindow {
                         }
                     }
 
-                    // Connect edit-message button if HEAD
-                    if index == 0 {
-                        if let Some(btn) = commit_list::find_edit_message_btn(&row) {
-                            let win = self.clone();
-                            let msg = full_message.clone();
-                            btn.connect_clicked(move |_| {
-                                win.show_edit_message_dialog(&msg);
-                            });
-                        }
-                    }
                 }
             }
 
@@ -897,7 +1001,6 @@ impl GitpulsarWindow {
                         self.load_repo_data(repo);
                     }
                     drop(repo_ref);
-                    self.scan_indicators();
                 }
                 Err(e) => {
                     tracing::error!("Failed to {}: {}", if is_amend { "amend" } else { "commit" }, e);
@@ -996,6 +1099,13 @@ impl GitpulsarWindow {
     fn refresh_staging(&self) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
+            // Update diff cache
+            if let Ok(diffs) = repo.diff_unstaged() {
+                *self.imp().cached_unstaged_diffs.borrow_mut() = diffs;
+            }
+            if let Ok(diffs) = repo.diff_staged() {
+                *self.imp().cached_staged_diffs.borrow_mut() = diffs;
+            }
             if let Ok(status) = repo.status() {
                 self.refresh_changes_list(&status);
             }
@@ -1035,23 +1145,25 @@ impl GitpulsarWindow {
         }
     }
 
-    /// Get the diff for a single file, checking unstaged, staged, and untracked.
-    fn get_file_diff(&self, repo: &GitRepo, path: &str) -> Option<gitpulsar_core::models::DiffFile> {
-        // Try unstaged
-        if let Ok(files) = repo.diff_unstaged() {
-            if let Some(f) = files.into_iter().find(|f| f.path == path) {
-                return Some(f);
+    /// Get the diff for a single file from cached diffs, falling back to untracked.
+    fn get_file_diff(&self, repo: &GitRepo, path: &str) -> Option<DiffFile> {
+        // Try cached unstaged
+        {
+            let diffs = self.imp().cached_unstaged_diffs.borrow();
+            if let Some(f) = diffs.iter().find(|f| f.path == path) {
+                return Some(f.clone());
             }
         }
 
-        // Try staged
-        if let Ok(files) = repo.diff_staged() {
-            if let Some(f) = files.into_iter().find(|f| f.path == path) {
-                return Some(f);
+        // Try cached staged
+        {
+            let diffs = self.imp().cached_staged_diffs.borrow();
+            if let Some(f) = diffs.iter().find(|f| f.path == path) {
+                return Some(f.clone());
             }
         }
 
-        // Try untracked
+        // Try untracked (not cached since it's per-file)
         if let Ok(f) = repo.diff_untracked(path) {
             return Some(f);
         }
@@ -1095,24 +1207,24 @@ impl GitpulsarWindow {
         list_box.add_controller(gesture);
     }
 
-    /// Populate branches and tags in the right sidebar panel.
-    fn populate_branches_tags(&self, repo: &GitRepo) {
+    /// Populate branches and tags from pre-fetched data.
+    fn populate_branches_tags_data(
+        &self,
+        branches: &[gitpulsar_core::models::BranchInfo],
+        tags: &[gitpulsar_core::models::TagInfo],
+    ) {
         let imp = self.imp();
 
         let local = imp.branches_local_list.borrow().clone();
         let remote = imp.branches_remote_list.borrow().clone();
-        let tags = imp.tags_list.borrow().clone();
+        let tags_list = imp.tags_list.borrow().clone();
 
         if let (Some(ref local), Some(ref remote)) = (local, remote) {
-            if let Ok(branches) = repo.branches() {
-                branches_tags_panel::populate_branches(local, remote, &branches);
-            }
+            branches_tags_panel::populate_branches(local, remote, branches);
         }
 
-        if let Some(ref tl) = tags {
-            if let Ok(tag_list) = repo.tags() {
-                branches_tags_panel::populate_tags(tl, &tag_list);
-            }
+        if let Some(ref tl) = tags_list {
+            branches_tags_panel::populate_tags(tl, tags);
         }
     }
 
@@ -1166,34 +1278,28 @@ impl GitpulsarWindow {
 
         self.set_remote_buttons_sensitive(false);
 
-        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
         std::thread::spawn(move || {
             let result = op(&path).map_err(|e| e.to_string());
-            tx.send(result).ok();
+            tx.send_blocking(result).ok();
         });
 
         let win = self.clone();
         let title = op_name.to_string();
-        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-            match rx.try_recv() {
-                Ok(result) => {
-                    win.set_remote_buttons_sensitive(true);
-                    match result {
-                        Ok(msg) => {
-                            win.show_toast(&msg);
-                            win.refresh_after_remote_op();
-                        }
-                        Err(e) => {
-                            win.show_error_dialog(&format!("{title} Failed"), &e);
-                        }
+        glib::spawn_future_local(async move {
+            if let Ok(result) = rx.recv().await {
+                win.set_remote_buttons_sensitive(true);
+                match result {
+                    Ok(msg) => {
+                        win.show_toast(&msg);
+                        win.refresh_after_remote_op();
                     }
-                    glib::ControlFlow::Break
+                    Err(e) => {
+                        win.show_error_dialog(&format!("{title} Failed"), &e);
+                    }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => {
-                    win.set_remote_buttons_sensitive(true);
-                    glib::ControlFlow::Break
-                }
+            } else {
+                win.set_remote_buttons_sensitive(true);
             }
         });
     }
@@ -1256,7 +1362,6 @@ impl GitpulsarWindow {
                 *self.imp().repo.borrow_mut() = Some(repo);
             }
         }
-        self.scan_indicators();
     }
 
     // ==========================================
@@ -1323,19 +1428,85 @@ impl GitpulsarWindow {
     // ==========================================
 
     fn setup_auto_refresh(&self) {
+        let interval = self.imp().config.borrow().refresh_interval_secs;
+        self.start_refresh_timer(interval);
+    }
+
+    fn start_refresh_timer(&self, interval_secs: u32) {
+        // Remove old timer if any
+        if let Some(old_id) = self.imp().refresh_source_id.borrow_mut().take() {
+            old_id.remove();
+        }
+        if interval_secs == 0 {
+            return;
+        }
         let win = self.downgrade();
-        glib::timeout_add_seconds_local(10, move || {
+        let source_id = glib::timeout_add_seconds_local(interval_secs, move || {
             let Some(win) = win.upgrade() else {
                 return glib::ControlFlow::Break;
             };
             win.trigger_background_refresh();
             glib::ControlFlow::Continue
         });
+        *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
+    }
+
+    fn open_preferences(&self) {
+        let config = self.imp().config.borrow().clone();
+        let win = self.clone();
+        let dialog = preferences_dialog::build_preferences_dialog(&config, move |new_config| {
+            // Sentinel: u32::MAX means "refresh now"
+            if new_config.refresh_interval_secs == u32::MAX {
+                win.trigger_background_refresh();
+                return;
+            }
+
+            let old_config = win.imp().config.borrow().clone();
+            let date_changed = old_config.date_format != new_config.date_format;
+            let interval_changed = old_config.refresh_interval_secs != new_config.refresh_interval_secs;
+
+            new_config.save();
+            *win.imp().config.borrow_mut() = new_config.clone();
+
+            if date_changed {
+                // Force commit list rebuild by resetting hash
+                win.imp().last_commits_hash.set(0);
+                let has_repo = win.imp().repo.borrow().is_some();
+                if has_repo {
+                    // Re-populate commit list with new date format
+                    let commits = win.imp().commits.borrow().clone();
+                    let tags_map = {
+                        let repo_ref = win.imp().repo.borrow();
+                        repo_ref.as_ref()
+                            .and_then(|r| r.tags_by_commit().ok())
+                            .unwrap_or_default()
+                    };
+                    let ahead = win.imp().ahead_label.label()
+                        .strip_prefix("▲ ")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    win.populate_commit_list(&commits, ahead, &tags_map);
+                }
+            }
+
+            if interval_changed {
+                win.start_refresh_timer(new_config.refresh_interval_secs);
+            }
+        });
+        dialog.set_transient_for(Some(self));
+        dialog.set_modal(true);
+        dialog.present();
     }
 
     /// Run status + workspace scan in a background thread, then apply results on UI thread.
     fn trigger_background_refresh(&self) {
         let imp = self.imp();
+
+        // Guard against concurrent refreshes
+        if imp.refresh_in_progress.get() {
+            return;
+        }
+        imp.refresh_in_progress.set(true);
 
         // Collect paths needed for background work
         let repo_path = {
@@ -1357,12 +1528,23 @@ impl GitpulsarWindow {
             }
         };
 
-        let (tx, rx) = std::sync::mpsc::channel::<BackgroundRefreshResult>();
+        let (tx, rx) = async_channel::bounded::<BackgroundRefreshResult>(1);
 
         std::thread::spawn(move || {
-            let status = repo_path.and_then(|p| {
-                GitRepo::open(&p).ok().and_then(|r| r.status().ok())
-            });
+            let (status, ahead, behind, unstaged_diffs, staged_diffs) =
+                if let Some(ref p) = repo_path {
+                    if let Ok(repo) = GitRepo::open(p) {
+                        let st = repo.status().ok();
+                        let (a, b) = repo.ahead_behind().unwrap_or((0, 0));
+                        let ud = repo.diff_unstaged().unwrap_or_default();
+                        let sd = repo.diff_staged().unwrap_or_default();
+                        (st, a, b, ud, sd)
+                    } else {
+                        (None, 0, 0, Vec::new(), Vec::new())
+                    }
+                } else {
+                    (None, 0, 0, Vec::new(), Vec::new())
+                };
             let status_hash = status.as_ref().map(|s| hash_status(s)).unwrap_or(0);
 
             let workspace_entries = workspace_root.and_then(|root| {
@@ -1370,45 +1552,54 @@ impl GitpulsarWindow {
             });
             let workspace_hash = workspace_entries.as_ref().map(|e| hash_workspace(e)).unwrap_or(0);
 
-            tx.send(BackgroundRefreshResult { status, status_hash, workspace_entries, workspace_hash }).ok();
+            tx.send_blocking(BackgroundRefreshResult {
+                status,
+                status_hash,
+                workspace_entries,
+                workspace_hash,
+                ahead,
+                behind,
+                unstaged_diffs,
+                staged_diffs,
+            }).ok();
         });
 
         let win = self.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            match rx.try_recv() {
-                Ok(result) => {
-                    let imp = win.imp();
+        glib::spawn_future_local(async move {
+            let result = rx.recv().await;
+            let imp = win.imp();
+            imp.refresh_in_progress.set(false);
 
-                    // Apply status only if changed
-                    if let Some(status) = result.status {
-                        if result.status_hash != imp.last_status_hash.get() {
-                            imp.last_status_hash.set(result.status_hash);
-                            win.refresh_changes_list(&status);
-                        }
-                        imp.ahead_label.set_label(&format!("▲ {}", status.ahead));
-                        imp.behind_label.set_label(&format!("▼ {}", status.behind));
-                    }
+            let Ok(result) = result else { return };
 
-                    // Apply workspace indicators only if changed
-                    if let Some(new_entries) = result.workspace_entries {
-                        if result.workspace_hash != imp.last_workspace_hash.get() {
-                            imp.last_workspace_hash.set(result.workspace_hash);
-                            let selected_idx =
-                                imp.repo_list_box.selected_row().map(|r| r.index());
-                            repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
-                            *imp.workspace_entries.borrow_mut() = new_entries;
-                            if let Some(idx) = selected_idx {
-                                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
-                                    imp.repo_list_box.select_row(Some(&row));
-                                }
-                            }
-                        }
-                    }
-
-                    glib::ControlFlow::Break
+            // Apply status only if changed
+            if let Some(status) = result.status {
+                if result.status_hash != imp.last_status_hash.get() {
+                    imp.last_status_hash.set(result.status_hash);
+                    win.refresh_changes_list(&status);
+                    // Update diff cache
+                    *imp.cached_unstaged_diffs.borrow_mut() = result.unstaged_diffs;
+                    *imp.cached_staged_diffs.borrow_mut() = result.staged_diffs;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => glib::ControlFlow::Break,
+            }
+
+            imp.ahead_label.set_label(&format!("▲ {}", result.ahead));
+            imp.behind_label.set_label(&format!("▼ {}", result.behind));
+
+            // Apply workspace indicators only if changed
+            if let Some(new_entries) = result.workspace_entries {
+                if result.workspace_hash != imp.last_workspace_hash.get() {
+                    imp.last_workspace_hash.set(result.workspace_hash);
+                    let selected_idx =
+                        imp.repo_list_box.selected_row().map(|r| r.index());
+                    repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
+                    *imp.workspace_entries.borrow_mut() = new_entries;
+                    if let Some(idx) = selected_idx {
+                        if let Some(row) = imp.repo_list_box.row_at_index(idx) {
+                            imp.repo_list_box.select_row(Some(&row));
+                        }
+                    }
+                }
             }
         });
     }
@@ -1729,44 +1920,62 @@ impl GitpulsarWindow {
     }
 
     fn show_edit_message_dialog(&self, original_message: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
-            Some("Edit Commit Message"),
-            Some("Edit the HEAD commit message:"),
-        );
+        let dialog = adw::Window::builder()
+            .title("Edit Commit Message")
+            .default_width(600)
+            .default_height(400)
+            .modal(true)
+            .transient_for(self)
+            .build();
+
+        let toolbar_view = adw::ToolbarView::new();
+
+        let header = adw::HeaderBar::new();
+        let save_btn = gtk::Button::builder()
+            .label("Save")
+            .css_classes(["suggested-action"])
+            .build();
+        header.pack_end(&save_btn);
+        toolbar_view.add_top_bar(&header);
 
         let text_view = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::Word)
-            .top_margin(8)
-            .bottom_margin(8)
-            .left_margin(8)
-            .right_margin(8)
-            .height_request(120)
+            .top_margin(12)
+            .bottom_margin(12)
+            .left_margin(12)
+            .right_margin(12)
+            .vexpand(true)
+            .height_request(300)
             .build();
         text_view.add_css_class("card");
         text_view.buffer().set_text(original_message.trim());
-        dialog.set_extra_child(Some(&text_view));
 
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("save", "Save");
-        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("save"));
-        dialog.set_close_response("cancel");
+        let scroll = gtk::ScrolledWindow::builder()
+            .vexpand(true)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(12)
+            .build();
+        scroll.set_child(Some(&text_view));
+        toolbar_view.set_content(Some(&scroll));
+
+        dialog.set_content(Some(&toolbar_view));
 
         let win = self.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "save" {
-                let buffer = text_view.buffer();
-                let msg = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-                let msg = msg.trim().to_string();
-                if msg.is_empty() {
-                    return;
-                }
-                win.run_git_op("Edit Message", move |path| {
-                    let repo = GitRepo::open(path)?;
-                    repo.amend_commit(Some(&msg))
-                });
+        let dlg = dialog.clone();
+        save_btn.connect_clicked(move |_| {
+            let buffer = text_view.buffer();
+            let msg = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            let msg = msg.trim().to_string();
+            if msg.is_empty() {
+                return;
             }
+            dlg.close();
+            win.run_git_op("Edit Message", move |path| {
+                let repo = GitRepo::open(path)?;
+                repo.amend_commit(Some(&msg))
+            });
         });
         dialog.present();
     }
@@ -1847,8 +2056,4 @@ impl GitpulsarWindow {
         dialog.present();
     }
 
-    /// Refresh indicators — delegates to background refresh to avoid blocking UI.
-    fn scan_indicators(&self) {
-        self.trigger_background_refresh();
-    }
 }
