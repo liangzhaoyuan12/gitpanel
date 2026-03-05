@@ -6,6 +6,7 @@ use gitpulsar_core::models::{FileStatus, FileStatusKind};
 pub struct StagingButtons {
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
+    pub amend_check: gtk::CheckButton,
 }
 
 /// Build the staging panel. Returns (container, buttons).
@@ -14,6 +15,7 @@ pub fn build_staging_panel(
     staged_list: &gtk::ListBox,
     commit_entry: &gtk::TextView,
     commit_button: &gtk::Button,
+    amend_check: &gtk::CheckButton,
 ) -> (gtk::Box, StagingButtons) {
     let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
     container.set_vexpand(true);
@@ -79,16 +81,21 @@ pub fn build_staging_panel(
 
     commit_box.append(&overlay);
 
+    let commit_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     commit_button.set_label("Commit");
     commit_button.add_css_class("suggested-action");
     commit_button.add_css_class("pill");
-    commit_box.append(commit_button);
+    commit_button.set_hexpand(true);
+    commit_row.append(commit_button);
+    commit_row.append(amend_check);
+    commit_box.append(&commit_row);
 
     container.append(&commit_box);
 
     let buttons = StagingButtons {
         stage_all_btn,
         unstage_all_btn,
+        amend_check: amend_check.clone(),
     };
 
     (container, buttons)

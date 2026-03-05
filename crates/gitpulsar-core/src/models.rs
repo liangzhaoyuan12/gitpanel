@@ -93,3 +93,22 @@ pub struct StashEntry {
     pub index: usize,
     pub message: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagInfo {
+    pub name: String,
+    pub target_id: String,
+    pub is_annotated: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlameLine {
+    pub line_no: usize,
+    pub content: String,
+    pub commit_id: String,
+    pub short_id: String,
+    pub author: String,
+    pub time: i64,
+    pub summary: String,
+}

@@ -6,3 +6,6 @@ pub mod workspace;
 pub mod remote;
 pub mod branch;
 pub mod stash;
+pub mod tags;
+pub mod blame;
+pub mod commit_ops;

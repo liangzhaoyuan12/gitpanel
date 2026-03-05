@@ -7,6 +7,7 @@ use gitpulsar_core::models::CommitInfo;
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
+use super::blame_view;
 use super::commit_list;
 use super::diff_view;
 use super::repo_tree;
@@ -41,6 +42,8 @@ mod imp {
         pub commit_entry: gtk::TextView,
         pub commit_button: gtk::Button,
         pub search_entry: gtk::SearchEntry,
+        pub blame_text_view: gtk::TextView,
+        pub amend_check: gtk::CheckButton,
         pub fetch_btn: gtk::Button,
         pub pull_btn: gtk::Button,
         pub push_btn: gtk::Button,
@@ -77,6 +80,10 @@ mod imp {
                     .margin_end(8)
                     .margin_top(8)
                     .margin_bottom(4)
+                    .build(),
+                blame_text_view: gtk::TextView::new(),
+                amend_check: gtk::CheckButton::builder()
+                    .label("Amend")
                     .build(),
                 fetch_btn: gtk::Button::builder()
                     .icon_name("view-refresh-symbolic")
@@ -489,12 +496,27 @@ impl GitpulsarWindow {
             &imp.staged_list,
             &imp.commit_entry,
             &imp.commit_button,
+            &imp.amend_check,
         );
 
         // Connect commit button
         let win = self.clone();
         imp.commit_button.connect_clicked(move |_| {
             win.on_commit_clicked();
+        });
+
+        // Connect amend toggle — fill commit message from HEAD
+        let win = self.clone();
+        imp.amend_check.connect_toggled(move |check| {
+            if check.is_active() {
+                let repo_ref = win.imp().repo.borrow();
+                if let Some(ref repo) = *repo_ref {
+                    if let Ok(msg) = repo.head_commit_message() {
+                        let buffer = win.imp().commit_entry.buffer();
+                        buffer.set_text(&msg.trim());
+                    }
+                }
+            }
         });
 
         // Connect Stage All button
@@ -527,6 +549,7 @@ impl GitpulsarWindow {
 
         // Connect per-row stage/unstage/discard buttons via click on list
         self.setup_row_button_signals();
+        self.setup_file_context_menu();
 
         // --- ViewStack setup ---
         imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "emoji-recent-symbolic");
@@ -564,7 +587,7 @@ impl GitpulsarWindow {
         );
 
         // Configure text views
-        for tv in [&imp.diff_unified_view, &imp.diff_left_view, &imp.diff_right_view] {
+        for tv in [&imp.diff_unified_view, &imp.diff_left_view, &imp.diff_right_view, &imp.blame_text_view] {
             tv.set_editable(false);
             tv.set_monospace(true);
             tv.set_left_margin(4);
@@ -608,10 +631,18 @@ impl GitpulsarWindow {
         sbs_box.set_start_child(Some(&left_scrolled));
         sbs_box.set_end_child(Some(&right_scrolled));
 
-        // Stack: placeholder / side-by-side / unified
+        // Blame view
+        let blame_scrolled = gtk::ScrolledWindow::builder()
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        blame_scrolled.set_child(Some(&imp.blame_text_view));
+
+        // Stack: placeholder / side-by-side / unified / blame
         imp.diff_stack.add_named(&placeholder_box, Some("placeholder"));
         imp.diff_stack.add_named(&sbs_box, Some("side-by-side"));
         imp.diff_stack.add_named(&unified_scrolled, Some("unified"));
+        imp.diff_stack.add_named(&blame_scrolled, Some("blame"));
         imp.diff_stack.set_visible_child_name("placeholder");
 
         // View toggle buttons
@@ -727,6 +758,11 @@ impl GitpulsarWindow {
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&view_toggle_box, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&indicators, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&stash_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&title_label, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
 
         let win_narrow = self.clone();
         let split_btn_ref = split_btn.clone();
@@ -971,8 +1007,21 @@ impl GitpulsarWindow {
             list_box.remove(&child);
         }
 
+        // Load tags map
+        let tags_map = {
+            let repo_ref = self.imp().repo.borrow();
+            repo_ref
+                .as_ref()
+                .and_then(|r| r.tags_by_commit().ok())
+                .unwrap_or_default()
+        };
+
         for commit_info in commits {
-            let row = commit_list::create_commit_row(commit_info);
+            let tags = tags_map
+                .get(&commit_info.id)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let row = commit_list::create_commit_row(commit_info, tags);
             list_box.append(&row);
         }
     }
@@ -1111,12 +1160,21 @@ impl GitpulsarWindow {
             return;
         }
 
+        let is_amend = imp.amend_check.is_active();
+
         let repo_ref = imp.repo.borrow();
         if let Some(ref repo) = *repo_ref {
-            match repo.commit(message) {
+            let result = if is_amend {
+                repo.amend_commit(Some(message))
+            } else {
+                repo.commit(message)
+            };
+
+            match result {
                 Ok(oid) => {
-                    tracing::info!("Created commit: {}", oid);
+                    tracing::info!("{}: {}", if is_amend { "Amended commit" } else { "Created commit" }, oid);
                     buffer.set_text("");
+                    imp.amend_check.set_active(false);
                     drop(repo_ref);
                     // Reload repo data
                     let repo_ref = self.imp().repo.borrow();
@@ -1124,15 +1182,15 @@ impl GitpulsarWindow {
                         self.load_repo_data(repo);
                     }
                     drop(repo_ref);
-                    // Also refresh workspace indicators
                     self.scan_indicators();
                 }
                 Err(e) => {
-                    tracing::error!("Failed to commit: {}", e);
+                    tracing::error!("Failed to {}: {}", if is_amend { "amend" } else { "commit" }, e);
                     drop(repo_ref);
+                    let title = if is_amend { "Amend Failed" } else { "Commit Failed" };
                     let dialog = adw::MessageDialog::new(
                         Some(self),
-                        Some("Commit Failed"),
+                        Some(title),
                         Some(&format!("{}", e)),
                     );
                     dialog.add_response("ok", "OK");
@@ -1294,6 +1352,64 @@ impl GitpulsarWindow {
             }
         });
         self.imp().staged_list.add_controller(gesture);
+    }
+
+    // ==========================================
+    // FILE CONTEXT MENU (Blame)
+    // ==========================================
+
+    fn setup_file_context_menu(&self) {
+        // Right-click on unstaged list → Blame File
+        let win = self.clone();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_released(move |_gesture, _, x, y| {
+            let imp = win.imp();
+            let Some(row) = imp.unstaged_list.row_at_y(y as i32) else { return };
+            let Some(path) = staging_area::get_row_file_path(&row) else { return };
+            win.show_file_context_popover(&imp.unstaged_list, x, y, &path);
+        });
+        self.imp().unstaged_list.add_controller(gesture);
+
+        // Right-click on staged list → Blame File
+        let win = self.clone();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_released(move |_gesture, _, x, y| {
+            let imp = win.imp();
+            let Some(row) = imp.staged_list.row_at_y(y as i32) else { return };
+            let Some(path) = staging_area::get_row_file_path(&row) else { return };
+            win.show_file_context_popover(&imp.staged_list, x, y, &path);
+        });
+        self.imp().staged_list.add_controller(gesture);
+    }
+
+    fn show_file_context_popover(&self, parent: &gtk::ListBox, x: f64, y: f64, file_path: &str) {
+        let popover = gtk::Popover::new();
+        popover.set_parent(parent);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.set_has_arrow(true);
+
+        let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        menu_box.set_margin_top(4);
+        menu_box.set_margin_bottom(4);
+
+        let blame_btn = gtk::Button::builder()
+            .label("Blame File")
+            .css_classes(["flat"])
+            .build();
+
+        let pp = popover.clone();
+        let win = self.clone();
+        let fp = file_path.to_string();
+        blame_btn.connect_clicked(move |_| {
+            pp.popdown();
+            win.show_blame(&fp, None);
+        });
+        menu_box.append(&blame_btn);
+
+        popover.set_child(Some(&menu_box));
+        popover.popup();
     }
 
     // ==========================================
@@ -1722,6 +1838,7 @@ impl GitpulsarWindow {
             let sha = commit.id.clone();
             let short_sha = commit.short_id.clone();
             let message = commit.summary.clone();
+            let full_message = commit.message.clone();
             drop(commits);
 
             // Build popover menu
@@ -1756,11 +1873,12 @@ impl GitpulsarWindow {
                 .label("Copy Message")
                 .css_classes(["flat"])
                 .build();
+            let msg_clone = message.clone();
             let pp2 = popover.clone();
             let w2 = win.clone();
             copy_msg_btn.connect_clicked(move |_| {
                 if let Some(display) = gdk::Display::default() {
-                    display.clipboard().set_text(&message);
+                    display.clipboard().set_text(&msg_clone);
                     w2.show_toast("Message copied to clipboard");
                 }
                 pp2.popdown();
@@ -1772,11 +1890,12 @@ impl GitpulsarWindow {
                 .label("Checkout This Commit")
                 .css_classes(["flat"])
                 .build();
+            let sha_clone = sha.clone();
             let pp3 = popover.clone();
             let w3 = win.clone();
             checkout_btn.connect_clicked(move |_| {
                 pp3.popdown();
-                let sha = sha.clone();
+                let sha = sha_clone.clone();
                 w3.run_git_op("Checkout Commit", move |path| {
                     let repo = GitRepo::open(path)?;
                     repo.checkout_detached(&sha)?;
@@ -1785,11 +1904,238 @@ impl GitpulsarWindow {
             });
             menu_box.append(&checkout_btn);
 
+            // Separator
+            menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+            // Cherry-pick
+            let cherry_pick_btn = gtk::Button::builder()
+                .label("Cherry-pick")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp4 = popover.clone();
+            let w4 = win.clone();
+            cherry_pick_btn.connect_clicked(move |_| {
+                pp4.popdown();
+                let sha = sha_clone.clone();
+                w4.run_git_op("Cherry-pick", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.cherry_pick(&sha)
+                });
+            });
+            menu_box.append(&cherry_pick_btn);
+
+            // Revert
+            let revert_btn = gtk::Button::builder()
+                .label("Revert Commit")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp5 = popover.clone();
+            let w5 = win.clone();
+            revert_btn.connect_clicked(move |_| {
+                pp5.popdown();
+                let sha = sha_clone.clone();
+                w5.show_revert_confirm_dialog(&sha);
+            });
+            menu_box.append(&revert_btn);
+
+            // Create Tag
+            let create_tag_btn = gtk::Button::builder()
+                .label("Create Tag…")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp6 = popover.clone();
+            let w6 = win.clone();
+            create_tag_btn.connect_clicked(move |_| {
+                pp6.popdown();
+                w6.show_create_tag_dialog(&sha_clone);
+            });
+            menu_box.append(&create_tag_btn);
+
+            // Edit commit message (only for HEAD / idx==0)
+            if idx == 0 {
+                let edit_msg_btn = gtk::Button::builder()
+                    .label("Edit Commit Message")
+                    .css_classes(["flat"])
+                    .build();
+                let pp7 = popover.clone();
+                let w7 = win.clone();
+                edit_msg_btn.connect_clicked(move |_| {
+                    pp7.popdown();
+                    w7.show_edit_message_dialog(&full_message);
+                });
+                menu_box.append(&edit_msg_btn);
+            }
+
             popover.set_child(Some(&menu_box));
             popover.popup();
         });
 
         self.imp().commit_list_box.add_controller(gesture);
+    }
+
+    fn show_revert_confirm_dialog(&self, commit_id: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Revert Commit?"),
+            Some("This will create a new commit that undoes the changes of the selected commit."),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("revert", "Revert");
+        dialog.set_response_appearance("revert", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let sha = commit_id.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "revert" {
+                let sha = sha.clone();
+                win.run_git_op("Revert", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.revert_commit(&sha)
+                });
+            }
+        });
+        dialog.present();
+    }
+
+    fn show_edit_message_dialog(&self, original_message: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Edit Commit Message"),
+            Some("Edit the HEAD commit message:"),
+        );
+
+        let text_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::Word)
+            .top_margin(8)
+            .bottom_margin(8)
+            .left_margin(8)
+            .right_margin(8)
+            .height_request(120)
+            .build();
+        text_view.add_css_class("card");
+        text_view.buffer().set_text(original_message.trim());
+        dialog.set_extra_child(Some(&text_view));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("save", "Save");
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "save" {
+                let buffer = text_view.buffer();
+                let msg = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+                let msg = msg.trim().to_string();
+                if msg.is_empty() {
+                    return;
+                }
+                win.run_git_op("Edit Message", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.amend_commit(Some(&msg))
+                });
+            }
+        });
+        dialog.present();
+    }
+
+    fn show_create_tag_dialog(&self, commit_id: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Create Tag"),
+            Some("Create a new tag on the selected commit:"),
+        );
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+
+        let name_entry = gtk::Entry::builder()
+            .placeholder_text("Tag name")
+            .activates_default(true)
+            .build();
+        content.append(&name_entry);
+
+        let annotated_check = gtk::CheckButton::builder()
+            .label("Annotated tag")
+            .build();
+        content.append(&annotated_check);
+
+        let msg_view = gtk::TextView::builder()
+            .wrap_mode(gtk::WrapMode::Word)
+            .top_margin(8)
+            .bottom_margin(8)
+            .left_margin(8)
+            .right_margin(8)
+            .height_request(72)
+            .sensitive(false)
+            .build();
+        msg_view.add_css_class("card");
+
+        let mv = msg_view.clone();
+        annotated_check.connect_toggled(move |check| {
+            mv.set_sensitive(check.is_active());
+        });
+
+        content.append(&msg_view);
+        dialog.set_extra_child(Some(&content));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("create", "Create");
+        dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("create"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let sha = commit_id.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "create" {
+                let name = name_entry.text().trim().to_string();
+                if name.is_empty() {
+                    return;
+                }
+                let is_annotated = annotated_check.is_active();
+                let sha = sha.clone();
+
+                if is_annotated {
+                    let buffer = msg_view.buffer();
+                    let msg = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+                    let msg = msg.trim().to_string();
+                    win.run_git_op("Create Tag", move |path| {
+                        let repo = GitRepo::open(path)?;
+                        let message = if msg.is_empty() { &name } else { &msg };
+                        repo.create_annotated_tag(&name, &sha, message)
+                    });
+                } else {
+                    win.run_git_op("Create Tag", move |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.create_tag(&name, &sha)
+                    });
+                }
+            }
+        });
+        dialog.present();
+    }
+
+    fn show_blame(&self, path: &str, commit_id: Option<&str>) {
+        let imp = self.imp();
+        let repo_ref = imp.repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+
+        match repo.blame_file(path, commit_id) {
+            Ok(lines) => {
+                blame_view::render_blame(&imp.blame_text_view.buffer(), &lines);
+                imp.diff_stack.set_visible_child_name("blame");
+            }
+            Err(e) => {
+                tracing::error!("Failed to blame {}: {}", path, e);
+                self.show_error_dialog("Blame Failed", &e.to_string());
+            }
+        }
     }
 
     /// Refresh indicators for all workspace entries.
@@ -1807,9 +2153,19 @@ impl GitpulsarWindow {
                 .to_path_buf()
         };
 
+        // Remember selected row index before rebuilding the list
+        let selected_idx = imp.repo_list_box.selected_row().map(|r| r.index());
+
         if let Ok(new_entries) = workspace::scan_workspace(&root) {
             repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
             *imp.workspace_entries.borrow_mut() = new_entries;
+
+            // Restore selection
+            if let Some(idx) = selected_idx {
+                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
+                    imp.repo_list_box.select_row(Some(&row));
+                }
+            }
         }
     }
 }
