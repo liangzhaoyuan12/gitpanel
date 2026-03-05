@@ -2,16 +2,53 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-use gitpulsar_core::models::CommitInfo;
+use gitpulsar_core::models::{CommitInfo, RepoStatus};
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
-use super::blame_view;
+struct BackgroundRefreshResult {
+    status: Option<RepoStatus>,
+    status_hash: u64,
+    workspace_entries: Option<Vec<WorkspaceEntry>>,
+    workspace_hash: u64,
+}
+
+fn hash_status(status: &RepoStatus) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for f in &status.unstaged {
+        f.path.hash(&mut hasher);
+    }
+    for f in &status.staged {
+        f.path.hash(&mut hasher);
+    }
+    for p in &status.untracked {
+        p.hash(&mut hasher);
+    }
+    status.ahead.hash(&mut hasher);
+    status.behind.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for e in entries {
+        e.name.hash(&mut hasher);
+        e.is_git_repo.hash(&mut hasher);
+        if let Some(ref ind) = e.indicator {
+            ind.is_dirty.hash(&mut hasher);
+            ind.ahead.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+use super::branches_tags_panel;
+use super::changes_view;
 use super::commit_list;
-use super::diff_view;
 use super::repo_tree;
-use super::staging_area;
 
 mod imp {
     use super::*;
@@ -21,7 +58,10 @@ mod imp {
         pub workspace_entries: RefCell<Vec<WorkspaceEntry>>,
         pub commits: RefCell<Vec<CommitInfo>>,
         pub selected_commit_id: RefCell<Option<String>>,
-        pub side_by_side: std::cell::Cell<bool>,
+        /// Hash of last status to skip redundant UI updates.
+        pub last_status_hash: std::cell::Cell<u64>,
+        /// Hash of last workspace entries to skip redundant UI updates.
+        pub last_workspace_hash: std::cell::Cell<u64>,
         // Layout refs
         pub outer_split: RefCell<Option<adw::OverlaySplitView>>,
         pub inner_split: RefCell<Option<adw::OverlaySplitView>>,
@@ -30,23 +70,22 @@ mod imp {
         pub repo_list_box: gtk::ListBox,
         pub commit_list_box: gtk::ListBox,
         pub view_stack: adw::ViewStack,
-        pub diff_stack: gtk::Stack,
-        pub diff_unified_view: gtk::TextView,
-        pub diff_left_view: gtk::TextView,
-        pub diff_right_view: gtk::TextView,
-        pub unstaged_list: gtk::ListBox,
-        pub staged_list: gtk::ListBox,
         pub branch_label: gtk::Label,
         pub ahead_label: gtk::Label,
         pub behind_label: gtk::Label,
         pub commit_entry: gtk::TextView,
         pub commit_button: gtk::Button,
         pub search_entry: gtk::SearchEntry,
-        pub blame_text_view: gtk::TextView,
         pub amend_check: gtk::CheckButton,
         pub fetch_btn: gtk::Button,
         pub pull_btn: gtk::Button,
         pub push_btn: gtk::Button,
+        // Branches/tags panel refs (set during setup_ui)
+        pub branches_local_list: RefCell<Option<gtk::ListBox>>,
+        pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
+        pub tags_list: RefCell<Option<gtk::ListBox>>,
+        // Changes view file list (set during setup_ui)
+        pub changes_file_list: RefCell<Option<gtk::ListBox>>,
     }
 
     impl Default for GitpulsarWindow {
@@ -56,19 +95,14 @@ mod imp {
                 workspace_entries: RefCell::new(Vec::new()),
                 commits: RefCell::new(Vec::new()),
                 selected_commit_id: RefCell::new(None),
-                side_by_side: std::cell::Cell::new(true),
+                last_status_hash: std::cell::Cell::new(0),
+                last_workspace_hash: std::cell::Cell::new(0),
                 outer_split: RefCell::new(None),
                 inner_split: RefCell::new(None),
                 toast_overlay: adw::ToastOverlay::new(),
                 repo_list_box: gtk::ListBox::new(),
                 commit_list_box: gtk::ListBox::new(),
                 view_stack: adw::ViewStack::new(),
-                diff_stack: gtk::Stack::new(),
-                diff_unified_view: gtk::TextView::new(),
-                diff_left_view: gtk::TextView::new(),
-                diff_right_view: gtk::TextView::new(),
-                unstaged_list: gtk::ListBox::new(),
-                staged_list: gtk::ListBox::new(),
                 branch_label: gtk::Label::new(Some("main")),
                 ahead_label: gtk::Label::new(Some("▲ 0")),
                 behind_label: gtk::Label::new(Some("▼ 0")),
@@ -81,7 +115,6 @@ mod imp {
                     .margin_top(8)
                     .margin_bottom(4)
                     .build(),
-                blame_text_view: gtk::TextView::new(),
                 amend_check: gtk::CheckButton::builder()
                     .label("Amend")
                     .build(),
@@ -97,6 +130,10 @@ mod imp {
                     .icon_name("go-up-symbolic")
                     .tooltip_text("Push")
                     .build(),
+                branches_local_list: RefCell::new(None),
+                branches_remote_list: RefCell::new(None),
+                tags_list: RefCell::new(None),
+                changes_file_list: RefCell::new(None),
             }
         }
     }
@@ -173,23 +210,6 @@ impl GitpulsarWindow {
         stash_btn.add_controller(stash_gesture);
         header.pack_start(&stash_btn);
 
-        // Left: view toggle (sbs / unified)
-        let view_toggle_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        view_toggle_box.add_css_class("linked");
-        let split_btn = gtk::ToggleButton::builder()
-            .icon_name("view-dual-symbolic")
-            .tooltip_text("Side-by-side diff")
-            .active(true)
-            .build();
-        let unified_btn = gtk::ToggleButton::builder()
-            .icon_name("view-continuous-symbolic")
-            .tooltip_text("Unified diff")
-            .group(&split_btn)
-            .build();
-        view_toggle_box.append(&split_btn);
-        view_toggle_box.append(&unified_btn);
-        header.pack_start(&view_toggle_box);
-
         // Left: toggle left sidebar (repo tree)
         let toggle_repo_tree = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
@@ -205,10 +225,10 @@ impl GitpulsarWindow {
             .build();
         header.set_title_widget(Some(&title_label));
 
-        // Right: toggle right sidebar (commits/changes)
+        // Right: toggle right sidebar (branches/tags)
         let toggle_right_panel = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Toggle Commits/Changes Panel")
+            .tooltip_text("Toggle Branches/Tags Panel")
             .active(true)
             .build();
         header.pack_end(&toggle_right_panel);
@@ -256,136 +276,12 @@ impl GitpulsarWindow {
         });
         imp.push_btn.add_controller(push_gesture);
 
-        // Right: branch selector (MenuButton + Popover)
+        // Right: branch label (display only, no popover — branches are in right sidebar now)
         let branch_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         imp.branch_label.set_label("—");
+        branch_content.append(&gtk::Image::from_icon_name("network-workgroup-symbolic"));
         branch_content.append(&imp.branch_label);
-        branch_content.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
-        let branch_menu_btn = gtk::MenuButton::builder()
-            .css_classes(["flat"])
-            .build();
-        branch_menu_btn.set_property("child", &branch_content);
-
-        // Branch popover contents
-        let branch_popover = gtk::Popover::new();
-        let branch_popover_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        branch_popover_box.set_margin_top(8);
-        branch_popover_box.set_margin_bottom(8);
-        branch_popover_box.set_margin_start(8);
-        branch_popover_box.set_margin_end(8);
-        branch_popover_box.set_width_request(250);
-
-        let branch_search = gtk::SearchEntry::builder()
-            .placeholder_text("Filter branches…")
-            .build();
-        branch_popover_box.append(&branch_search);
-
-        let branch_local_label = gtk::Label::builder()
-            .label("Local")
-            .css_classes(["heading"])
-            .xalign(0.0)
-            .margin_top(4)
-            .build();
-        branch_popover_box.append(&branch_local_label);
-
-        let branch_local_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
-            .build();
-        let branch_local_scrolled = gtk::ScrolledWindow::builder()
-            .max_content_height(200)
-            .propagate_natural_height(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .build();
-        branch_local_scrolled.set_child(Some(&branch_local_list));
-        branch_popover_box.append(&branch_local_scrolled);
-
-        let branch_remote_label = gtk::Label::builder()
-            .label("Remote")
-            .css_classes(["heading"])
-            .xalign(0.0)
-            .margin_top(4)
-            .build();
-        branch_popover_box.append(&branch_remote_label);
-
-        let branch_remote_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
-            .build();
-        let branch_remote_scrolled = gtk::ScrolledWindow::builder()
-            .max_content_height(200)
-            .propagate_natural_height(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .build();
-        branch_remote_scrolled.set_child(Some(&branch_remote_list));
-        branch_popover_box.append(&branch_remote_scrolled);
-
-        let create_branch_btn = gtk::Button::builder()
-            .label("Create New Branch…")
-            .css_classes(["suggested-action"])
-            .margin_top(4)
-            .build();
-        branch_popover_box.append(&create_branch_btn);
-
-        branch_popover.set_child(Some(&branch_popover_box));
-        branch_menu_btn.set_popover(Some(&branch_popover));
-
-        // Populate branch lists when popover opens
-        let win = self.clone();
-        let local_list = branch_local_list.clone();
-        let remote_list = branch_remote_list.clone();
-        branch_popover.connect_show(move |_| {
-            win.populate_branch_lists(&local_list, &remote_list);
-        });
-
-        // Branch search filter
-        let ll = branch_local_list.clone();
-        let rl = branch_remote_list.clone();
-        branch_search.connect_search_changed(move |entry| {
-            let query = entry.text().to_lowercase();
-            let query_ref = query.clone();
-            ll.set_filter_func(move |row| {
-                if query_ref.is_empty() {
-                    return true;
-                }
-                row.widget_name().to_lowercase().contains(&query_ref)
-            });
-            let query_ref = query;
-            rl.set_filter_func(move |row| {
-                if query_ref.is_empty() {
-                    return true;
-                }
-                row.widget_name().to_lowercase().contains(&query_ref)
-            });
-        });
-
-        // Click on local branch → checkout
-        let win = self.clone();
-        let bp2 = branch_popover.clone();
-        branch_local_list.connect_row_activated(move |_, row| {
-            let name = row.widget_name().to_string();
-            bp2.popdown();
-            win.on_checkout_branch(&name);
-        });
-
-        // Click on remote branch → checkout remote
-        let win = self.clone();
-        let bp3 = branch_popover.clone();
-        branch_remote_list.connect_row_activated(move |_, row| {
-            let name = row.widget_name().to_string();
-            bp3.popdown();
-            win.on_checkout_remote_branch(&name);
-        });
-
-        // Create new branch
-        let win = self.clone();
-        let bp4 = branch_popover.clone();
-        create_branch_btn.connect_clicked(move |_| {
-            bp4.popdown();
-            win.show_create_branch_dialog();
-        });
-
-        header.pack_end(&branch_menu_btn);
+        header.pack_end(&branch_content);
 
         // ==========================================
         // LEFT SIDEBAR — repo tree
@@ -430,7 +326,7 @@ impl GitpulsarWindow {
         repo_sidebar.append(&repo_scrolled);
 
         // ==========================================
-        // MIDDLE PANEL — ViewStack (Commits / Changes)
+        // CENTER — ViewStack (Commits / Changes)
         // ==========================================
 
         // --- Commits page ---
@@ -468,7 +364,7 @@ impl GitpulsarWindow {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
 
-        imp.commit_list_box.set_selection_mode(gtk::SelectionMode::Single);
+        imp.commit_list_box.set_selection_mode(gtk::SelectionMode::None);
         imp.commit_list_box.add_css_class("navigation-sidebar");
 
         let commits_placeholder = gtk::Label::builder()
@@ -479,21 +375,17 @@ impl GitpulsarWindow {
             .build();
         imp.commit_list_box.set_placeholder(Some(&commits_placeholder));
 
-        // Connect commit selection
+        // Connect commit activation — toggle expand/collapse detail
         let win = self.clone();
-        imp.commit_list_box.connect_row_selected(move |_, row| {
-            if let Some(row) = row {
-                win.on_commit_selected(row.index() as usize);
-            }
+        imp.commit_list_box.connect_row_activated(move |_, row| {
+            win.on_commit_selected(row.index() as usize);
         });
 
         commit_scrolled.set_child(Some(&imp.commit_list_box));
         commits_page.append(&commit_scrolled);
 
-        // --- Changes page ---
-        let (staging_box, staging_buttons) = staging_area::build_staging_panel(
-            &imp.unstaged_list,
-            &imp.staged_list,
+        // --- Changes page: file accordion list with inline diffs ---
+        let (changes_box, changes_refs) = changes_view::build_changes_view(
             &imp.commit_entry,
             &imp.commit_button,
             &imp.amend_check,
@@ -521,171 +413,84 @@ impl GitpulsarWindow {
 
         // Connect Stage All button
         let win = self.clone();
-        staging_buttons.stage_all_btn.connect_clicked(move |_| {
+        changes_refs.stage_all_btn.connect_clicked(move |_| {
             win.on_stage_all();
         });
 
         // Connect Unstage All button
         let win = self.clone();
-        staging_buttons.unstage_all_btn.connect_clicked(move |_| {
+        changes_refs.unstage_all_btn.connect_clicked(move |_| {
             win.on_unstage_all();
         });
 
-        // Connect file selection in unstaged list → show diff
+        // Connect file row activation — toggle diff accordion
+        let changes_fl = changes_refs.file_list_box.clone();
         let win = self.clone();
-        imp.unstaged_list.connect_row_selected(move |_, row| {
-            if row.is_some() {
-                win.on_unstaged_file_selected();
-            }
+        changes_fl.connect_row_activated(move |_, row| {
+            win.on_changes_file_activated(row);
         });
 
-        // Connect file selection in staged list → show diff
-        let win = self.clone();
-        imp.staged_list.connect_row_selected(move |_, row| {
-            if row.is_some() {
-                win.on_staged_file_selected();
-            }
-        });
+        // Connect per-row stage/unstage/discard buttons
+        self.setup_changes_row_button_signals(&changes_refs.file_list_box);
 
-        // Connect per-row stage/unstage/discard buttons via click on list
-        self.setup_row_button_signals();
-        self.setup_file_context_menu();
+        // Store changes file list ref
+        *imp.changes_file_list.borrow_mut() = Some(changes_refs.file_list_box.clone());
 
         // --- ViewStack setup ---
         imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "emoji-recent-symbolic");
-        imp.view_stack.add_titled_with_icon(&staging_box, Some("changes"), "Changes", "document-edit-symbolic");
-
-        let middle_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        middle_box.append(&imp.view_stack);
-        middle_box.set_width_request(250);
+        imp.view_stack.add_titled_with_icon(&changes_box, Some("changes"), "Changes", "document-edit-symbolic");
 
         // ==========================================
-        // RIGHT PANEL — diff view
+        // RIGHT SIDEBAR — branches & tags panel
         // ==========================================
-        let diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        diff_box.set_vexpand(true);
-        diff_box.set_hexpand(true);
+        let (branches_panel, branches_refs) = branches_tags_panel::build_branches_tags_panel();
 
-
-        // Placeholder
-        let placeholder_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        placeholder_box.set_valign(gtk::Align::Center);
-        placeholder_box.set_halign(gtk::Align::Center);
-        placeholder_box.set_vexpand(true);
-        placeholder_box.append(
-            &gtk::Image::builder()
-                .icon_name("document-open-symbolic")
-                .pixel_size(64)
-                .css_classes(["dim-label"])
-                .build(),
-        );
-        placeholder_box.append(
-            &gtk::Label::builder()
-                .label("Select a commit or file to view diff")
-                .css_classes(["dim-label", "title-3"])
-                .build(),
-        );
-
-        // Configure text views
-        for tv in [&imp.diff_unified_view, &imp.diff_left_view, &imp.diff_right_view, &imp.blame_text_view] {
-            tv.set_editable(false);
-            tv.set_monospace(true);
-            tv.set_left_margin(4);
-            tv.set_right_margin(4);
-            tv.set_top_margin(4);
-            tv.set_bottom_margin(4);
-            tv.set_cursor_visible(false);
-            tv.set_wrap_mode(gtk::WrapMode::None);
-        }
-
-        // Unified view
-        let unified_scrolled = gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        unified_scrolled.set_child(Some(&imp.diff_unified_view));
-
-        // Side-by-side view
-        let sbs_box = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .vexpand(true)
-            .hexpand(true)
-            .resize_start_child(true)
-            .resize_end_child(true)
-            .build();
-
-        let left_scrolled = gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        left_scrolled.set_child(Some(&imp.diff_left_view));
-
-        let right_scrolled = gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        right_scrolled.set_child(Some(&imp.diff_right_view));
-
-        diff_view::sync_scroll(&left_scrolled, &right_scrolled);
-
-        sbs_box.set_start_child(Some(&left_scrolled));
-        sbs_box.set_end_child(Some(&right_scrolled));
-
-        // Blame view
-        let blame_scrolled = gtk::ScrolledWindow::builder()
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-        blame_scrolled.set_child(Some(&imp.blame_text_view));
-
-        // Stack: placeholder / side-by-side / unified / blame
-        imp.diff_stack.add_named(&placeholder_box, Some("placeholder"));
-        imp.diff_stack.add_named(&sbs_box, Some("side-by-side"));
-        imp.diff_stack.add_named(&unified_scrolled, Some("unified"));
-        imp.diff_stack.add_named(&blame_scrolled, Some("blame"));
-        imp.diff_stack.set_visible_child_name("placeholder");
-
-        // View toggle buttons
-        let win1 = self.clone();
-        split_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                win1.imp().side_by_side.set(true);
-                win1.re_render_diff();
-            }
-        });
-        let win2 = self.clone();
-        unified_btn.connect_toggled(move |btn| {
-            if btn.is_active() {
-                win2.imp().side_by_side.set(false);
-                win2.re_render_diff();
-            }
+        // Connect branch click → checkout
+        let win = self.clone();
+        branches_refs.local_list.connect_row_activated(move |_, row| {
+            let name = row.widget_name().to_string();
+            win.on_checkout_branch(&name);
         });
 
-        diff_box.append(&imp.diff_stack);
+        let win = self.clone();
+        branches_refs.remote_list.connect_row_activated(move |_, row| {
+            let name = row.widget_name().to_string();
+            win.on_checkout_remote_branch(&name);
+        });
+
+        // Connect create branch button
+        let win = self.clone();
+        branches_refs.create_branch_btn.connect_clicked(move |_| {
+            win.show_create_branch_dialog();
+        });
+
+        let bl_list = branches_refs.local_list.clone();
+        let br_list = branches_refs.remote_list.clone();
+        let tg_list = branches_refs.tags_list.clone();
 
         // ==========================================
         // LAYOUT ASSEMBLY
         // ==========================================
 
-        // Center: diff + ViewSwitcherBar at the bottom of diff area only
+        // Center: ViewStack + ViewSwitcherBar at the bottom
         let view_switcher_bar = adw::ViewSwitcherBar::new();
         view_switcher_bar.set_stack(Some(&imp.view_stack));
         view_switcher_bar.set_reveal(true);
 
         let center_toolbar = adw::ToolbarView::new();
-        center_toolbar.set_content(Some(&diff_box));
+        center_toolbar.set_content(Some(&imp.view_stack));
         center_toolbar.add_bottom_bar(&view_switcher_bar);
         center_toolbar.set_bottom_bar_style(adw::ToolbarStyle::Raised);
 
-        // Inner split: content = center (diff + switcher), sidebar = ViewStack (right)
+        // Inner split: content = center (ViewStack + switcher), sidebar = branches/tags (right)
         let inner_split = adw::OverlaySplitView::new();
         inner_split.set_sidebar_position(gtk::PackType::End);
-        inner_split.set_sidebar(Some(&middle_box));
+        inner_split.set_sidebar(Some(&branches_panel));
         inner_split.set_content(Some(&center_toolbar));
         inner_split.set_collapsed(false);
         inner_split.set_show_sidebar(true);
-        inner_split.set_min_sidebar_width(250.0);
-        inner_split.set_max_sidebar_width(400.0);
+        inner_split.set_min_sidebar_width(200.0);
+        inner_split.set_max_sidebar_width(300.0);
 
         // Outer split: sidebar = repo tree (left), content = inner
         let outer_split = adw::OverlaySplitView::new();
@@ -710,7 +515,7 @@ impl GitpulsarWindow {
             }
         });
 
-        // Toggle right sidebar (commits/changes)
+        // Toggle right sidebar (branches/tags)
         let is = inner_split.clone();
         toggle_right_panel.connect_toggled(move |btn| {
             is.set_show_sidebar(btn.is_active());
@@ -726,6 +531,11 @@ impl GitpulsarWindow {
         *imp.outer_split.borrow_mut() = Some(outer_split.clone());
         *imp.inner_split.borrow_mut() = Some(inner_split.clone());
 
+        // Store panel list refs in imp for populate_branches_tags
+        *imp.branches_local_list.borrow_mut() = Some(bl_list);
+        *imp.branches_remote_list.borrow_mut() = Some(br_list);
+        *imp.tags_list.borrow_mut() = Some(tg_list);
+
         // ToolbarView: header on top (full width), splits below
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header);
@@ -739,7 +549,7 @@ impl GitpulsarWindow {
         // BREAKPOINTS
         // ==========================================
 
-        // Medium (<1000px): collapse inner split (commits/changes overlay)
+        // Medium (<1000px): collapse inner split (branches/tags overlay)
         let bp_medium = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
             1000.0,
@@ -756,27 +566,12 @@ impl GitpulsarWindow {
         ));
         bp_narrow.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
-        bp_narrow.add_setter(&view_toggle_box, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&indicators, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&stash_btn, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
-
-        let win_narrow = self.clone();
-        let split_btn_ref = split_btn.clone();
-        bp_narrow.connect_apply(move |_| {
-            win_narrow.imp().side_by_side.set(false);
-            win_narrow.re_render_diff();
-        });
-        let win_wide = self.clone();
-        bp_narrow.connect_unapply(move |_| {
-            if split_btn_ref.is_active() {
-                win_wide.imp().side_by_side.set(true);
-                win_wide.re_render_diff();
-            }
-        });
         self.add_breakpoint(bp_narrow);
     }
 
@@ -984,23 +779,24 @@ impl GitpulsarWindow {
 
         // Load commits
         let commits = repo.log(200).unwrap_or_default();
-        self.populate_commit_list(&commits);
+        self.populate_commit_list(&commits, ahead);
         *imp.commits.borrow_mut() = commits;
 
-        // Load status for staging
+        // Load status for changes view
         if let Ok(status) = repo.status() {
-            staging_area::populate_file_list(&imp.unstaged_list, &status.unstaged, &status.untracked);
-            staging_area::populate_staged_list(&imp.staged_list, &status.staged);
+            self.refresh_changes_list(&status);
         }
 
-        // Reset diff & search
-        imp.diff_stack.set_visible_child_name("placeholder");
+        // Reset search
         *imp.selected_commit_id.borrow_mut() = None;
         imp.search_entry.set_text("");
         imp.commit_list_box.set_filter_func(|_| true);
+
+        // Populate branches & tags in right sidebar
+        self.populate_branches_tags(repo);
     }
 
-    fn populate_commit_list(&self, commits: &[CommitInfo]) {
+    fn populate_commit_list(&self, commits: &[CommitInfo], ahead: usize) {
         let list_box = &self.imp().commit_list_box;
 
         while let Some(child) = list_box.first_child() {
@@ -1016,12 +812,14 @@ impl GitpulsarWindow {
                 .unwrap_or_default()
         };
 
-        for commit_info in commits {
+        for (idx, commit_info) in commits.iter().enumerate() {
             let tags = tags_map
                 .get(&commit_info.id)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            let row = commit_list::create_commit_row(commit_info, tags);
+            let is_unpushed = idx < ahead;
+            let is_head = idx == 0;
+            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head);
             list_box.append(&row);
         }
     }
@@ -1031,122 +829,39 @@ impl GitpulsarWindow {
         let commits = imp.commits.borrow();
 
         if let Some(commit) = commits.get(index) {
-            *imp.selected_commit_id.borrow_mut() = Some(commit.id.clone());
+            let commit_id = commit.id.clone();
+            let full_message = commit.message.clone();
             drop(commits);
-            self.re_render_diff();
 
-            // In collapsed mode, hide sidebar to show content
-            if let Some(ref split) = *imp.inner_split.borrow() {
-                if split.is_collapsed() {
-                    split.set_show_sidebar(false);
-                }
-            }
-        }
-    }
+            // Toggle detail expand on the selected row
+            if let Some(row) = imp.commit_list_box.row_at_index(index as i32) {
+                let expanded = commit_list::toggle_detail(&row);
 
-    fn re_render_diff(&self) {
-        let imp = self.imp();
-        let commit_id = imp.selected_commit_id.borrow().clone();
-
-        let Some(commit_id) = commit_id else {
-            return;
-        };
-
-        let repo_ref = imp.repo.borrow();
-        let Some(ref repo) = *repo_ref else {
-            return;
-        };
-
-        match repo.diff_commit(&commit_id) {
-            Ok(files) => {
-                self.render_diff_files(&files);
-            }
-            Err(e) => {
-                tracing::error!("Failed to get diff: {}", e);
-            }
-        }
-    }
-
-    fn render_diff_files(&self, files: &[gitpulsar_core::models::DiffFile]) {
-        let imp = self.imp();
-        if imp.side_by_side.get() {
-            diff_view::render_side_by_side(
-                &imp.diff_left_view.buffer(),
-                &imp.diff_right_view.buffer(),
-                files,
-            );
-            imp.diff_stack.set_visible_child_name("side-by-side");
-        } else {
-            diff_view::render_unified(&imp.diff_unified_view.buffer(), files);
-            imp.diff_stack.set_visible_child_name("unified");
-        }
-    }
-
-    fn on_unstaged_file_selected(&self) {
-        let imp = self.imp();
-        let repo_ref = imp.repo.borrow();
-        let Some(ref repo) = *repo_ref else { return };
-
-        let status = match repo.status() {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to get status: {}", e);
-                return;
-            }
-        };
-
-        let Some(row) = imp.unstaged_list.selected_row() else { return };
-        let idx = row.index() as usize;
-        let unstaged_count = status.unstaged.len();
-
-        if idx < unstaged_count {
-            // Regular unstaged file — use diff_unstaged
-            match repo.diff_unstaged() {
-                Ok(files) => {
-                    if let Some(file) = files.get(idx) {
-                        *imp.selected_commit_id.borrow_mut() = None;
-                        self.render_diff_files(&[file.clone()]);
+                if expanded {
+                    // Load file list for this commit
+                    let repo_ref = imp.repo.borrow();
+                    if let Some(ref repo) = *repo_ref {
+                        if let Ok(files) = repo.diff_commit(&commit_id) {
+                            if let Some(files_box) = commit_list::get_files_box(&row) {
+                                commit_list::populate_commit_files(&files_box, &files);
+                            }
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to get unstaged diff: {}", e);
-                }
-            }
-        } else {
-            // Untracked file
-            let untracked_idx = idx - unstaged_count;
-            if let Some(path) = status.untracked.get(untracked_idx) {
-                match repo.diff_untracked(path) {
-                    Ok(file) => {
-                        *imp.selected_commit_id.borrow_mut() = None;
-                        self.render_diff_files(&[file]);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get untracked diff: {}", e);
+
+                    // Connect edit-message button if HEAD
+                    if index == 0 {
+                        if let Some(btn) = commit_list::find_edit_message_btn(&row) {
+                            let win = self.clone();
+                            let msg = full_message.clone();
+                            btn.connect_clicked(move |_| {
+                                win.show_edit_message_dialog(&msg);
+                            });
+                        }
                     }
                 }
             }
-        }
-    }
 
-    fn on_staged_file_selected(&self) {
-        let imp = self.imp();
-        let repo_ref = imp.repo.borrow();
-        let Some(ref repo) = *repo_ref else { return };
-
-        match repo.diff_staged() {
-            Ok(files) => {
-                if let Some(row) = imp.staged_list.selected_row() {
-                    let idx = row.index() as usize;
-                    if let Some(file) = files.get(idx) {
-                        *imp.selected_commit_id.borrow_mut() = None;
-                        self.render_diff_files(&[file.clone()]);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to get staged diff: {}", e);
-            }
+            *imp.selected_commit_id.borrow_mut() = Some(commit_id);
         }
     }
 
@@ -1277,27 +992,80 @@ impl GitpulsarWindow {
         dialog.present();
     }
 
-    /// Reload just the staging lists (after stage/unstage/discard).
+    /// Reload the changes file list (after stage/unstage/discard).
     fn refresh_staging(&self) {
-        let imp = self.imp();
-        let repo_ref = imp.repo.borrow();
+        let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
             if let Ok(status) = repo.status() {
-                staging_area::populate_file_list(&imp.unstaged_list, &status.unstaged, &status.untracked);
-                staging_area::populate_staged_list(&imp.staged_list, &status.staged);
+                self.refresh_changes_list(&status);
             }
         }
     }
 
-    /// Wire up per-row buttons (stage/unstage/discard) using GestureClick on lists.
-    fn setup_row_button_signals(&self) {
-        // Unstaged list: stage-file and discard-file buttons
+    /// Populate the changes view file list from a RepoStatus.
+    fn refresh_changes_list(&self, status: &RepoStatus) {
+        let list = self.imp().changes_file_list.borrow().clone();
+        if let Some(ref list_box) = list {
+            let files = changes_view::collect_changed_files(status);
+            changes_view::populate_file_list(list_box, &files);
+        }
+    }
+
+    /// Handle click on a file in the changes accordion — toggle inline diff.
+    fn on_changes_file_activated(&self, row: &gtk::ListBoxRow) {
+        let expanded = changes_view::toggle_file_diff(row);
+
+        if expanded {
+            let file_path = row.widget_name().to_string();
+            if file_path.is_empty() {
+                return;
+            }
+
+            let repo_ref = self.imp().repo.borrow();
+            let Some(ref repo) = *repo_ref else { return };
+
+            // Try to get diff for this file — try unstaged first, then staged, then untracked
+            let diff_file = self.get_file_diff(repo, &file_path);
+
+            if let Some(file) = diff_file {
+                if let Some(tv) = changes_view::get_diff_textview(row) {
+                    changes_view::render_file_diff(&tv, &file);
+                }
+            }
+        }
+    }
+
+    /// Get the diff for a single file, checking unstaged, staged, and untracked.
+    fn get_file_diff(&self, repo: &GitRepo, path: &str) -> Option<gitpulsar_core::models::DiffFile> {
+        // Try unstaged
+        if let Ok(files) = repo.diff_unstaged() {
+            if let Some(f) = files.into_iter().find(|f| f.path == path) {
+                return Some(f);
+            }
+        }
+
+        // Try staged
+        if let Ok(files) = repo.diff_staged() {
+            if let Some(f) = files.into_iter().find(|f| f.path == path) {
+                return Some(f);
+            }
+        }
+
+        // Try untracked
+        if let Ok(f) = repo.diff_untracked(path) {
+            return Some(f);
+        }
+
+        None
+    }
+
+    /// Wire up per-row buttons (stage/unstage/discard) for changes view.
+    fn setup_changes_row_button_signals(&self, list_box: &gtk::ListBox) {
         let win = self.clone();
         let gesture = gtk::GestureClick::new();
         gesture.connect_released(move |gesture, _, x, y| {
             let Some(widget) = gesture.widget() else { return };
             let Some(target) = widget.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
-            // Walk up to find the button
             let mut current = Some(target);
             while let Some(w) = current {
                 if let Ok(btn) = w.clone().downcast::<gtk::Button>() {
@@ -1306,39 +1074,12 @@ impl GitpulsarWindow {
                     let mut parent = btn.parent();
                     while let Some(p) = parent {
                         if let Ok(row) = p.clone().downcast::<gtk::ListBoxRow>() {
-                            if let Some(path) = staging_area::get_row_file_path(&row) {
+                            if let Some(path) = changes_view::get_row_file_path(&row) {
                                 if name == "stage-file" {
                                     win.stage_file(&path);
                                 } else if name == "discard-file" {
                                     win.discard_file_with_confirm(&path);
-                                }
-                            }
-                            return;
-                        }
-                        parent = p.parent();
-                    }
-                    return;
-                }
-                current = w.parent();
-            }
-        });
-        self.imp().unstaged_list.add_controller(gesture);
-
-        // Staged list: unstage-file button
-        let win = self.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.connect_released(move |gesture, _, x, y| {
-            let Some(widget) = gesture.widget() else { return };
-            let Some(target) = widget.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
-            let mut current = Some(target);
-            while let Some(w) = current {
-                if let Ok(btn) = w.clone().downcast::<gtk::Button>() {
-                    let name = btn.widget_name();
-                    let mut parent = btn.parent();
-                    while let Some(p) = parent {
-                        if let Ok(row) = p.clone().downcast::<gtk::ListBoxRow>() {
-                            if let Some(path) = staging_area::get_row_file_path(&row) {
-                                if name == "unstage-file" {
+                                } else if name == "unstage-file" {
                                     win.unstage_file(&path);
                                 }
                             }
@@ -1351,65 +1092,28 @@ impl GitpulsarWindow {
                 current = w.parent();
             }
         });
-        self.imp().staged_list.add_controller(gesture);
+        list_box.add_controller(gesture);
     }
 
-    // ==========================================
-    // FILE CONTEXT MENU (Blame)
-    // ==========================================
+    /// Populate branches and tags in the right sidebar panel.
+    fn populate_branches_tags(&self, repo: &GitRepo) {
+        let imp = self.imp();
 
-    fn setup_file_context_menu(&self) {
-        // Right-click on unstaged list → Blame File
-        let win = self.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.set_button(3);
-        gesture.connect_released(move |_gesture, _, x, y| {
-            let imp = win.imp();
-            let Some(row) = imp.unstaged_list.row_at_y(y as i32) else { return };
-            let Some(path) = staging_area::get_row_file_path(&row) else { return };
-            win.show_file_context_popover(&imp.unstaged_list, x, y, &path);
-        });
-        self.imp().unstaged_list.add_controller(gesture);
+        let local = imp.branches_local_list.borrow().clone();
+        let remote = imp.branches_remote_list.borrow().clone();
+        let tags = imp.tags_list.borrow().clone();
 
-        // Right-click on staged list → Blame File
-        let win = self.clone();
-        let gesture = gtk::GestureClick::new();
-        gesture.set_button(3);
-        gesture.connect_released(move |_gesture, _, x, y| {
-            let imp = win.imp();
-            let Some(row) = imp.staged_list.row_at_y(y as i32) else { return };
-            let Some(path) = staging_area::get_row_file_path(&row) else { return };
-            win.show_file_context_popover(&imp.staged_list, x, y, &path);
-        });
-        self.imp().staged_list.add_controller(gesture);
-    }
+        if let (Some(ref local), Some(ref remote)) = (local, remote) {
+            if let Ok(branches) = repo.branches() {
+                branches_tags_panel::populate_branches(local, remote, &branches);
+            }
+        }
 
-    fn show_file_context_popover(&self, parent: &gtk::ListBox, x: f64, y: f64, file_path: &str) {
-        let popover = gtk::Popover::new();
-        popover.set_parent(parent);
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.set_has_arrow(true);
-
-        let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        menu_box.set_margin_top(4);
-        menu_box.set_margin_bottom(4);
-
-        let blame_btn = gtk::Button::builder()
-            .label("Blame File")
-            .css_classes(["flat"])
-            .build();
-
-        let pp = popover.clone();
-        let win = self.clone();
-        let fp = file_path.to_string();
-        blame_btn.connect_clicked(move |_| {
-            pp.popdown();
-            win.show_blame(&fp, None);
-        });
-        menu_box.append(&blame_btn);
-
-        popover.set_child(Some(&menu_box));
-        popover.popup();
+        if let Some(ref tl) = tags {
+            if let Ok(tag_list) = repo.tags() {
+                branches_tags_panel::populate_tags(tl, &tag_list);
+            }
+        }
     }
 
     // ==========================================
@@ -1559,49 +1263,6 @@ impl GitpulsarWindow {
     // BRANCH OPERATIONS (async checkout)
     // ==========================================
 
-    fn populate_branch_lists(&self, local_list: &gtk::ListBox, remote_list: &gtk::ListBox) {
-        // Clear lists
-        while let Some(child) = local_list.first_child() {
-            local_list.remove(&child);
-        }
-        while let Some(child) = remote_list.first_child() {
-            remote_list.remove(&child);
-        }
-
-        let repo_ref = self.imp().repo.borrow();
-        let Some(ref repo) = *repo_ref else { return };
-
-        let branches = match repo.branches() {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-
-        for branch in &branches {
-            let row = adw::ActionRow::builder()
-                .title(&branch.name)
-                .activatable(true)
-                .build();
-            row.set_widget_name(&branch.name);
-
-            if branch.is_head {
-                row.add_prefix(&gtk::Image::from_icon_name("object-select-symbolic"));
-            }
-
-            if !branch.is_remote && (branch.ahead > 0 || branch.behind > 0) {
-                let indicator = gtk::Label::new(Some(&format!("▲{} ▼{}", branch.ahead, branch.behind)));
-                indicator.add_css_class("caption");
-                indicator.add_css_class("dim-label");
-                row.add_suffix(&indicator);
-            }
-
-            if branch.is_remote {
-                remote_list.append(&row);
-            } else {
-                local_list.append(&row);
-            }
-        }
-    }
-
     fn on_checkout_branch(&self, name: &str) {
         let branch = name.to_string();
         self.run_git_op("Checkout", move |path| {
@@ -1663,27 +1324,92 @@ impl GitpulsarWindow {
 
     fn setup_auto_refresh(&self) {
         let win = self.downgrade();
-        glib::timeout_add_seconds_local(5, move || {
+        glib::timeout_add_seconds_local(10, move || {
             let Some(win) = win.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let imp = win.imp();
-            let repo_ref = imp.repo.borrow();
-            if let Some(ref repo) = *repo_ref {
-                // Refresh staging
-                if let Ok(status) = repo.status() {
-                    staging_area::populate_file_list(&imp.unstaged_list, &status.unstaged, &status.untracked);
-                    staging_area::populate_staged_list(&imp.staged_list, &status.staged);
-
-                    // Update ahead/behind
-                    imp.ahead_label.set_label(&format!("▲ {}", status.ahead));
-                    imp.behind_label.set_label(&format!("▼ {}", status.behind));
-                }
-            }
-            drop(repo_ref);
-            // Refresh workspace indicators
-            win.scan_indicators();
+            win.trigger_background_refresh();
             glib::ControlFlow::Continue
+        });
+    }
+
+    /// Run status + workspace scan in a background thread, then apply results on UI thread.
+    fn trigger_background_refresh(&self) {
+        let imp = self.imp();
+
+        // Collect paths needed for background work
+        let repo_path = {
+            let repo_ref = imp.repo.borrow();
+            repo_ref.as_ref().map(|r| r.path().to_string_lossy().to_string())
+        };
+        let workspace_root = {
+            let entries = imp.workspace_entries.borrow();
+            if entries.is_empty() {
+                None
+            } else {
+                Some(
+                    entries[0]
+                        .path
+                        .parent()
+                        .unwrap_or(&entries[0].path)
+                        .to_path_buf(),
+                )
+            }
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel::<BackgroundRefreshResult>();
+
+        std::thread::spawn(move || {
+            let status = repo_path.and_then(|p| {
+                GitRepo::open(&p).ok().and_then(|r| r.status().ok())
+            });
+            let status_hash = status.as_ref().map(|s| hash_status(s)).unwrap_or(0);
+
+            let workspace_entries = workspace_root.and_then(|root| {
+                workspace::scan_workspace(&root).ok()
+            });
+            let workspace_hash = workspace_entries.as_ref().map(|e| hash_workspace(e)).unwrap_or(0);
+
+            tx.send(BackgroundRefreshResult { status, status_hash, workspace_entries, workspace_hash }).ok();
+        });
+
+        let win = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(result) => {
+                    let imp = win.imp();
+
+                    // Apply status only if changed
+                    if let Some(status) = result.status {
+                        if result.status_hash != imp.last_status_hash.get() {
+                            imp.last_status_hash.set(result.status_hash);
+                            win.refresh_changes_list(&status);
+                        }
+                        imp.ahead_label.set_label(&format!("▲ {}", status.ahead));
+                        imp.behind_label.set_label(&format!("▼ {}", status.behind));
+                    }
+
+                    // Apply workspace indicators only if changed
+                    if let Some(new_entries) = result.workspace_entries {
+                        if result.workspace_hash != imp.last_workspace_hash.get() {
+                            imp.last_workspace_hash.set(result.workspace_hash);
+                            let selected_idx =
+                                imp.repo_list_box.selected_row().map(|r| r.index());
+                            repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
+                            *imp.workspace_entries.borrow_mut() = new_entries;
+                            if let Some(idx) = selected_idx {
+                                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
+                                    imp.repo_list_box.select_row(Some(&row));
+                                }
+                            }
+                        }
+                    }
+
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(_) => glib::ControlFlow::Break,
+            }
         });
     }
 
@@ -2121,51 +1847,8 @@ impl GitpulsarWindow {
         dialog.present();
     }
 
-    fn show_blame(&self, path: &str, commit_id: Option<&str>) {
-        let imp = self.imp();
-        let repo_ref = imp.repo.borrow();
-        let Some(ref repo) = *repo_ref else { return };
-
-        match repo.blame_file(path, commit_id) {
-            Ok(lines) => {
-                blame_view::render_blame(&imp.blame_text_view.buffer(), &lines);
-                imp.diff_stack.set_visible_child_name("blame");
-            }
-            Err(e) => {
-                tracing::error!("Failed to blame {}: {}", path, e);
-                self.show_error_dialog("Blame Failed", &e.to_string());
-            }
-        }
-    }
-
-    /// Refresh indicators for all workspace entries.
+    /// Refresh indicators — delegates to background refresh to avoid blocking UI.
     fn scan_indicators(&self) {
-        let imp = self.imp();
-        let root = {
-            let entries = imp.workspace_entries.borrow();
-            if entries.is_empty() {
-                return;
-            }
-            entries[0]
-                .path
-                .parent()
-                .unwrap_or(&entries[0].path)
-                .to_path_buf()
-        };
-
-        // Remember selected row index before rebuilding the list
-        let selected_idx = imp.repo_list_box.selected_row().map(|r| r.index());
-
-        if let Ok(new_entries) = workspace::scan_workspace(&root) {
-            repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
-            *imp.workspace_entries.borrow_mut() = new_entries;
-
-            // Restore selection
-            if let Some(idx) = selected_idx {
-                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
-                    imp.repo_list_box.select_row(Some(&row));
-                }
-            }
-        }
+        self.trigger_background_refresh();
     }
 }

@@ -1,6 +1,5 @@
 pub mod window;
 pub mod commit_list;
-pub mod diff_view;
-pub mod staging_area;
 pub mod repo_tree;
-pub mod blame_view;
+pub mod branches_tags_panel;
+pub mod changes_view;
