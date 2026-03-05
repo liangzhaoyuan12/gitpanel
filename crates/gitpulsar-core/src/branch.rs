@@ -100,6 +100,20 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Checkout a specific commit in detached HEAD mode.
+    pub fn checkout_detached(&self, commit_id: &str) -> Result<()> {
+        let repo = self.inner();
+        let oid = git2::Oid::from_str(commit_id)
+            .context("Invalid commit SHA")?;
+        let commit = repo.find_commit(oid)
+            .context("Commit not found")?;
+        repo.set_head_detached(commit.id())?;
+        repo.checkout_head(Some(
+            git2::build::CheckoutBuilder::new().force(),
+        ))?;
+        Ok(())
+    }
+
     /// Create a new branch from HEAD.
     pub fn create_branch(&self, name: &str, checkout: bool) -> Result<String> {
         let repo = self.inner();

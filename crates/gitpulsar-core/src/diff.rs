@@ -1,10 +1,44 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use git2::{DiffOptions, Oid};
 
 use crate::models::*;
 use crate::repository::GitRepo;
 
 impl GitRepo {
+    /// Generate a diff for an untracked file (all lines are additions).
+    pub fn diff_untracked(&self, path: &str) -> Result<DiffFile> {
+        let repo_path = self.path();
+        let full_path = repo_path.join(path);
+        let content = std::fs::read_to_string(&full_path)
+            .with_context(|| format!("Failed to read untracked file: {}", path))?;
+
+        let lines: Vec<DiffLine> = content
+            .lines()
+            .enumerate()
+            .map(|(i, line)| DiffLine {
+                kind: DiffLineKind::Addition,
+                content: format!("{}\n", line),
+                old_lineno: None,
+                new_lineno: Some((i + 1) as u32),
+            })
+            .collect();
+
+        let insertions = lines.len();
+        let header = format!("@@ -0,0 +1,{} @@", insertions);
+
+        Ok(DiffFile {
+            path: path.to_string(),
+            hunks: vec![DiffHunk {
+                header,
+                lines,
+            }],
+            stats: DiffStats {
+                insertions,
+                deletions: 0,
+            },
+        })
+    }
+
     /// Diff of unstaged changes (working tree vs index)
     pub fn diff_unstaged(&self) -> Result<Vec<DiffFile>> {
         let repo = self.inner();

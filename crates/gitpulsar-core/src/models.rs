@@ -87,3 +87,9 @@ pub struct DiffStats {
     pub insertions: usize,
     pub deletions: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+}

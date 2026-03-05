@@ -1,6 +1,6 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
 
 use gitpulsar_core::models::CommitInfo;
@@ -125,6 +125,7 @@ impl GitpulsarWindow {
 
         window.setup_ui();
         window.setup_actions();
+        window.setup_commit_context_menu();
         window.setup_auto_refresh();
         window
     }
@@ -144,6 +145,26 @@ impl GitpulsarWindow {
             .build();
         open_button.set_action_name(Some("win.open-repo"));
         header.pack_start(&open_button);
+
+        // Left: stash button
+        let stash_btn = gtk::Button::builder()
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Stash (Ctrl+Z)")
+            .build();
+        stash_btn.set_action_name(Some("win.stash-save"));
+
+        // Long press → stash list popover
+        let stash_popover = gtk::Popover::new();
+        stash_popover.set_parent(&stash_btn);
+        let stash_gesture = gtk::GestureLongPress::new();
+        let sp = stash_popover.clone();
+        let win = self.clone();
+        stash_gesture.connect_pressed(move |_, _, _| {
+            win.build_stash_popover_content(&sp);
+            sp.popup();
+        });
+        stash_btn.add_controller(stash_gesture);
+        header.pack_start(&stash_btn);
 
         // Left: view toggle (sbs / unified)
         let view_toggle_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -759,6 +780,94 @@ impl GitpulsarWindow {
             window.show_force_push_dialog();
         });
         self.add_action(&force_push_action);
+
+        // Commit action
+        let commit_action = gio::SimpleAction::new("commit", None);
+        let window = self.clone();
+        commit_action.connect_activate(move |_, _| {
+            window.on_commit_clicked();
+        });
+        self.add_action(&commit_action);
+
+        // Stage all
+        let stage_all_action = gio::SimpleAction::new("stage-all", None);
+        let window = self.clone();
+        stage_all_action.connect_activate(move |_, _| {
+            window.on_stage_all();
+        });
+        self.add_action(&stage_all_action);
+
+        // Unstage all
+        let unstage_all_action = gio::SimpleAction::new("unstage-all", None);
+        let window = self.clone();
+        unstage_all_action.connect_activate(move |_, _| {
+            window.on_unstage_all();
+        });
+        self.add_action(&unstage_all_action);
+
+        // Fetch
+        let fetch_action = gio::SimpleAction::new("fetch", None);
+        let window = self.clone();
+        fetch_action.connect_activate(move |_, _| {
+            window.on_fetch();
+        });
+        self.add_action(&fetch_action);
+
+        // Push
+        let push_action = gio::SimpleAction::new("push", None);
+        let window = self.clone();
+        push_action.connect_activate(move |_, _| {
+            window.on_push(false);
+        });
+        self.add_action(&push_action);
+
+        // Pull
+        let pull_action = gio::SimpleAction::new("pull", None);
+        let window = self.clone();
+        pull_action.connect_activate(move |_, _| {
+            window.on_pull();
+        });
+        self.add_action(&pull_action);
+
+        // Show commits page
+        let show_commits_action = gio::SimpleAction::new("show-commits", None);
+        let window = self.clone();
+        show_commits_action.connect_activate(move |_, _| {
+            window.imp().view_stack.set_visible_child_name("commits");
+        });
+        self.add_action(&show_commits_action);
+
+        // Show changes page
+        let show_changes_action = gio::SimpleAction::new("show-changes", None);
+        let window = self.clone();
+        show_changes_action.connect_activate(move |_, _| {
+            window.imp().view_stack.set_visible_child_name("changes");
+        });
+        self.add_action(&show_changes_action);
+
+        // Focus search
+        let focus_search_action = gio::SimpleAction::new("focus-search", None);
+        let window = self.clone();
+        focus_search_action.connect_activate(move |_, _| {
+            window.imp().search_entry.grab_focus();
+        });
+        self.add_action(&focus_search_action);
+
+        // Stash save
+        let stash_save_action = gio::SimpleAction::new("stash-save", None);
+        let window = self.clone();
+        stash_save_action.connect_activate(move |_, _| {
+            window.on_stash_save();
+        });
+        self.add_action(&stash_save_action);
+
+        // Stash pop
+        let stash_pop_action = gio::SimpleAction::new("stash-pop", None);
+        let window = self.clone();
+        stash_pop_action.connect_activate(move |_, _| {
+            window.on_stash_pop();
+        });
+        self.add_action(&stash_pop_action);
     }
 
     /// Open a workspace folder (or single repo).
@@ -929,22 +1038,44 @@ impl GitpulsarWindow {
         let repo_ref = imp.repo.borrow();
         let Some(ref repo) = *repo_ref else { return };
 
-        match repo.diff_unstaged() {
-            Ok(files) => {
-                // Get selected row index to find corresponding file
-                if let Some(row) = imp.unstaged_list.selected_row() {
-                    let idx = row.index() as usize;
+        let status = match repo.status() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to get status: {}", e);
+                return;
+            }
+        };
+
+        let Some(row) = imp.unstaged_list.selected_row() else { return };
+        let idx = row.index() as usize;
+        let unstaged_count = status.unstaged.len();
+
+        if idx < unstaged_count {
+            // Regular unstaged file — use diff_unstaged
+            match repo.diff_unstaged() {
+                Ok(files) => {
                     if let Some(file) = files.get(idx) {
                         *imp.selected_commit_id.borrow_mut() = None;
                         self.render_diff_files(&[file.clone()]);
-                    } else {
-                        // Might be an untracked file beyond the unstaged list
-                        imp.diff_stack.set_visible_child_name("placeholder");
                     }
                 }
+                Err(e) => {
+                    tracing::error!("Failed to get unstaged diff: {}", e);
+                }
             }
-            Err(e) => {
-                tracing::error!("Failed to get unstaged diff: {}", e);
+        } else {
+            // Untracked file
+            let untracked_idx = idx - unstaged_count;
+            if let Some(path) = status.untracked.get(untracked_idx) {
+                match repo.diff_untracked(path) {
+                    Ok(file) => {
+                        *imp.selected_commit_id.borrow_mut() = None;
+                        self.render_diff_files(&[file]);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get untracked diff: {}", e);
+                    }
+                }
             }
         }
     }
@@ -1438,6 +1569,227 @@ impl GitpulsarWindow {
             win.scan_indicators();
             glib::ControlFlow::Continue
         });
+    }
+
+    // ==========================================
+    // STASH OPERATIONS
+    // ==========================================
+
+    fn on_stash_save(&self) {
+        self.run_git_op("Stash Save", |path| {
+            let mut repo = GitRepo::open(path)?;
+            repo.stash_save(None)
+        });
+    }
+
+    fn on_stash_pop(&self) {
+        self.run_git_op("Stash Pop", |path| {
+            let mut repo = GitRepo::open(path)?;
+            repo.stash_pop()?;
+            Ok("Stash popped".to_string())
+        });
+    }
+
+    fn on_stash_drop(&self, index: usize) {
+        self.run_git_op("Stash Drop", move |path| {
+            let mut repo = GitRepo::open(path)?;
+            repo.stash_drop(index)?;
+            Ok(format!("Dropped stash@{{{}}}", index))
+        });
+    }
+
+    fn build_stash_popover_content(&self, popover: &gtk::Popover) {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
+        content.set_margin_start(8);
+        content.set_margin_end(8);
+        content.set_width_request(300);
+
+        let header = gtk::Label::builder()
+            .label("Stash List")
+            .css_classes(["heading"])
+            .xalign(0.0)
+            .build();
+        content.append(&header);
+
+        let repo_ref = self.imp().repo.borrow();
+        if let Some(ref repo) = *repo_ref {
+            // Need mutable for stash_list — re-open
+            let path = repo.path().to_string_lossy().to_string();
+            drop(repo_ref);
+
+            if let Ok(mut repo) = GitRepo::open(&path) {
+                match repo.stash_list() {
+                    Ok(entries) if !entries.is_empty() => {
+                        let list = gtk::ListBox::builder()
+                            .selection_mode(gtk::SelectionMode::None)
+                            .css_classes(["boxed-list"])
+                            .build();
+
+                        for entry in &entries {
+                            let row = adw::ActionRow::builder()
+                                .title(&format!("stash@{{{}}}", entry.index))
+                                .subtitle(&entry.message)
+                                .build();
+
+                            let pop_btn = gtk::Button::builder()
+                                .icon_name("go-up-symbolic")
+                                .css_classes(["flat", "circular"])
+                                .tooltip_text("Pop")
+                                .valign(gtk::Align::Center)
+                                .build();
+                            let win = self.clone();
+                            let pp = popover.clone();
+                            pop_btn.connect_clicked(move |_| {
+                                pp.popdown();
+                                win.on_stash_pop();
+                            });
+
+                            let drop_btn = gtk::Button::builder()
+                                .icon_name("user-trash-symbolic")
+                                .css_classes(["flat", "circular"])
+                                .tooltip_text("Drop")
+                                .valign(gtk::Align::Center)
+                                .build();
+                            let win = self.clone();
+                            let pp2 = popover.clone();
+                            let idx = entry.index;
+                            drop_btn.connect_clicked(move |_| {
+                                pp2.popdown();
+                                win.on_stash_drop(idx);
+                            });
+
+                            row.add_suffix(&pop_btn);
+                            row.add_suffix(&drop_btn);
+                            list.append(&row);
+                        }
+
+                        let scrolled = gtk::ScrolledWindow::builder()
+                            .max_content_height(250)
+                            .propagate_natural_height(true)
+                            .hscrollbar_policy(gtk::PolicyType::Never)
+                            .build();
+                        scrolled.set_child(Some(&list));
+                        content.append(&scrolled);
+                    }
+                    _ => {
+                        let empty = gtk::Label::builder()
+                            .label("No stashes")
+                            .css_classes(["dim-label"])
+                            .margin_top(12)
+                            .margin_bottom(12)
+                            .build();
+                        content.append(&empty);
+                    }
+                }
+            }
+        } else {
+            drop(repo_ref);
+            let empty = gtk::Label::builder()
+                .label("No repository selected")
+                .css_classes(["dim-label"])
+                .margin_top(12)
+                .margin_bottom(12)
+                .build();
+            content.append(&empty);
+        }
+
+        popover.set_child(Some(&content));
+    }
+
+    // ==========================================
+    // COMMIT CONTEXT MENU
+    // ==========================================
+
+    fn setup_commit_context_menu(&self) {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3); // right-click
+
+        let win = self.clone();
+        gesture.connect_released(move |_gesture, _, x, y| {
+            let imp = win.imp();
+            // Find which row was clicked
+            let Some(row) = imp.commit_list_box.row_at_y(y as i32) else {
+                return;
+            };
+            let idx = row.index() as usize;
+
+            let commits = imp.commits.borrow();
+            let Some(commit) = commits.get(idx) else {
+                return;
+            };
+            let sha = commit.id.clone();
+            let short_sha = commit.short_id.clone();
+            let message = commit.summary.clone();
+            drop(commits);
+
+            // Build popover menu
+            let popover = gtk::Popover::new();
+            popover.set_parent(&imp.commit_list_box);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.set_has_arrow(true);
+
+            let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            menu_box.set_margin_top(4);
+            menu_box.set_margin_bottom(4);
+
+            // Copy SHA
+            let copy_sha_btn = gtk::Button::builder()
+                .label(&format!("Copy SHA ({})", short_sha))
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            copy_sha_btn.connect_clicked(move |_| {
+                if let Some(display) = gdk::Display::default() {
+                    display.clipboard().set_text(&sha_clone);
+                    w.show_toast("SHA copied to clipboard");
+                }
+                pp.popdown();
+            });
+            menu_box.append(&copy_sha_btn);
+
+            // Copy Message
+            let copy_msg_btn = gtk::Button::builder()
+                .label("Copy Message")
+                .css_classes(["flat"])
+                .build();
+            let pp2 = popover.clone();
+            let w2 = win.clone();
+            copy_msg_btn.connect_clicked(move |_| {
+                if let Some(display) = gdk::Display::default() {
+                    display.clipboard().set_text(&message);
+                    w2.show_toast("Message copied to clipboard");
+                }
+                pp2.popdown();
+            });
+            menu_box.append(&copy_msg_btn);
+
+            // Checkout commit (detached HEAD)
+            let checkout_btn = gtk::Button::builder()
+                .label("Checkout This Commit")
+                .css_classes(["flat"])
+                .build();
+            let pp3 = popover.clone();
+            let w3 = win.clone();
+            checkout_btn.connect_clicked(move |_| {
+                pp3.popdown();
+                let sha = sha.clone();
+                w3.run_git_op("Checkout Commit", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.checkout_detached(&sha)?;
+                    Ok(format!("HEAD detached at {}", &sha[..7]))
+                });
+            });
+            menu_box.append(&checkout_btn);
+
+            popover.set_child(Some(&menu_box));
+            popover.popup();
+        });
+
+        self.imp().commit_list_box.add_controller(gesture);
     }
 
     /// Refresh indicators for all workspace entries.

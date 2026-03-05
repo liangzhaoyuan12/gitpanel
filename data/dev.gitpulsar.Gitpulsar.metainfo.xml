@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.gitpulsar.Gitpulsar</id>
+
+  <name>Gitpulsar</name>
+  <summary>Git repository manager</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Gitpulsar is a modern, GNOME-native Git graphical client built with GTK4 and
+      libadwaita. It provides an intuitive interface for managing Git repositories
+      with features like commit browsing, staging, branching, stashing, and
+      side-by-side diff viewing.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Multi-repository workspace support</li>
+      <li>Side-by-side and unified diff views</li>
+      <li>Staging area with per-file stage/unstage/discard</li>
+      <li>Branch management (create, checkout, remote tracking)</li>
+      <li>Remote operations (fetch, pull, push)</li>
+      <li>Stash support (save, pop, list, drop)</li>
+      <li>Commit search and filtering</li>
+      <li>Adaptive layout for mobile and desktop</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev.gitpulsar.Gitpulsar.desktop</launchable>
+
+  <developer id="dev.gitpulsar">
+    <name>Gitpulsar Developers</name>
+  </developer>
+
+  <!-- TODO: uncomment when repository is published
+  <url type="homepage">https://github.com/nicenemo/gitpulsar</url>
+  <url type="bugtracker">https://github.com/nicenemo/gitpulsar/issues</url>
+  -->
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-03-05">
+      <description>
+        <p>Initial release with core Git functionality.</p>
+      </description>
+    </release>
+  </releases>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </recommends>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+</component>
