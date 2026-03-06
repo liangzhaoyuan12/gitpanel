@@ -1604,9 +1604,9 @@ impl GitpulsarWindow {
 
     fn on_push(&self, force: bool) {
         self.run_git_op("Push", move |path| {
-            let mut args = vec!["push"];
+            let mut args = vec!["push", "-u", "origin", "HEAD"];
             if force {
-                args.push("--force");
+                args.insert(1, "--force");
             }
             run_git_cmd(path, &args)
                 .map(|_| if force { "Force push complete".to_string() } else { "Push complete".to_string() })
