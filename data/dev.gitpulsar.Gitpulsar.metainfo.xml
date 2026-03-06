@@ -34,15 +34,13 @@
     <name>Gitpulsar Developers</name>
   </developer>
 
-  <!-- TODO: uncomment when repository is published
-  <url type="homepage">https://github.com/nicenemo/gitpulsar</url>
-  <url type="bugtracker">https://github.com/nicenemo/gitpulsar/issues</url>
-  -->
+  <url type="homepage">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
+  <url type="bugtracker">https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/issues</url>
 
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.1.0" date="2026-03-05">
+    <release version="0.1.0" date="2026-03-06">
       <description>
         <p>Initial release with core Git functionality.</p>
       </description>
