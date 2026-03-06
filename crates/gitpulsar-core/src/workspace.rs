@@ -82,10 +82,7 @@ fn compute_indicator(path: &Path) -> Option<RepoIndicator> {
     let repo = GitRepo::open(&path.to_string_lossy()).ok()?;
     let branch = repo.current_branch_name();
     let (ahead, _) = repo.ahead_behind().unwrap_or((0, 0));
-    let is_dirty = repo
-        .status()
-        .map(|s| !s.unstaged.is_empty() || !s.untracked.is_empty() || !s.staged.is_empty())
-        .unwrap_or(false);
+    let is_dirty = repo.is_dirty_quick();
 
     Some(RepoIndicator {
         is_dirty,

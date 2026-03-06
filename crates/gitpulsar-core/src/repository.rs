@@ -61,16 +61,10 @@ impl GitRepo {
             }
         }
 
-        let branch = self.current_branch_name();
-        let (ahead, behind) = self.ahead_behind().unwrap_or((0, 0));
-
         Ok(RepoStatus {
             staged,
             unstaged,
             untracked,
-            branch,
-            ahead,
-            behind,
         })
     }
 
@@ -173,6 +167,17 @@ impl GitRepo {
         }
 
         Ok(result)
+    }
+
+    /// Quick dirty check without parsing individual file statuses.
+    pub fn is_dirty_quick(&self) -> bool {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(false)
+            .include_ignored(false);
+        self.repo
+            .statuses(Some(&mut opts))
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
     }
 
     pub fn inner(&self) -> &Repository {

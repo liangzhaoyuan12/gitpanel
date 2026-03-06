@@ -76,6 +76,17 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
         row_box.append(&edit_msg_btn);
     }
 
+    // Unpushed indicator (green dot)
+    if is_unpushed {
+        let dot = gtk::Label::builder()
+            .label("●")
+            .css_classes(["success"])
+            .tooltip_text("Not pushed")
+            .valign(gtk::Align::Center)
+            .build();
+        row_box.append(&dot);
+    }
+
     // Expand indicator
     let expand_icon = gtk::Image::builder()
         .icon_name("pan-end-symbolic")

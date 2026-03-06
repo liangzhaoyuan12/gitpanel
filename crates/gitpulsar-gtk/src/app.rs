@@ -15,6 +15,29 @@ impl GitpulsarApp {
             .build();
 
         app.connect_activate(|app| {
+            // Set window icon
+            gtk::Window::set_default_icon_name("dev.gitpulsar.Gitpulsar");
+
+            // Add icon search path for development builds
+            let display = gtk::gdk::Display::default().unwrap();
+            let icon_theme = gtk::IconTheme::for_display(&display);
+            // Check relative to executable (cargo run)
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+            if let Some(dir) = exe_dir {
+                // Try <project>/data/icons
+                let data_icons = dir.join("../../data/icons");
+                if data_icons.exists() {
+                    icon_theme.add_search_path(data_icons);
+                }
+            }
+            // Also check from current working dir
+            let cwd_icons = std::path::PathBuf::from("data/icons");
+            if cwd_icons.exists() {
+                icon_theme.add_search_path(cwd_icons);
+            }
+
             let window = GitpulsarWindow::new(app);
             window.present();
         });

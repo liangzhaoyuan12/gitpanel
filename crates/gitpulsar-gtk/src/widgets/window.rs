@@ -77,6 +77,28 @@ use super::commit_list;
 use super::preferences_dialog;
 use super::repo_tree;
 
+/// Run a git CLI command with a 30-second timeout.
+/// Returns stdout on success, or an anyhow error with stderr on failure.
+fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        let msg = if stderr.trim().is_empty() { stdout } else { stderr };
+        anyhow::bail!("{}", msg.trim());
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -125,6 +147,11 @@ mod imp {
         pub tags_list: RefCell<Option<gtk::ListBox>>,
         // Changes view file list (set during setup_ui)
         pub changes_file_list: RefCell<Option<gtk::ListBox>>,
+        // Sidebar header title (folder name)
+        pub sidebar_title_label: gtk::Label,
+        // Sidebar status
+        pub sidebar_repo_name_label: gtk::Label,
+        pub sidebar_status_label: gtk::Label,
     }
 
     impl Default for GitpulsarWindow {
@@ -179,6 +206,21 @@ mod imp {
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
                 changes_file_list: RefCell::new(None),
+                sidebar_title_label: gtk::Label::builder()
+                    .label("Gitpulsar")
+                    .css_classes(["title"])
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+                sidebar_repo_name_label: gtk::Label::builder()
+                    .label("")
+                    .css_classes(["caption"])
+                    .xalign(0.0)
+                    .build(),
+                sidebar_status_label: gtk::Label::builder()
+                    .label("")
+                    .css_classes(["caption", "dim-label"])
+                    .xalign(0.0)
+                    .build(),
             }
         }
     }
@@ -223,83 +265,51 @@ impl GitpulsarWindow {
         let imp = self.imp();
 
         // ==========================================
-        // HEADER BAR
+        // SIDEBAR HEADER BAR
         // ==========================================
-        let header = adw::HeaderBar::new();
+        let sidebar_header = adw::HeaderBar::new();
+        sidebar_header.set_show_end_title_buttons(false);
+        sidebar_header.set_show_start_title_buttons(true);
+        sidebar_header.set_title_widget(Some(&imp.sidebar_title_label));
 
-        // Left: open button
-        let open_button = gtk::Button::builder()
-            .icon_name("folder-open-symbolic")
-            .tooltip_text("Open Workspace / Repository")
+        // Hamburger menu button (end of sidebar header)
+        let menu_model = gio::Menu::new();
+        menu_model.append(Some("Preferences"), Some("win.preferences"));
+        menu_model.append(Some("About Gitpulsar"), Some("win.about"));
+
+        let menu_btn = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .menu_model(&menu_model)
+            .tooltip_text("Menu")
             .build();
-        open_button.set_action_name(Some("win.open-repo"));
-        header.pack_start(&open_button);
+        sidebar_header.pack_end(&menu_btn);
 
-        // Left: stash button
-        let stash_btn = gtk::Button::builder()
-            .icon_name("document-save-symbolic")
-            .tooltip_text("Stash (Ctrl+Z)")
-            .build();
-        stash_btn.set_action_name(Some("win.stash-save"));
+        // ==========================================
+        // CONTENT HEADER BAR
+        // ==========================================
+        let content_header = adw::HeaderBar::new();
+        content_header.set_show_start_title_buttons(false);
+        content_header.set_show_end_title_buttons(true);
+        // Empty title widget to prevent window title "Gitpulsar" from leaking
+        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
 
-        // Long press → stash list popover
-        let stash_popover = gtk::Popover::new();
-        stash_popover.set_parent(&stash_btn);
-        let stash_gesture = gtk::GestureLongPress::new();
-        let sp = stash_popover.clone();
-        let win = self.clone();
-        stash_gesture.connect_pressed(move |_, _, _| {
-            win.build_stash_popover_content(&sp);
-            sp.popup();
-        });
-        stash_btn.add_controller(stash_gesture);
-        header.pack_start(&stash_btn);
-
-        // Left: preferences (gear) button
-        let prefs_btn = gtk::Button::builder()
-            .icon_name("preferences-system-symbolic")
-            .tooltip_text("Preferences")
-            .build();
-        prefs_btn.set_action_name(Some("win.preferences"));
-        header.pack_start(&prefs_btn);
-
-        // Left: toggle left sidebar (repo tree)
+        // Content header left: toggle repo tree
         let toggle_repo_tree = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Toggle Repository Tree")
             .active(true)
             .build();
-        header.pack_start(&toggle_repo_tree);
+        content_header.pack_start(&toggle_repo_tree);
 
-        // Center: title "Gitpulsar"
-        let title_label = gtk::Label::builder()
-            .label("Gitpulsar")
-            .css_classes(["title"])
+        // Content header left: open workspace
+        let open_button = gtk::Button::builder()
+            .icon_name("folder-open-symbolic")
+            .tooltip_text("Open Workspace / Repository")
             .build();
-        header.set_title_widget(Some(&title_label));
+        open_button.set_action_name(Some("win.open-repo"));
+        content_header.pack_start(&open_button);
 
-        // Right: toggle right sidebar (branches/tags)
-        let toggle_right_panel = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Toggle Branches/Tags Panel")
-            .active(true)
-            .build();
-        header.pack_end(&toggle_right_panel);
-
-        // Right: indicators
-        let indicators = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        imp.ahead_label.add_css_class("success");
-        imp.ahead_label.add_css_class("caption");
-        imp.behind_label.add_css_class("error");
-        imp.behind_label.add_css_class("caption");
-        indicators.append(&imp.ahead_label);
-        indicators.append(&imp.behind_label);
-        header.pack_end(&indicators);
-
-        // Right: remote operation buttons
-        header.pack_end(&imp.fetch_btn);
-        header.pack_end(&imp.pull_btn);
-        header.pack_end(&imp.push_btn);
+        // fetch / pull / push are in the bottom bar (see below)
 
         // Connect remote buttons
         let win = self.clone();
@@ -329,17 +339,53 @@ impl GitpulsarWindow {
         });
         imp.push_btn.add_controller(push_gesture);
 
-        // Right: branch label (display only, no popover — branches are in right sidebar now)
+        // Content header right: toggle right sidebar (always visible)
+        let toggle_right_panel = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Toggle Branches/Tags Panel")
+            .active(true)
+            .build();
+        content_header.pack_end(&toggle_right_panel);
+
+        // Content header right: search toggle (always visible)
+        let search_toggle = gtk::ToggleButton::builder()
+            .icon_name("system-search-symbolic")
+            .tooltip_text("Search Commits (Ctrl+F)")
+            .build();
+        content_header.pack_end(&search_toggle);
+
+        // Content header right: branch graph button
+        let graph_btn = gtk::Button::builder()
+            .icon_name("org.gnome.Settings-network-symbolic")
+            .tooltip_text("Branch Graph")
+            .build();
+        let win = self.clone();
+        graph_btn.connect_clicked(move |_| {
+            win.show_branch_graph();
+        });
+        content_header.pack_end(&graph_btn);
+
+        // Content header right: branch label
         let branch_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         imp.branch_label.set_label("—");
         branch_content.append(&gtk::Image::from_icon_name("view-list-symbolic"));
         branch_content.append(&imp.branch_label);
-        header.pack_end(&branch_content);
+        content_header.pack_end(&branch_content);
+
+        // Indicators (will go into bottom bar right)
+        let indicators = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        indicators.set_margin_end(8);
+        imp.ahead_label.add_css_class("success");
+        imp.ahead_label.add_css_class("caption");
+        imp.behind_label.add_css_class("error");
+        imp.behind_label.add_css_class("caption");
+        indicators.append(&imp.ahead_label);
+        indicators.append(&imp.behind_label);
 
         // ==========================================
-        // LEFT SIDEBAR — repo tree
+        // LEFT SIDEBAR — repo tree (full height with own HeaderBar)
         // ==========================================
-        let repo_sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let repo_sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
         let repo_header = gtk::Label::builder()
             .label("Workspace")
@@ -349,7 +395,7 @@ impl GitpulsarWindow {
             .margin_top(8)
             .margin_bottom(4)
             .build();
-        repo_sidebar.append(&repo_header);
+        repo_sidebar_content.append(&repo_header);
 
         let repo_scrolled = gtk::ScrolledWindow::builder()
             .vexpand(true)
@@ -376,7 +422,26 @@ impl GitpulsarWindow {
         });
 
         repo_scrolled.set_child(Some(&imp.repo_list_box));
-        repo_sidebar.append(&repo_scrolled);
+        repo_sidebar_content.append(&repo_scrolled);
+
+        // Sidebar status bar (bottom)
+        let sidebar_status_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        sidebar_status_bar.append(&imp.sidebar_repo_name_label);
+        sidebar_status_bar.append(&imp.sidebar_status_label);
+        repo_sidebar_content.append(&sidebar_status_bar);
+
+        // Sidebar ToolbarView: own HeaderBar + repo content
+        let sidebar_toolbar = adw::ToolbarView::new();
+        sidebar_toolbar.add_top_bar(&sidebar_header);
+        sidebar_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
+        sidebar_toolbar.set_content(Some(&repo_sidebar_content));
 
         // ==========================================
         // CENTER — ViewStack (Commits / Changes)
@@ -385,7 +450,17 @@ impl GitpulsarWindow {
         // --- Commits page ---
         let commits_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-        commits_page.append(&imp.search_entry);
+        // Search bar (toggled from header button)
+        let search_bar = gtk::SearchBar::new();
+        search_bar.set_child(Some(&imp.search_entry));
+        search_bar.set_search_mode(false);
+        search_bar.connect_entry(&imp.search_entry);
+        // Bind search toggle ↔ search bar
+        search_toggle.bind_property("active", &search_bar, "search-mode-enabled")
+            .bidirectional()
+            .sync_create()
+            .build();
+        commits_page.append(&search_bar);
 
         // Connect commit search filter
         let win = self.clone();
@@ -522,33 +597,142 @@ impl GitpulsarWindow {
         let tg_list = branches_refs.tags_list.clone();
 
         // ==========================================
+        // BOTTOM BAR — CenterBox with ViewSwitcher
+        // ==========================================
+
+        // Left: stash (flat button)
+        let stash_btn = gtk::Button::builder()
+            .icon_name("document-save-symbolic")
+            .tooltip_text("Stash (Ctrl+Z)")
+            .css_classes(["flat"])
+            .build();
+        stash_btn.set_action_name(Some("win.stash-save"));
+
+        // Long press → stash list popover
+        let stash_popover = gtk::Popover::new();
+        stash_popover.set_parent(&stash_btn);
+        let stash_gesture = gtk::GestureLongPress::new();
+        let sp = stash_popover.clone();
+        let win = self.clone();
+        stash_gesture.connect_pressed(move |_, _, _| {
+            win.build_stash_popover_content(&sp);
+            sp.popup();
+        });
+        stash_btn.add_controller(stash_gesture);
+
+        let bottom_left = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        bottom_left.set_margin_start(4);
+        bottom_left.set_valign(gtk::Align::Center);
+        bottom_left.append(&stash_btn);
+        imp.fetch_btn.add_css_class("flat");
+        imp.pull_btn.add_css_class("flat");
+        imp.push_btn.add_css_class("flat");
+        bottom_left.append(&imp.fetch_btn);
+        bottom_left.append(&imp.pull_btn);
+        bottom_left.append(&imp.push_btn);
+
+        // Center: ViewSwitcher (wide) + compact icon-only toggles (narrow)
+        let view_switcher = adw::ViewSwitcher::new();
+        view_switcher.set_stack(Some(&imp.view_stack));
+        view_switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+
+        let compact_switcher = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        compact_switcher.set_halign(gtk::Align::Center);
+        compact_switcher.set_visible(false);
+
+        let commits_toggle = gtk::ToggleButton::builder()
+            .icon_name("emoji-recent-symbolic")
+            .tooltip_text("Commits")
+            .active(true)
+            .css_classes(["flat"])
+            .build();
+        let changes_toggle = gtk::ToggleButton::builder()
+            .icon_name("document-edit-symbolic")
+            .tooltip_text("Changes")
+            .css_classes(["flat"])
+            .build();
+        changes_toggle.set_group(Some(&commits_toggle));
+        compact_switcher.append(&commits_toggle);
+        compact_switcher.append(&changes_toggle);
+
+        // Sync compact toggles → view_stack
+        let vs = imp.view_stack.clone();
+        commits_toggle.connect_toggled(move |btn| {
+            if btn.is_active() { vs.set_visible_child_name("commits"); }
+        });
+        let vs = imp.view_stack.clone();
+        changes_toggle.connect_toggled(move |btn| {
+            if btn.is_active() { vs.set_visible_child_name("changes"); }
+        });
+
+        // Sync view_stack → compact toggles
+        let ct = commits_toggle.clone();
+        let cht = changes_toggle.clone();
+        imp.view_stack.connect_visible_child_name_notify(move |stack| {
+            if let Some(name) = stack.visible_child_name() {
+                match name.as_str() {
+                    "commits" => { if !ct.is_active() { ct.set_active(true); } }
+                    "changes" => { if !cht.is_active() { cht.set_active(true); } }
+                    _ => {}
+                }
+            }
+        });
+
+        let switcher_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        switcher_box.set_halign(gtk::Align::Center);
+        switcher_box.append(&view_switcher);
+        switcher_box.append(&compact_switcher);
+
+        indicators.set_valign(gtk::Align::Center);
+        indicators.set_margin_end(8);
+
+        let bottom_bar = gtk::CenterBox::new();
+        bottom_bar.set_margin_top(6);
+        bottom_bar.set_margin_bottom(6);
+        bottom_bar.set_start_widget(Some(&bottom_left));
+        bottom_bar.set_center_widget(Some(&switcher_box));
+        bottom_bar.set_end_widget(Some(&indicators));
+
+        // ==========================================
         // LAYOUT ASSEMBLY
         // ==========================================
 
-        // Center: ViewStack + ViewSwitcherBar at the bottom
-        let view_switcher_bar = adw::ViewSwitcherBar::new();
-        view_switcher_bar.set_stack(Some(&imp.view_stack));
-        view_switcher_bar.set_reveal(true);
-
+        // Center: content_header + ViewStack + bottom bar
         let center_toolbar = adw::ToolbarView::new();
+        center_toolbar.add_top_bar(&content_header);
+        center_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
         center_toolbar.set_content(Some(&imp.view_stack));
-        center_toolbar.add_bottom_bar(&view_switcher_bar);
+        center_toolbar.add_bottom_bar(&bottom_bar);
         center_toolbar.set_bottom_bar_style(adw::ToolbarStyle::Raised);
 
-        // Inner split: content = center (ViewStack + switcher), sidebar = branches/tags (right)
+        // Right sidebar: own HeaderBar (window close buttons) + branches panel
+        let right_header = adw::HeaderBar::new();
+        right_header.set_show_start_title_buttons(false);
+        right_header.set_show_end_title_buttons(true);
+        right_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+
+        let right_toolbar = adw::ToolbarView::new();
+        right_toolbar.add_top_bar(&right_header);
+        right_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
+        right_toolbar.set_content(Some(&branches_panel));
+
+        // Inner split: center | right sidebar (full height each)
         let inner_split = adw::OverlaySplitView::new();
         inner_split.set_sidebar_position(gtk::PackType::End);
-        inner_split.set_sidebar(Some(&branches_panel));
+        inner_split.set_sidebar(Some(&right_toolbar));
         inner_split.set_content(Some(&center_toolbar));
         inner_split.set_collapsed(false);
         inner_split.set_show_sidebar(true);
         inner_split.set_min_sidebar_width(200.0);
         inner_split.set_max_sidebar_width(300.0);
 
-        // Outer split: sidebar = repo tree (left), content = inner
+        // Content header: no window buttons by default (right_header has end buttons)
+        content_header.set_show_end_title_buttons(false);
+
+        // Outer split: left sidebar (full height) | inner
         let outer_split = adw::OverlaySplitView::new();
         outer_split.set_sidebar_position(gtk::PackType::Start);
-        outer_split.set_sidebar(Some(&repo_sidebar));
+        outer_split.set_sidebar(Some(&sidebar_toolbar));
         outer_split.set_content(Some(&inner_split));
         outer_split.set_collapsed(false);
         outer_split.set_show_sidebar(true);
@@ -589,29 +773,24 @@ impl GitpulsarWindow {
         *imp.branches_remote_list.borrow_mut() = Some(br_list);
         *imp.tags_list.borrow_mut() = Some(tg_list);
 
-        // ToolbarView: header on top (full width), splits below
-        let toolbar_view = adw::ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_top_bar_style(adw::ToolbarStyle::Raised);
-        toolbar_view.set_content(Some(&outer_split));
-
-        imp.toast_overlay.set_child(Some(&toolbar_view));
+        imp.toast_overlay.set_child(Some(&outer_split));
         self.set_content(Some(&imp.toast_overlay));
 
         // ==========================================
         // BREAKPOINTS
         // ==========================================
 
-        // Medium (<1000px): collapse inner split (branches/tags overlay)
+        // Medium (<1000px): collapse inner split, move window buttons to content header
         let bp_medium = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
             1000.0,
             adw::LengthUnit::Px,
         ));
         bp_medium.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        bp_medium.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         self.add_breakpoint(bp_medium);
 
-        // Narrow (<700px): collapse both, force unified, hide extras
+        // Narrow (<700px): collapse both, strip labels, compact footer
         let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
             700.0,
@@ -619,12 +798,15 @@ impl GitpulsarWindow {
         ));
         bp_narrow.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
-        bp_narrow.add_setter(&indicators, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&stash_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&title_label, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
+        // Window buttons on content header (only visible header now)
+        bp_narrow.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
+        // Hide text labels
+        bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
+        // Keep toggle_repo_tree visible in narrow mode so user can open sidebar as overlay
+        // Footer: icon-only switcher
+        bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
         self.add_breakpoint(bp_narrow);
     }
 
@@ -760,6 +942,24 @@ impl GitpulsarWindow {
             window.open_preferences();
         });
         self.add_action(&prefs_action);
+
+        // About
+        let about_action = gio::SimpleAction::new("about", None);
+        let window = self.clone();
+        about_action.connect_activate(move |_, _| {
+            let dialog = adw::AboutWindow::builder()
+                .application_name("Gitpulsar")
+                .application_icon("dev.gitpulsar.Gitpulsar")
+                .developer_name("Gitpulsar")
+                .version(env!("CARGO_PKG_VERSION"))
+                .website("https://gitlab.com/ilshat.ishdavletov/gitpulsar")
+                .license_type(gtk::License::Gpl30)
+                .transient_for(&window)
+                .modal(true)
+                .build();
+            dialog.present();
+        });
+        self.add_action(&about_action);
     }
 
     /// Open a workspace folder (or single repo).
@@ -767,6 +967,13 @@ impl GitpulsarWindow {
         match workspace::scan_workspace(path) {
             Ok(entries) => {
                 tracing::info!("Opened workspace: {} ({} entries)", path.display(), entries.len());
+
+                // Update sidebar header title to folder name
+                let folder_name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                self.imp().sidebar_title_label.set_label(&folder_name);
+
                 repo_tree::populate_repo_list(&self.imp().repo_list_box, &entries);
 
                 let auto_select = entries.len() == 1 && entries[0].is_git_repo;
@@ -890,6 +1097,15 @@ impl GitpulsarWindow {
 
                 // Populate branches & tags in right sidebar
                 win.populate_branches_tags_data(&data.branches, &data.tags);
+
+                // Update sidebar status
+                if let Some(ref path_str) = win.repo_path_string() {
+                    let name = std::path::Path::new(path_str)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    win.update_sidebar_status(&name, data.status.as_ref());
+                }
             }
         });
     }
@@ -1095,6 +1311,36 @@ impl GitpulsarWindow {
         dialog.present();
     }
 
+    /// Update the sidebar status bar with repo name and git status summary.
+    fn update_sidebar_status(&self, repo_name: &str, status: Option<&RepoStatus>) {
+        let imp = self.imp();
+        imp.sidebar_repo_name_label.set_label(repo_name);
+        let text = match status {
+            Some(s) => {
+                let mut parts = Vec::new();
+                let modified = s.unstaged.len();
+                let staged = s.staged.len();
+                let untracked = s.untracked.len();
+                if modified > 0 {
+                    parts.push(format!("{} modified", modified));
+                }
+                if staged > 0 {
+                    parts.push(format!("{} staged", staged));
+                }
+                if untracked > 0 {
+                    parts.push(format!("{} untracked", untracked));
+                }
+                if parts.is_empty() {
+                    "Clean".to_string()
+                } else {
+                    parts.join(", ")
+                }
+            }
+            None => String::new(),
+        };
+        imp.sidebar_status_label.set_label(&text);
+    }
+
     /// Reload the changes file list (after stage/unstage/discard).
     fn refresh_staging(&self) {
         let repo_ref = self.imp().repo.borrow();
@@ -1108,6 +1354,11 @@ impl GitpulsarWindow {
             }
             if let Ok(status) = repo.status() {
                 self.refresh_changes_list(&status);
+                // Update sidebar status
+                let name = repo.path().file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.update_sidebar_status(&name, Some(&status));
             }
         }
     }
@@ -1240,7 +1491,29 @@ impl GitpulsarWindow {
 
     fn show_error_dialog(&self, title: &str, body: &str) {
         let dialog = adw::MessageDialog::new(Some(self), Some(title), Some(body));
+        dialog.set_body_use_markup(false);
         dialog.add_response("ok", "OK");
+        dialog.present();
+    }
+
+    fn show_push_rejected_dialog(&self, _body: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Push Rejected"),
+            Some("Remote has new commits. Pull first, then push again."),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("pull", "Pull First");
+        dialog.set_response_appearance("pull", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("pull"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "pull" {
+                win.on_pull();
+            }
+        });
         dialog.present();
     }
 
@@ -1280,7 +1553,7 @@ impl GitpulsarWindow {
 
         let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
         std::thread::spawn(move || {
-            let result = op(&path).map_err(|e| e.to_string());
+            let result = op(&path).map_err(|e| format!("{:#}", e));
             tx.send_blocking(result).ok();
         });
 
@@ -1295,7 +1568,11 @@ impl GitpulsarWindow {
                         win.refresh_after_remote_op();
                     }
                     Err(e) => {
-                        win.show_error_dialog(&format!("{title} Failed"), &e);
+                        if title == "Push" && e.contains("non-fast-forward") {
+                            win.show_push_rejected_dialog(&e);
+                        } else {
+                            win.show_error_dialog(&format!("{title} Failed"), &e);
+                        }
                     }
                 }
             } else {
@@ -1310,25 +1587,26 @@ impl GitpulsarWindow {
 
     fn on_fetch(&self) {
         self.run_git_op("Fetch", |path| {
-            let repo = GitRepo::open(path)?;
-            repo.fetch()?;
-            Ok("Fetch complete".to_string())
+            run_git_cmd(path, &["fetch", "--prune"])
+                .map(|_| "Fetch complete".to_string())
         });
     }
 
     fn on_pull(&self) {
         self.run_git_op("Pull", |path| {
-            let repo = GitRepo::open(path)?;
-            repo.pull()
+            run_git_cmd(path, &["pull", "--ff-only"])
+                .map(|out| if out.trim().is_empty() { "Pull complete".to_string() } else { out })
         });
     }
 
     fn on_push(&self, force: bool) {
         self.run_git_op("Push", move |path| {
-            let repo = GitRepo::open(path)?;
-            repo.push(force)?;
-            let msg = if force { "Force push complete" } else { "Push complete" };
-            Ok(msg.to_string())
+            let mut args = vec!["push"];
+            if force {
+                args.push("--force");
+            }
+            run_git_cmd(path, &args)
+                .map(|_| if force { "Force push complete".to_string() } else { "Push complete".to_string() })
         });
     }
 
@@ -1580,6 +1858,14 @@ impl GitpulsarWindow {
                     // Update diff cache
                     *imp.cached_unstaged_diffs.borrow_mut() = result.unstaged_diffs;
                     *imp.cached_staged_diffs.borrow_mut() = result.staged_diffs;
+                    // Update sidebar status
+                    if let Some(ref path_str) = win.repo_path_string() {
+                        let name = std::path::Path::new(path_str)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        win.update_sidebar_status(&name, Some(&status));
+                    }
                 }
             }
 
@@ -1917,6 +2203,14 @@ impl GitpulsarWindow {
             }
         });
         dialog.present();
+    }
+
+    fn show_branch_graph(&self) {
+        let commits = self.imp().commits.borrow();
+        if commits.is_empty() {
+            return;
+        }
+        super::commit_graph::show_graph_window(self.upcast_ref::<gtk::Window>(), &commits);
     }
 
     fn show_edit_message_dialog(&self, original_message: &str) {

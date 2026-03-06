@@ -34,9 +34,6 @@ pub struct RepoStatus {
     pub staged: Vec<FileStatus>,
     pub unstaged: Vec<FileStatus>,
     pub untracked: Vec<String>,
-    pub branch: Option<String>,
-    pub ahead: usize,
-    pub behind: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
