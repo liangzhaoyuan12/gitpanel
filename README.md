@@ -2,49 +2,57 @@
 
 A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 
+![Gitpulsar](data/screenshots/main.png)
+
 ## Features
 
-- **Multi-repo workspaces** — open a folder and browse all Git repositories inside it
-- **3-panel layout** — repository tree | commits/changes | diff view (side-by-side & unified)
-- **Staging area** — stage/unstage/discard files individually or all at once
-- **Commits** — create commits, browse history, search by summary/author/SHA
-- **Remote operations** — fetch, pull (fast-forward), push, force push with confirmation
-- **Branch management** — switch branches, checkout remote tracking branches, create new branches
-- **Responsive design** — adaptive layout with libadwaita breakpoints for narrow screens
-- **Auto-refresh** — staging area and indicators update automatically every 5 seconds
-- **Non-blocking UI** — remote and branch operations run in background threads
+- **Multi-repo workspace** — open a folder, browse all Git repositories inside
+- **Commit history** — searchable list with expandable details, file diffs, tags
+- **Branch graph** — visual branch topology in a separate window
+- **Staging area** — per-file stage/unstage/discard with inline diffs
+- **Branch management** — create, checkout local/remote branches
+- **Remote operations** — fetch, pull, push via git CLI (reliable SSH support)
+- **Stash** — save, pop, list, drop
+- **Commit editing** — amend, edit message, cherry-pick, revert
+- **Adaptive layout** — responsive 3-panel design for desktop and mobile
+- **Auto-refresh** — configurable polling with hash-based skip
+- **Preferences** — date format, refresh interval
 
 ## Architecture
 
 ```
 crates/
-├── gitpulsar-core/    # Git operations library (git2-rs)
-│   ├── repository.rs  # Repo open, status, log, branches, ahead/behind
-│   ├── staging.rs     # Stage, unstage, commit, discard
-│   ├── remote.rs      # Fetch, pull, push with SSH credentials
-│   ├── branch.rs      # Checkout, create branches
-│   ├── diff.rs        # Commit, staged, unstaged diffs
-│   ├── workspace.rs   # Multi-repo workspace scanning
-│   └── models.rs      # Data types (CommitInfo, BranchInfo, DiffFile, etc.)
-└── gitpulsar-gtk/     # GTK4 + libadwaita frontend
-    ├── app.rs         # Application setup
-    ├── main.rs        # Entry point
+├── gitpulsar-core/        # Git operations library (git2-rs + git CLI)
+│   ├── repository.rs      # Repo open, status, log, branches, ahead/behind
+│   ├── staging.rs          # Stage, unstage, commit, discard
+│   ├── remote.rs           # Fetch, pull, push (git2 for local, CLI for remote)
+│   ├── branch.rs           # Checkout, create branches
+│   ├── diff.rs             # Commit, staged, unstaged diffs
+│   ├── stash.rs            # Stash save, pop, list, drop
+│   ├── workspace.rs        # Multi-repo workspace scanning
+│   └── models.rs           # Data types (CommitInfo, BranchInfo, DiffFile, etc.)
+└── gitpulsar-gtk/          # GTK4 + libadwaita frontend
+    ├── app.rs              # Application setup
+    ├── main.rs             # Entry point
+    ├── config.rs           # Preferences (date format, refresh interval)
     └── widgets/
-        ├── window.rs       # Main window, layout, actions, async operations
-        ├── commit_list.rs  # Commit list rows
-        ├── staging_area.rs # Unstaged/staged file lists with action buttons
-        ├── diff_view.rs    # Unified and side-by-side diff rendering
-        └── repo_tree.rs    # Repository tree with dirty/ahead indicators
+        ├── window.rs              # Main window, layout, actions
+        ├── commit_list.rs         # Expandable commit rows
+        ├── commit_graph.rs        # Branch graph (cairo rendering)
+        ├── changes_view.rs        # Staging area with inline diffs
+        ├── branches_tags_panel.rs # Right sidebar (branches, remotes, tags)
+        ├── repo_tree.rs           # Repository tree with indicators
+        └── preferences_dialog.rs  # Settings dialog
 ```
 
-Core is a standalone library with no UI dependencies, designed for pluggable frontends (GTK first, Qt/macOS/Windows later).
+Core is a standalone library with no UI dependencies, designed for pluggable frontends.
 
 ## Requirements
 
-- Rust 1.75+
+- Rust 1.70+
 - GTK 4.12+
 - libadwaita 1.4+
-- libgit2 (via git2-rs)
+- git (for remote operations)
 
 ### Fedora
 
@@ -64,6 +72,14 @@ sudo apt install libgtk-4-dev libadwaita-1-dev
 sudo pacman -S gtk4 libadwaita
 ```
 
+## Install
+
+```sh
+make install   # builds release and installs to ~/.local
+```
+
+This installs the binary, desktop entry, icon, and metainfo.
+
 ## Building
 
 ```sh
@@ -73,13 +89,19 @@ cargo build --release
 ## Running
 
 ```sh
+gitpulsar-gtk
+```
+
+Or from source:
+
+```sh
 cargo run -p gitpulsar-gtk
 ```
 
-Or after building:
+## Uninstall
 
 ```sh
-./target/release/gitpulsar-gtk
+make uninstall
 ```
 
 ## License
