@@ -252,6 +252,8 @@ impl GitpulsarWindow {
             .property("title", "Gitpulsar")
             .property("default-width", 1200)
             .property("default-height", 800)
+            .property("width-request", 390)
+            .property("height-request", 400)
             .build();
 
         window.setup_ui();
@@ -697,11 +699,12 @@ impl GitpulsarWindow {
         // LAYOUT ASSEMBLY
         // ==========================================
 
-        // Center: content_header + ViewStack + bottom bar
+        // Center: content_header + ToastOverlay(ViewStack) + bottom bar
+        imp.toast_overlay.set_child(Some(&imp.view_stack));
         let center_toolbar = adw::ToolbarView::new();
         center_toolbar.add_top_bar(&content_header);
         center_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
-        center_toolbar.set_content(Some(&imp.view_stack));
+        center_toolbar.set_content(Some(&imp.toast_overlay));
         center_toolbar.add_bottom_bar(&bottom_bar);
         center_toolbar.set_bottom_bar_style(adw::ToolbarStyle::Raised);
 
@@ -723,7 +726,7 @@ impl GitpulsarWindow {
         inner_split.set_content(Some(&center_toolbar));
         inner_split.set_collapsed(false);
         inner_split.set_show_sidebar(true);
-        inner_split.set_min_sidebar_width(200.0);
+        inner_split.set_min_sidebar_width(180.0);
         inner_split.set_max_sidebar_width(300.0);
 
         // Content header: no window buttons by default (right_header has end buttons)
@@ -773,8 +776,7 @@ impl GitpulsarWindow {
         *imp.branches_remote_list.borrow_mut() = Some(br_list);
         *imp.tags_list.borrow_mut() = Some(tg_list);
 
-        imp.toast_overlay.set_child(Some(&outer_split));
-        self.set_content(Some(&imp.toast_overlay));
+        self.set_content(Some(&outer_split));
 
         // ==========================================
         // BREAKPOINTS
@@ -803,7 +805,8 @@ impl GitpulsarWindow {
         // Hide text labels
         bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
-        // Keep toggle_repo_tree visible in narrow mode so user can open sidebar as overlay
+        bp_narrow.add_setter(&graph_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&open_button, "visible", Some(&false.to_value()));
         // Footer: icon-only switcher
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
