@@ -21,8 +21,9 @@ appimage:
     - dnf install -y gcc g++ gtk4-devel libadwaita-devel openssl-devel
         pkg-config file desktop-file-utils fuse-libs curl wget pango-devel
         gdk-pixbuf2-devel graphene-devel cmake
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    - source "$HOME/.cargo/env"
+    - export RUSTUP_HOME="${CARGO_HOME}/rustup"
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
+    - source "${CARGO_HOME}/env"
     # Download linuxdeploy and GTK plugin
     - curl -L -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
     - curl -L -o linuxdeploy-plugin-gtk.sh https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
