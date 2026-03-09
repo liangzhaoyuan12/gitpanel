@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub date_format: DateFormat,
     pub refresh_interval_secs: u32,
+    #[serde(default)]
+    pub recent_workspaces: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -13,6 +15,7 @@ impl Default for AppConfig {
         Self {
             date_format: DateFormat::European,
             refresh_interval_secs: 15,
+            recent_workspaces: Vec::new(),
         }
     }
 }
@@ -81,6 +84,13 @@ impl AppConfig {
         } else {
             Self::default()
         }
+    }
+
+    pub fn add_recent_workspace(&mut self, path: &str) {
+        self.recent_workspaces.retain(|p| p != path);
+        self.recent_workspaces.insert(0, path.to_string());
+        self.recent_workspaces.truncate(10);
+        self.save();
     }
 
     pub fn save(&self) {

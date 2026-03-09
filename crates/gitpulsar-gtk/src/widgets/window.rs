@@ -6,7 +6,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus};
+use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry};
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
@@ -18,6 +18,7 @@ struct BackgroundRepoData {
     status: Option<RepoStatus>,
     branches: Vec<gitpulsar_core::models::BranchInfo>,
     tags: Vec<gitpulsar_core::models::TagInfo>,
+    stash_entries: Vec<StashEntry>,
     ahead: usize,
     behind: usize,
     branch_name: Option<String>,
@@ -147,11 +148,15 @@ mod imp {
         pub tags_list: RefCell<Option<gtk::ListBox>>,
         // Changes view file list (set during setup_ui)
         pub changes_file_list: RefCell<Option<gtk::ListBox>>,
+        // Stashes list in right sidebar (set during setup_ui)
+        pub stashes_list: RefCell<Option<gtk::ListBox>>,
         // Sidebar header title (folder name)
         pub sidebar_title_label: gtk::Label,
         // Sidebar status
         pub sidebar_repo_name_label: gtk::Label,
         pub sidebar_status_label: gtk::Label,
+        // Hamburger menu button (for updating Recent menu)
+        pub menu_btn: gtk::MenuButton,
     }
 
     impl Default for GitpulsarWindow {
@@ -206,6 +211,7 @@ mod imp {
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
                 changes_file_list: RefCell::new(None),
+                stashes_list: RefCell::new(None),
                 sidebar_title_label: gtk::Label::builder()
                     .label("Gitpulsar")
                     .css_classes(["title"])
@@ -220,6 +226,10 @@ mod imp {
                     .label("")
                     .css_classes(["caption", "dim-label"])
                     .xalign(0.0)
+                    .build(),
+                menu_btn: gtk::MenuButton::builder()
+                    .icon_name("open-menu-symbolic")
+                    .tooltip_text("Menu")
                     .build(),
             }
         }
@@ -259,7 +269,21 @@ impl GitpulsarWindow {
         window.setup_ui();
         window.setup_actions();
         window.setup_commit_context_menu();
+        window.setup_branch_context_menu();
         window.setup_auto_refresh();
+
+        // Auto-open last workspace
+        let last_workspace = window.imp().config.borrow().recent_workspaces.first().cloned();
+        if let Some(path) = last_workspace {
+            let win = window.clone();
+            glib::idle_add_local_once(move || {
+                let p = std::path::PathBuf::from(&path);
+                if p.is_dir() {
+                    win.open_workspace(&p);
+                }
+            });
+        }
+
         window
     }
 
@@ -275,16 +299,8 @@ impl GitpulsarWindow {
         sidebar_header.set_title_widget(Some(&imp.sidebar_title_label));
 
         // Hamburger menu button (end of sidebar header)
-        let menu_model = gio::Menu::new();
-        menu_model.append(Some("Preferences"), Some("win.preferences"));
-        menu_model.append(Some("About Gitpulsar"), Some("win.about"));
-
-        let menu_btn = gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .menu_model(&menu_model)
-            .tooltip_text("Menu")
-            .build();
-        sidebar_header.pack_end(&menu_btn);
+        self.rebuild_hamburger_menu();
+        sidebar_header.pack_end(&imp.menu_btn);
 
         // ==========================================
         // CONTENT HEADER BAR
@@ -597,6 +613,7 @@ impl GitpulsarWindow {
         let bl_list = branches_refs.local_list.clone();
         let br_list = branches_refs.remote_list.clone();
         let tg_list = branches_refs.tags_list.clone();
+        let st_list = branches_refs.stashes_list.clone();
 
         // ==========================================
         // BOTTOM BAR — CenterBox with ViewSwitcher
@@ -775,6 +792,7 @@ impl GitpulsarWindow {
         *imp.branches_local_list.borrow_mut() = Some(bl_list);
         *imp.branches_remote_list.borrow_mut() = Some(br_list);
         *imp.tags_list.borrow_mut() = Some(tg_list);
+        *imp.stashes_list.borrow_mut() = Some(st_list);
 
         self.set_content(Some(&outer_split));
 
@@ -813,6 +831,34 @@ impl GitpulsarWindow {
         self.add_breakpoint(bp_narrow);
     }
 
+    fn rebuild_hamburger_menu(&self) {
+        let imp = self.imp();
+        let menu_model = gio::Menu::new();
+
+        // Recent workspaces submenu
+        let recent_submenu = gio::Menu::new();
+        let config = imp.config.borrow();
+        for workspace_path in &config.recent_workspaces {
+            let label = std::path::Path::new(workspace_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| workspace_path.clone());
+            recent_submenu.append(
+                Some(&label),
+                Some(&format!("win.open-recent('{}')", workspace_path.replace('\'', ""))),
+            );
+        }
+        drop(config);
+        if recent_submenu.n_items() > 0 {
+            menu_model.append_submenu(Some("Recent"), &recent_submenu);
+        }
+
+        menu_model.append(Some("Preferences"), Some("win.preferences"));
+        menu_model.append(Some("About Gitpulsar"), Some("win.about"));
+
+        imp.menu_btn.set_menu_model(Some(&menu_model));
+    }
+
     fn setup_actions(&self) {
         let action = gio::SimpleAction::new("open-repo", None);
         let window = self.clone();
@@ -841,6 +887,21 @@ impl GitpulsarWindow {
             dialog.present();
         });
         self.add_action(&action);
+
+        // Open recent workspace action
+        let open_recent_action = gio::SimpleAction::new("open-recent", Some(glib::VariantTy::STRING));
+        let window = self.clone();
+        open_recent_action.connect_activate(move |_, param| {
+            if let Some(param) = param {
+                if let Some(path_str) = param.get::<String>() {
+                    let path = std::path::PathBuf::from(&path_str);
+                    if path.is_dir() {
+                        window.open_workspace(&path);
+                    }
+                }
+            }
+        });
+        self.add_action(&open_recent_action);
 
         // Force push action
         let force_push_action = gio::SimpleAction::new("force-push", None);
@@ -979,6 +1040,10 @@ impl GitpulsarWindow {
 
                 repo_tree::populate_repo_list(&self.imp().repo_list_box, &entries);
 
+                // Save to recent workspaces
+                self.imp().config.borrow_mut().add_recent_workspace(&path.to_string_lossy());
+                self.rebuild_hamburger_menu();
+
                 let auto_select = entries.len() == 1 && entries[0].is_git_repo;
                 *self.imp().workspace_entries.borrow_mut() = entries;
 
@@ -1049,12 +1114,13 @@ impl GitpulsarWindow {
 
         let (tx, rx) = async_channel::bounded::<BackgroundRepoData>(1);
         std::thread::spawn(move || {
-            let Ok(repo) = GitRepo::open(&path) else { return };
+            let Ok(mut repo) = GitRepo::open(&path) else { return };
             let commits = repo.log(200).unwrap_or_default();
             let tags_map = repo.tags_by_commit().unwrap_or_default();
             let status = repo.status().ok();
             let branches = repo.branches().unwrap_or_default();
             let tags = repo.tags().unwrap_or_default();
+            let stash_entries = repo.stash_list().unwrap_or_default();
             let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
             let branch_name = repo.current_branch_name();
             let unstaged_diffs = repo.diff_unstaged().unwrap_or_default();
@@ -1065,6 +1131,7 @@ impl GitpulsarWindow {
                 status,
                 branches,
                 tags,
+                stash_entries,
                 ahead,
                 behind,
                 branch_name,
@@ -1100,6 +1167,9 @@ impl GitpulsarWindow {
 
                 // Populate branches & tags in right sidebar
                 win.populate_branches_tags_data(&data.branches, &data.tags);
+
+                // Populate stashes in right sidebar
+                win.populate_stashes_data(&data.stash_entries);
 
                 // Update sidebar status
                 if let Some(ref path_str) = win.repo_path_string() {
@@ -1480,6 +1550,29 @@ impl GitpulsarWindow {
         if let Some(ref tl) = tags_list {
             branches_tags_panel::populate_tags(tl, tags);
         }
+    }
+
+    fn populate_stashes_data(&self, entries: &[StashEntry]) {
+        let imp = self.imp();
+        let stashes_list = imp.stashes_list.borrow().clone();
+        if let Some(ref sl) = stashes_list {
+            let win_apply = self.clone();
+            let win_drop = self.clone();
+            branches_tags_panel::populate_stashes(
+                sl,
+                entries,
+                move |idx| win_apply.on_stash_apply(idx),
+                move |idx| win_drop.on_stash_drop(idx),
+            );
+        }
+    }
+
+    fn on_stash_apply(&self, index: usize) {
+        self.run_git_op("Stash Apply", move |path| {
+            let mut repo = GitRepo::open(path)?;
+            repo.stash_apply(index)?;
+            Ok(format!("Applied stash@{{{}}}", index))
+        });
     }
 
     // ==========================================
@@ -2146,6 +2239,51 @@ impl GitpulsarWindow {
             });
             menu_box.append(&revert_btn);
 
+            // Separator before Reset
+            menu_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+            // Reset Soft
+            let reset_soft_btn = gtk::Button::builder()
+                .label("Reset Soft to Here")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp_rs = popover.clone();
+            let w_rs = win.clone();
+            reset_soft_btn.connect_clicked(move |_| {
+                pp_rs.popdown();
+                w_rs.show_reset_confirm_dialog(&sha_clone, ResetMode::Soft);
+            });
+            menu_box.append(&reset_soft_btn);
+
+            // Reset Mixed
+            let reset_mixed_btn = gtk::Button::builder()
+                .label("Reset Mixed to Here")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp_rm = popover.clone();
+            let w_rm = win.clone();
+            reset_mixed_btn.connect_clicked(move |_| {
+                pp_rm.popdown();
+                w_rm.show_reset_confirm_dialog(&sha_clone, ResetMode::Mixed);
+            });
+            menu_box.append(&reset_mixed_btn);
+
+            // Reset Hard
+            let reset_hard_btn = gtk::Button::builder()
+                .label("Reset Hard to Here")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp_rh = popover.clone();
+            let w_rh = win.clone();
+            reset_hard_btn.connect_clicked(move |_| {
+                pp_rh.popdown();
+                w_rh.show_reset_confirm_dialog(&sha_clone, ResetMode::Hard);
+            });
+            menu_box.append(&reset_hard_btn);
+
             // Create Tag
             let create_tag_btn = gtk::Button::builder()
                 .label("Create Tag…")
@@ -2182,6 +2320,161 @@ impl GitpulsarWindow {
         self.imp().commit_list_box.add_controller(gesture);
     }
 
+    fn setup_branch_context_menu(&self) {
+        let local_list = self.imp().branches_local_list.borrow().clone();
+        let Some(local_list) = local_list else { return };
+
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3); // right-click
+
+        let win = self.clone();
+        let ll = local_list.clone();
+        gesture.connect_released(move |_gesture, _, x, y| {
+            let Some(row) = ll.row_at_y(y as i32) else { return };
+            let branch_name = row.widget_name().to_string();
+            if branch_name.is_empty() { return; }
+
+            // Check if this is the current branch
+            let is_head = win.imp().branch_label.label().as_str() == branch_name;
+
+            let popover = gtk::Popover::new();
+            popover.set_parent(&ll);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.set_has_arrow(true);
+
+            let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            menu_box.set_margin_top(4);
+            menu_box.set_margin_bottom(4);
+
+            // Checkout
+            if !is_head {
+                let checkout_btn = gtk::Button::builder()
+                    .label("Checkout")
+                    .css_classes(["flat"])
+                    .build();
+                let name = branch_name.clone();
+                let pp = popover.clone();
+                let w = win.clone();
+                checkout_btn.connect_clicked(move |_| {
+                    pp.popdown();
+                    w.on_checkout_branch(&name);
+                });
+                menu_box.append(&checkout_btn);
+            }
+
+            // Rename
+            let rename_btn = gtk::Button::builder()
+                .label("Rename…")
+                .css_classes(["flat"])
+                .build();
+            let name = branch_name.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            rename_btn.connect_clicked(move |_| {
+                pp.popdown();
+                w.show_rename_branch_dialog(&name);
+            });
+            menu_box.append(&rename_btn);
+
+            // Delete (disabled for current branch)
+            let delete_btn = gtk::Button::builder()
+                .label("Delete")
+                .css_classes(["flat"])
+                .build();
+            if is_head {
+                delete_btn.set_sensitive(false);
+                delete_btn.set_tooltip_text(Some("Cannot delete the current branch"));
+            }
+            let name = branch_name.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            delete_btn.connect_clicked(move |_| {
+                pp.popdown();
+                w.show_delete_branch_dialog(&name);
+            });
+            menu_box.append(&delete_btn);
+
+            popover.set_child(Some(&menu_box));
+            popover.popup();
+        });
+
+        local_list.add_controller(gesture);
+    }
+
+    fn show_rename_branch_dialog(&self, old_name: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Rename Branch"),
+            Some(&format!("Rename branch '{}':", old_name)),
+        );
+
+        let entry = gtk::Entry::builder()
+            .placeholder_text("new-name")
+            .text(old_name)
+            .activates_default(true)
+            .build();
+        dialog.set_extra_child(Some(&entry));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("rename", "Rename");
+        dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("rename"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let old = old_name.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "rename" {
+                let new_name = entry.text().to_string();
+                let new_name = new_name.trim().to_string();
+                if new_name.is_empty() || new_name == old {
+                    return;
+                }
+                let old = old.clone();
+                win.run_git_op("Rename Branch", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.rename_branch(&old, &new_name)?;
+                    Ok(format!("Renamed '{}' → '{}'", old, new_name))
+                });
+            }
+        });
+        dialog.present();
+    }
+
+    fn show_delete_branch_dialog(&self, name: &str) {
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some("Delete Branch?"),
+            Some(&format!("Delete branch '{}'? This cannot be undone.", name)),
+        );
+
+        let force_check = gtk::CheckButton::builder()
+            .label("Force delete (even if unmerged)")
+            .build();
+        dialog.set_extra_child(Some(&force_check));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete");
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let branch = name.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "delete" {
+                let branch = branch.clone();
+                let force = force_check.is_active();
+                win.run_git_op("Delete Branch", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.delete_branch(&branch, force)?;
+                    Ok(format!("Deleted branch '{}'", branch))
+                });
+            }
+        });
+        dialog.present();
+    }
+
     fn show_revert_confirm_dialog(&self, commit_id: &str) {
         let dialog = adw::MessageDialog::new(
             Some(self),
@@ -2202,6 +2495,57 @@ impl GitpulsarWindow {
                 win.run_git_op("Revert", move |path| {
                     let repo = GitRepo::open(path)?;
                     repo.revert_commit(&sha)
+                });
+            }
+        });
+        dialog.present();
+    }
+
+    fn show_reset_confirm_dialog(&self, commit_id: &str, mode: ResetMode) {
+        let mode_str = match mode {
+            ResetMode::Soft => "Soft",
+            ResetMode::Mixed => "Mixed",
+            ResetMode::Hard => "Hard",
+        };
+        let short = &commit_id[..7.min(commit_id.len())];
+        let body = match mode {
+            ResetMode::Hard => format!(
+                "Reset HEAD to {}? This will discard ALL uncommitted changes (working directory and index).",
+                short
+            ),
+            ResetMode::Mixed => format!(
+                "Reset HEAD to {}? Staged changes will be unstaged, working directory unchanged.",
+                short
+            ),
+            ResetMode::Soft => format!(
+                "Reset HEAD to {}? Index and working directory are unchanged.",
+                short
+            ),
+        };
+
+        let dialog = adw::MessageDialog::new(
+            Some(self),
+            Some(&format!("Reset {} to {}?", mode_str, short)),
+            Some(&body),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("reset", &format!("Reset {}", mode_str));
+        if mode == ResetMode::Hard {
+            dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+        } else {
+            dialog.set_response_appearance("reset", adw::ResponseAppearance::Suggested);
+        }
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let sha = commit_id.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "reset" {
+                let sha = sha.clone();
+                win.run_git_op("Reset", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.reset(&sha, mode)
                 });
             }
         });

@@ -131,4 +131,50 @@ impl GitRepo {
 
         Ok(format!("Created branch '{}' at {}", name, short))
     }
+
+    /// Delete a local branch by name.
+    /// If `force` is true, allows deleting unmerged branches.
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
+        let repo = self.inner();
+
+        // Don't allow deleting the current branch
+        if let Ok(head) = repo.head() {
+            if head.is_branch() {
+                if let Some(head_name) = head.shorthand() {
+                    if head_name == name {
+                        bail!("Cannot delete the currently checked out branch '{}'", name);
+                    }
+                }
+            }
+        }
+
+        let mut branch = repo
+            .find_branch(name, BranchType::Local)
+            .context("Branch not found")?;
+
+        if force {
+            branch.delete().context("Failed to delete branch")?;
+        } else {
+            // Check if branch is merged before deleting
+            if !branch.is_head() {
+                branch.delete().context("Failed to delete branch. Use force to delete unmerged branches.")?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rename a local branch.
+    pub fn rename_branch(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let repo = self.inner();
+
+        let mut branch = repo
+            .find_branch(old_name, BranchType::Local)
+            .context("Branch not found")?;
+
+        branch.rename(new_name, false)
+            .context("Failed to rename branch")?;
+
+        Ok(())
+    }
 }

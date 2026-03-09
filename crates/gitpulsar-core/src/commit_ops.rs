@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 
+use crate::models::ResetMode;
 use crate::repository::GitRepo;
 
 impl GitRepo {
@@ -112,5 +113,30 @@ impl GitRepo {
         let repo = self.inner();
         let head = repo.head()?.peel_to_commit()?;
         Ok(head.message().unwrap_or("").to_string())
+    }
+
+    /// Reset HEAD to a given commit.
+    pub fn reset(&self, commit_id: &str, mode: ResetMode) -> Result<String> {
+        let repo = self.inner();
+        let oid = git2::Oid::from_str(commit_id).context("Invalid commit ID")?;
+        let commit = repo.find_commit(oid).context("Commit not found")?;
+
+        let reset_type = match mode {
+            ResetMode::Soft => git2::ResetType::Soft,
+            ResetMode::Mixed => git2::ResetType::Mixed,
+            ResetMode::Hard => git2::ResetType::Hard,
+        };
+
+        repo.reset(commit.as_object(), reset_type, None)
+            .context("Reset failed")?;
+
+        let mode_str = match mode {
+            ResetMode::Soft => "soft",
+            ResetMode::Mixed => "mixed",
+            ResetMode::Hard => "hard",
+        };
+
+        let short = &commit_id[..7.min(commit_id.len())];
+        Ok(format!("Reset {} to {}", mode_str, short))
     }
 }

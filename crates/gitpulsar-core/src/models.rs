@@ -99,6 +99,13 @@ pub struct TagInfo {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlameLine {
     pub line_no: usize,

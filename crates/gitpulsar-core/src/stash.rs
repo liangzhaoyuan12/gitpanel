@@ -44,4 +44,11 @@ impl GitRepo {
         repo.stash_drop(index)?;
         Ok(())
     }
+
+    /// Apply a stash entry by index (without removing it from the stash list).
+    pub fn stash_apply(&mut self, index: usize) -> Result<()> {
+        let repo = self.inner_mut();
+        repo.stash_apply(index, None)?;
+        Ok(())
+    }
 }

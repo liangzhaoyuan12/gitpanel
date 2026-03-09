@@ -72,9 +72,11 @@ where
     let build_config = {
         let date_row = date_row.clone();
         let spin_row = spin_row.clone();
+        let recent = config.recent_workspaces.clone();
         move || AppConfig {
             date_format: DateFormat::from_index(date_row.selected()),
             refresh_interval_secs: spin_row.value() as u32,
+            recent_workspaces: recent.clone(),
         }
     };
 

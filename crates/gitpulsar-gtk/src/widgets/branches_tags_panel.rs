@@ -1,11 +1,12 @@
 use adw::prelude::*;
 
-use gitpulsar_core::models::{BranchInfo, TagInfo};
+use gitpulsar_core::models::{BranchInfo, StashEntry, TagInfo};
 
 pub struct BranchesTagsRefs {
     pub local_list: gtk::ListBox,
     pub remote_list: gtk::ListBox,
     pub tags_list: gtk::ListBox,
+    pub stashes_list: gtk::ListBox,
     pub create_branch_btn: gtk::Button,
     pub search_entry: gtk::SearchEntry,
 }
@@ -82,6 +83,23 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
         .build();
     inner.append(&tags_list);
 
+    // === Stashes ===
+    let stashes_header = gtk::Label::builder()
+        .label("Stashes")
+        .css_classes(["heading"])
+        .xalign(0.0)
+        .margin_start(12)
+        .margin_top(8)
+        .margin_bottom(4)
+        .build();
+    inner.append(&stashes_header);
+
+    let stashes_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["navigation-sidebar"])
+        .build();
+    inner.append(&stashes_list);
+
     scrolled.set_child(Some(&inner));
     panel.append(&scrolled);
 
@@ -120,6 +138,7 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
         local_list,
         remote_list,
         tags_list,
+        stashes_list,
         create_branch_btn,
         search_entry,
     };
@@ -214,5 +233,87 @@ pub fn populate_tags(tags_list: &gtk::ListBox, tags: &[TagInfo]) {
         row.set_widget_name(&tag.name);
 
         tags_list.append(&row);
+    }
+}
+
+/// Populate the stashes list. Each row has Apply and Drop buttons.
+/// `on_apply` and `on_drop` are called with the stash index.
+pub fn populate_stashes<FA, FD>(
+    stashes_list: &gtk::ListBox,
+    entries: &[StashEntry],
+    on_apply: FA,
+    on_drop: FD,
+)
+where
+    FA: Fn(usize) + Clone + 'static,
+    FD: Fn(usize) + Clone + 'static,
+{
+    while let Some(child) = stashes_list.first_child() {
+        stashes_list.remove(&child);
+    }
+
+    if entries.is_empty() {
+        let empty = gtk::Label::builder()
+            .label("No stashes")
+            .css_classes(["dim-label"])
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        let row = gtk::ListBoxRow::builder()
+            .child(&empty)
+            .activatable(false)
+            .selectable(false)
+            .build();
+        stashes_list.append(&row);
+        return;
+    }
+
+    for entry in entries {
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row_box.set_margin_start(8);
+        row_box.set_margin_end(4);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+
+        let label = gtk::Label::builder()
+            .label(&format!("{}: {}", entry.index, entry.message))
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(&entry.message)
+            .build();
+        row_box.append(&label);
+
+        let apply_btn = gtk::Button::builder()
+            .icon_name("go-up-symbolic")
+            .css_classes(["flat", "circular"])
+            .tooltip_text("Apply")
+            .valign(gtk::Align::Center)
+            .build();
+        let idx = entry.index;
+        let on_apply_clone = on_apply.clone();
+        apply_btn.connect_clicked(move |_| {
+            on_apply_clone(idx);
+        });
+        row_box.append(&apply_btn);
+
+        let drop_btn = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .css_classes(["flat", "circular"])
+            .tooltip_text("Drop")
+            .valign(gtk::Align::Center)
+            .build();
+        let idx = entry.index;
+        let on_drop_clone = on_drop.clone();
+        drop_btn.connect_clicked(move |_| {
+            on_drop_clone(idx);
+        });
+        row_box.append(&drop_btn);
+
+        let row = gtk::ListBoxRow::builder()
+            .child(&row_box)
+            .activatable(false)
+            .build();
+        stashes_list.append(&row);
     }
 }
