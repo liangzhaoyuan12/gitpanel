@@ -37,8 +37,9 @@ appimage:
     - cp target/release/gitpulsar-gtk AppDir/usr/bin/
     - cp data/dev.gitpulsar.Gitpulsar.desktop AppDir/usr/share/applications/
     - cp data/icons/hicolor/scalable/apps/dev.gitpulsar.Gitpulsar.svg AppDir/usr/share/icons/hicolor/scalable/apps/
-    # Build AppImage
+    # Build AppImage (NO_STRIP: linuxdeploy's bundled strip is too old for Fedora's .relr.dyn)
     - export DEPLOY_GTK_VERSION=4
+    - export NO_STRIP=true
     - ./linuxdeploy --appdir AppDir
         --plugin gtk
         --desktop-file AppDir/usr/share/applications/dev.gitpulsar.Gitpulsar.desktop
