@@ -115,7 +115,7 @@ impl GitRepo {
 
             let oid = oid?;
             let commit = self.repo.find_commit(oid)?;
-            commits.push(commit_to_info(&commit));
+            commits.push(commit_to_info(&self.repo, &commit));
         }
 
         Ok(commits)
@@ -214,9 +214,10 @@ fn signature_to_model(sig: &git2::Signature<'_>) -> Signature {
     }
 }
 
-fn commit_to_info(commit: &git2::Commit<'_>) -> CommitInfo {
+fn commit_to_info(repo: &Repository, commit: &git2::Commit<'_>) -> CommitInfo {
     let id = commit.id().to_string();
     let short_id = id[..7.min(id.len())].to_string();
+    let is_signed = repo.extract_signature(&commit.id(), None).is_ok();
 
     CommitInfo {
         id,
@@ -227,5 +228,6 @@ fn commit_to_info(commit: &git2::Commit<'_>) -> CommitInfo {
         committer: signature_to_model(&commit.committer()),
         time: git_time_to_datetime(commit.time()),
         parent_ids: commit.parent_ids().map(|oid| oid.to_string()).collect(),
+        is_signed,
     }
 }

@@ -11,6 +11,7 @@ use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
 use crate::config::AppConfig;
+use crate::undo::{UndoStack, UndoableOp};
 
 struct BackgroundRepoData {
     commits: Vec<CommitInfo>,
@@ -75,6 +76,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 use super::branches_tags_panel;
 use super::changes_view;
 use super::commit_list;
+use super::gitignore_editor;
 use super::preferences_dialog;
 use super::repo_tree;
 
@@ -148,8 +150,9 @@ mod imp {
         pub branches_local_list: RefCell<Option<gtk::ListBox>>,
         pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
         pub tags_list: RefCell<Option<gtk::ListBox>>,
-        // Changes view file list (set during setup_ui)
-        pub changes_file_list: RefCell<Option<gtk::ListBox>>,
+        // Changes view file lists (set during setup_ui)
+        pub unstaged_file_list: RefCell<Option<gtk::ListBox>>,
+        pub staged_file_list: RefCell<Option<gtk::ListBox>>,
         // Stashes list in right sidebar (set during setup_ui)
         pub stashes_list: RefCell<Option<gtk::ListBox>>,
         // Sidebar header title (folder name)
@@ -161,6 +164,8 @@ mod imp {
         pub menu_btn: gtk::MenuButton,
         /// Number of commits currently loaded (for pagination).
         pub commits_loaded_count: Cell<usize>,
+        /// Undo/redo stack for staging operations.
+        pub undo_stack: RefCell<UndoStack>,
     }
 
     impl Default for GitpulsarWindow {
@@ -214,7 +219,8 @@ mod imp {
                 branches_local_list: RefCell::new(None),
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
-                changes_file_list: RefCell::new(None),
+                unstaged_file_list: RefCell::new(None),
+                staged_file_list: RefCell::new(None),
                 stashes_list: RefCell::new(None),
                 sidebar_title_label: gtk::Label::builder()
                     .label("Gitpulsar")
@@ -236,6 +242,7 @@ mod imp {
                     .tooltip_text("Menu")
                     .build(),
                 commits_loaded_count: Cell::new(0),
+                undo_stack: RefCell::new(UndoStack::default()),
             }
         }
     }
@@ -578,18 +585,62 @@ impl GitpulsarWindow {
             win.on_unstage_all();
         });
 
-        // Connect file row activation — toggle diff accordion
-        let changes_fl = changes_refs.file_list_box.clone();
+        // Connect file row activation — toggle diff accordion (both lists)
         let win = self.clone();
-        changes_fl.connect_row_activated(move |_, row| {
+        changes_refs.unstaged_list_box.connect_row_activated(move |_, row| {
+            win.on_changes_file_activated(row);
+        });
+        let win = self.clone();
+        changes_refs.staged_list_box.connect_row_activated(move |_, row| {
             win.on_changes_file_activated(row);
         });
 
-        // Connect per-row stage/unstage/discard buttons
-        self.setup_changes_row_button_signals(&changes_refs.file_list_box);
+        // Connect per-row stage/unstage/discard buttons (both lists)
+        self.setup_changes_row_button_signals(&changes_refs.unstaged_list_box);
+        self.setup_changes_row_button_signals(&changes_refs.staged_list_box);
 
-        // Store changes file list ref
-        *imp.changes_file_list.borrow_mut() = Some(changes_refs.file_list_box.clone());
+        // DnD drop handlers — drop on unstaged list = unstage, drop on staged = stage
+        {
+            let win = self.clone();
+            let unstaged_list = changes_refs.unstaged_list_box.clone();
+            // Find the DropTarget on unstaged list
+            for ctrl in unstaged_list.observe_controllers().into_iter() {
+                if let Some(ctrl) = ctrl.ok() {
+                    if let Ok(dt) = ctrl.downcast::<gtk::DropTarget>() {
+                        dt.connect_drop(move |_, value, _, _| {
+                            if let Ok(path) = value.get::<String>() {
+                                win.unstage_file(&path);
+                                return true;
+                            }
+                            false
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        {
+            let win = self.clone();
+            let staged_list = changes_refs.staged_list_box.clone();
+            for ctrl in staged_list.observe_controllers().into_iter() {
+                if let Some(ctrl) = ctrl.ok() {
+                    if let Ok(dt) = ctrl.downcast::<gtk::DropTarget>() {
+                        dt.connect_drop(move |_, value, _, _| {
+                            if let Ok(path) = value.get::<String>() {
+                                win.stage_file(&path);
+                                return true;
+                            }
+                            false
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Store changes file list refs
+        *imp.unstaged_file_list.borrow_mut() = Some(changes_refs.unstaged_list_box.clone());
+        *imp.staged_file_list.borrow_mut() = Some(changes_refs.staged_list_box.clone());
 
         // --- ViewStack setup ---
         imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "emoji-recent-symbolic");
@@ -862,6 +913,7 @@ impl GitpulsarWindow {
             menu_model.append_submenu(Some("Recent"), &recent_submenu);
         }
 
+        menu_model.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
         menu_model.append(Some("Preferences"), Some("win.preferences"));
         menu_model.append(Some("About Gitpulsar"), Some("win.about"));
 
@@ -1023,7 +1075,7 @@ impl GitpulsarWindow {
             let dialog = adw::AboutWindow::builder()
                 .application_name("Gitpulsar")
                 .application_icon("dev.gitpulsar.Gitpulsar")
-                .developer_name("Gitpulsar")
+                .developer_name("Ilshat Ishdavletov")
                 .version(env!("CARGO_PKG_VERSION"))
                 .website("https://gitlab.com/ilshat.ishdavletov/gitpulsar")
                 .license_type(gtk::License::Gpl30)
@@ -1033,6 +1085,30 @@ impl GitpulsarWindow {
             dialog.present();
         });
         self.add_action(&about_action);
+
+        // Undo
+        let undo_action = gio::SimpleAction::new("undo", None);
+        let window = self.clone();
+        undo_action.connect_activate(move |_, _| {
+            window.on_undo();
+        });
+        self.add_action(&undo_action);
+
+        // Redo
+        let redo_action = gio::SimpleAction::new("redo", None);
+        let window = self.clone();
+        redo_action.connect_activate(move |_, _| {
+            window.on_redo();
+        });
+        self.add_action(&redo_action);
+
+        // Edit .gitignore
+        let gitignore_action = gio::SimpleAction::new("edit-gitignore", None);
+        let window = self.clone();
+        gitignore_action.connect_activate(move |_, _| {
+            window.open_gitignore_editor();
+        });
+        self.add_action(&gitignore_action);
     }
 
     /// Open a workspace folder (or single repo).
@@ -1455,6 +1531,7 @@ impl GitpulsarWindow {
                 tracing::error!("Failed to stage all: {}", e);
             }
             drop(repo_ref);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageAll);
             self.refresh_staging();
         }
     }
@@ -1466,6 +1543,7 @@ impl GitpulsarWindow {
                 tracing::error!("Failed to unstage all: {}", e);
             }
             drop(repo_ref);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageAll);
             self.refresh_staging();
         }
     }
@@ -1477,6 +1555,7 @@ impl GitpulsarWindow {
                 tracing::error!("Failed to stage {}: {}", path, e);
             }
             drop(repo_ref);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageFile(path.to_string()));
             self.refresh_staging();
         }
     }
@@ -1488,6 +1567,7 @@ impl GitpulsarWindow {
                 tracing::error!("Failed to unstage {}: {}", path, e);
             }
             drop(repo_ref);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageFile(path.to_string()));
             self.refresh_staging();
         }
     }
@@ -1497,7 +1577,7 @@ impl GitpulsarWindow {
             Some(self),
             Some("Discard Changes?"),
             Some(&format!(
-                "This will permanently discard all changes to:\n\n<b>{}</b>\n\nThis cannot be undone.",
+                "This will permanently discard all changes to:\n\n<b>{}</b>",
                 glib::markup_escape_text(path)
             )),
         );
@@ -1514,8 +1594,16 @@ impl GitpulsarWindow {
             if response == "discard" {
                 let repo_ref = win.imp().repo.borrow();
                 if let Some(ref repo) = *repo_ref {
+                    // Save content before discard for undo
+                    let full_path = repo.path().join(&file_path);
+                    let saved_content = std::fs::read(&full_path).unwrap_or_default();
+
                     if let Err(e) = repo.discard_file(&file_path) {
                         tracing::error!("Failed to discard {}: {}", file_path, e);
+                    } else {
+                        win.imp().undo_stack.borrow_mut().push(
+                            UndoableOp::Discard(file_path.clone(), saved_content),
+                        );
                     }
                     drop(repo_ref);
                     win.refresh_staging();
@@ -1523,6 +1611,67 @@ impl GitpulsarWindow {
             }
         });
         dialog.present();
+    }
+
+    fn stage_hunk(&self, path: &str, hunk_index: usize) {
+        let repo_ref = self.imp().repo.borrow();
+        if let Some(ref repo) = *repo_ref {
+            if let Err(e) = repo.stage_hunk(path, hunk_index) {
+                tracing::error!("Failed to stage hunk {} of {}: {}", hunk_index, path, e);
+                self.show_toast(&format!("Failed to stage hunk: {}", e));
+            }
+            drop(repo_ref);
+            self.refresh_staging();
+        }
+    }
+
+    fn unstage_hunk(&self, path: &str, hunk_index: usize) {
+        let repo_ref = self.imp().repo.borrow();
+        if let Some(ref repo) = *repo_ref {
+            if let Err(e) = repo.unstage_hunk(path, hunk_index) {
+                tracing::error!("Failed to unstage hunk {} of {}: {}", hunk_index, path, e);
+                self.show_toast(&format!("Failed to unstage hunk: {}", e));
+            }
+            drop(repo_ref);
+            self.refresh_staging();
+        }
+    }
+
+    fn on_undo(&self) {
+        let op = self.imp().undo_stack.borrow_mut().undo();
+        let Some(op) = op else { return };
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+
+        match op {
+            UndoableOp::StageFile(path) => { let _ = repo.unstage_file(&path); }
+            UndoableOp::UnstageFile(path) => { let _ = repo.stage_file(&path); }
+            UndoableOp::StageAll => { let _ = repo.unstage_all(); }
+            UndoableOp::UnstageAll => { let _ = repo.stage_all(); }
+            UndoableOp::Discard(path, content) => {
+                let full_path = repo.path().join(&path);
+                let _ = std::fs::write(&full_path, &content);
+            }
+        }
+        drop(repo_ref);
+        self.refresh_staging();
+    }
+
+    fn on_redo(&self) {
+        let op = self.imp().undo_stack.borrow_mut().redo();
+        let Some(op) = op else { return };
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+
+        match op {
+            UndoableOp::StageFile(path) => { let _ = repo.stage_file(&path); }
+            UndoableOp::UnstageFile(path) => { let _ = repo.unstage_file(&path); }
+            UndoableOp::StageAll => { let _ = repo.stage_all(); }
+            UndoableOp::UnstageAll => { let _ = repo.unstage_all(); }
+            UndoableOp::Discard(path, _) => { let _ = repo.discard_file(&path); }
+        }
+        drop(repo_ref);
+        self.refresh_staging();
     }
 
     /// Update the sidebar status bar with repo name and git status summary.
@@ -1579,10 +1728,12 @@ impl GitpulsarWindow {
 
     /// Populate the changes view file list from a RepoStatus.
     fn refresh_changes_list(&self, status: &RepoStatus) {
-        let list = self.imp().changes_file_list.borrow().clone();
-        if let Some(ref list_box) = list {
+        let imp = self.imp();
+        let unstaged = imp.unstaged_file_list.borrow().clone();
+        let staged = imp.staged_file_list.borrow().clone();
+        if let (Some(ref ul), Some(ref sl)) = (unstaged, staged) {
             let files = changes_view::collect_changed_files(status);
-            changes_view::populate_file_list(list_box, &files);
+            changes_view::populate_file_lists(ul, sl, &files);
         }
     }
 
@@ -1599,12 +1750,48 @@ impl GitpulsarWindow {
             let repo_ref = self.imp().repo.borrow();
             let Some(ref repo) = *repo_ref else { return };
 
-            // Try to get diff for this file — try unstaged first, then staged, then untracked
+            // Determine if file is staged
+            let is_staged = {
+                let diffs = self.imp().cached_staged_diffs.borrow();
+                diffs.iter().any(|f| f.path == file_path)
+            };
+
+            // Try to get diff for this file
             let diff_file = self.get_file_diff(repo, &file_path);
 
-            if let Some(file) = diff_file {
+            if let Some(ref file) = diff_file {
                 if let Some(tv) = changes_view::get_diff_textview(row) {
-                    changes_view::render_file_diff(&tv, &file);
+                    changes_view::render_file_diff(&tv, file);
+                }
+                // Populate hunk action buttons
+                if let Some(hunk_box) = changes_view::get_hunk_actions_box(row) {
+                    changes_view::populate_hunk_actions(&hunk_box, file.hunks.len(), is_staged);
+                    // Connect hunk buttons
+                    let win = self.clone();
+                    let fp = file_path.clone();
+                    let gesture = gtk::GestureClick::new();
+                    gesture.connect_released(move |gesture, _, x, y| {
+                        let Some(widget) = gesture.widget() else { return };
+                        let Some(target) = widget.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
+                        let mut current = Some(target);
+                        while let Some(w) = current {
+                            if let Ok(btn) = w.clone().downcast::<gtk::Button>() {
+                                let name = btn.widget_name().to_string();
+                                if let Some(idx_str) = name.strip_prefix("stage-hunk-") {
+                                    if let Ok(idx) = idx_str.parse::<usize>() {
+                                        win.stage_hunk(&fp, idx);
+                                    }
+                                } else if let Some(idx_str) = name.strip_prefix("unstage-hunk-") {
+                                    if let Ok(idx) = idx_str.parse::<usize>() {
+                                        win.unstage_hunk(&fp, idx);
+                                    }
+                                }
+                                return;
+                            }
+                            current = w.parent();
+                        }
+                    });
+                    hunk_box.add_controller(gesture);
                 }
             }
         }
@@ -1964,6 +2151,30 @@ impl GitpulsarWindow {
             glib::ControlFlow::Continue
         });
         *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
+    }
+
+    fn open_gitignore_editor(&self) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+        let content = repo.read_gitignore().unwrap_or_default();
+        let repo_path = repo.path().to_string_lossy().to_string();
+        drop(repo_ref);
+
+        let win = self.clone();
+        let dialog = gitignore_editor::build_gitignore_editor(&content, move |new_content| {
+            if let Ok(repo) = GitRepo::open(&repo_path) {
+                match repo.write_gitignore(&new_content) {
+                    Ok(()) => {
+                        win.show_toast("Saved .gitignore");
+                        win.trigger_background_refresh();
+                    }
+                    Err(e) => win.show_toast(&format!("Error: {}", e)),
+                }
+            }
+        });
+        dialog.set_transient_for(Some(self));
+        dialog.set_modal(true);
+        dialog.present();
     }
 
     fn open_preferences(&self) {

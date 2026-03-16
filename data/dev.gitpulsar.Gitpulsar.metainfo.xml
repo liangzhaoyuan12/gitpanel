@@ -17,13 +17,18 @@
     </p>
     <p>Features:</p>
     <ul>
-      <li>Multi-repository workspace support</li>
-      <li>Side-by-side and unified diff views</li>
-      <li>Staging area with per-file stage/unstage/discard</li>
-      <li>Branch management (create, checkout, remote tracking)</li>
-      <li>Remote operations (fetch, pull, push)</li>
-      <li>Stash support (save, pop, list, drop)</li>
-      <li>Commit search and filtering</li>
+      <li>Multi-repository workspace support with parallel scanning</li>
+      <li>Syntax-highlighted diffs with dark/light theme support</li>
+      <li>Split staged/unstaged lists with drag-and-drop</li>
+      <li>Partial staging — stage individual hunks</li>
+      <li>Undo/redo for staging operations and discards</li>
+      <li>Paginated commit history with async file loading</li>
+      <li>Branch management, tags, stashes with search</li>
+      <li>Remote operations (fetch, pull, push) via git CLI</li>
+      <li>Merge conflict detection and interactive rebase</li>
+      <li>Submodules and worktrees management</li>
+      <li>Commit signing indicator</li>
+      <li>.gitignore editor</li>
       <li>Adaptive layout for mobile and desktop</li>
     </ul>
   </description>
@@ -31,7 +36,7 @@
   <launchable type="desktop-id">dev.gitpulsar.Gitpulsar.desktop</launchable>
 
   <developer id="dev.gitpulsar">
-    <name>Gitpulsar Developers</name>
+    <name>Ilshat Ishdavletov</name>
   </developer>
 
   <url type="homepage">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
@@ -40,6 +45,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.3.0" date="2026-03-16">
+      <description>
+        <p>Major feature release: syntax-highlighted diffs, split staged/unstaged with drag-and-drop, partial hunk staging, undo/redo, paginated commits, parallel workspace scanning, merge/rebase support, submodules, worktrees, commit signing indicator, .gitignore editor, performance optimizations.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-03-06">
       <description>
         <p>Auto set-upstream on push, layout and stability fixes.</p>

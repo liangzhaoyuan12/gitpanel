@@ -7,45 +7,124 @@ A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 ## Features
 
 - **Multi-repo workspace** — open a folder, browse all Git repositories inside
-- **Commit history** — searchable list with expandable details, file diffs, tags
+- **Commit history** — searchable list with expandable details, paginated loading
+- **Commit detail** — prominent message display, file list with configurable limit, collapsible technical details
 - **Branch graph** — visual branch topology in a separate window
-- **Staging area** — per-file stage/unstage/discard with inline diffs
+- **Staging area** — split unstaged/staged lists with drag-and-drop, per-file and per-hunk stage/unstage/discard
+- **Partial staging** — stage/unstage individual hunks within a file
+- **Syntax highlighting** — language-aware diff coloring with dark/light theme support
+- **Undo/redo** — undo staging operations and file discards (Ctrl+Z / Ctrl+Shift+Z)
 - **Branch management** — create, checkout local/remote branches
 - **Remote operations** — fetch, pull, push via git CLI (reliable SSH support)
 - **Stash** — save, pop, list, drop
 - **Commit editing** — amend, edit message, cherry-pick, revert
+- **Commit signing** — signed commit indicator (lock icon)
+- **Merge & rebase** — conflict detection, continue/abort merge and rebase
+- **Interactive rebase** — reorder, squash, fixup, reword, drop commits
+- **Submodules** — list, init, update submodules
+- **Worktrees** — list, add, remove git worktrees
+- **.gitignore editor** — edit .gitignore from the app menu
 - **Adaptive layout** — responsive 3-panel design for desktop and mobile
 - **Auto-refresh** — configurable polling with hash-based skip
-- **Preferences** — date format, refresh interval
+- **Preferences** — date format, refresh interval, commit files limit
+
+## Usage
+
+### Getting started
+
+Open a workspace folder or a single Git repository:
+
+```sh
+gitpulsar-gtk /path/to/projects   # open a folder with multiple repos
+gitpulsar-gtk /path/to/repo       # open a single repository
+```
+
+Or use **Ctrl+O** inside the app to open a folder. If the folder contains multiple Git repositories, they appear in the left sidebar. Click a repository to select it.
+
+### Working with changes
+
+1. Switch to the **Changes** tab (Ctrl+2) to see unstaged and staged files in separate lists.
+2. Click a file to expand its inline diff with syntax highlighting.
+3. Use the **+** button to stage a file, or **drag-and-drop** files between the Unstaged and Staged lists.
+4. For multi-hunk files, use **Stage Hunk** buttons to stage individual hunks.
+5. Use **Stage All** / **Unstage All** buttons or Ctrl+Shift+S / Ctrl+Shift+U.
+6. Type a commit message and press **Commit** (Ctrl+Enter).
+7. Mistakes? **Ctrl+Z** undoes staging operations, even file discards.
+
+### Browsing history
+
+The **Commits** tab (Ctrl+1) shows the commit log with expandable details:
+- Click a commit to see the full message (prominently displayed), changed files, and collapsible technical details (SHA, parent, author, date).
+- Scroll to the bottom and click **Load more commits** for older history.
+- Signed commits show a lock icon.
+
+### Remote operations
+
+- **Fetch** (Ctrl+Shift+F), **Pull** (Ctrl+Shift+L), **Push** (Ctrl+Shift+P)
+- Force push is available from the hamburger menu.
+
+### Other tools
+
+- **Stash**: Ctrl+Alt+S to save, Ctrl+Alt+P to pop. Manage stashes in the right sidebar.
+- **Branches & Tags**: Create, checkout, and search in the right sidebar panel.
+- **.gitignore**: Edit from the hamburger menu (Menu → Edit .gitignore).
+- **Preferences**: Date format, auto-refresh interval, commit files limit.
 
 ## Architecture
 
 ```
 crates/
 ├── gitpulsar-core/        # Git operations library (git2-rs + git CLI)
-│   ├── repository.rs      # Repo open, status, log, branches, ahead/behind
-│   ├── staging.rs          # Stage, unstage, commit, discard
+│   ├── repository.rs      # Repo open, status, log (paginated), branches, ahead/behind
+│   ├── staging.rs          # Stage, unstage, commit, discard, hunk-level staging
 │   ├── remote.rs           # Fetch, pull, push (git2 for local, CLI for remote)
 │   ├── branch.rs           # Checkout, create branches
 │   ├── diff.rs             # Commit, staged, unstaged diffs
 │   ├── stash.rs            # Stash save, pop, list, drop
-│   ├── workspace.rs        # Multi-repo workspace scanning
+│   ├── workspace.rs        # Multi-repo workspace scanning (parallel)
+│   ├── merge.rs            # Conflict detection, continue/abort merge & rebase
+│   ├── rebase.rs           # Interactive rebase via GIT_SEQUENCE_EDITOR
+│   ├── submodules.rs       # Submodule list, init, update
+│   ├── worktrees.rs        # Worktree list, add, remove
+│   ├── gitignore.rs        # Read/write .gitignore
 │   └── models.rs           # Data types (CommitInfo, BranchInfo, DiffFile, etc.)
 └── gitpulsar-gtk/          # GTK4 + libadwaita frontend
-    ├── app.rs              # Application setup
+    ├── app.rs              # Application setup + keyboard shortcuts
     ├── main.rs             # Entry point
-    ├── config.rs           # Preferences (date format, refresh interval)
+    ├── config.rs           # Preferences (date format, refresh interval, files limit)
+    ├── undo.rs             # Undo/redo stack for staging operations
     └── widgets/
-        ├── window.rs              # Main window, layout, actions
-        ├── commit_list.rs         # Expandable commit rows
+        ├── window.rs              # Main window, layout, actions, state
+        ├── commit_list.rs         # Expandable commit rows with new layout
         ├── commit_graph.rs        # Branch graph (cairo rendering)
-        ├── changes_view.rs        # Staging area with inline diffs
-        ├── branches_tags_panel.rs # Right sidebar (branches, remotes, tags)
+        ├── changes_view.rs        # Split staged/unstaged lists, DnD, hunk actions
+        ├── branches_tags_panel.rs # Right sidebar (branches, remotes, tags, stashes)
         ├── repo_tree.rs           # Repository tree with indicators
-        └── preferences_dialog.rs  # Settings dialog
+        ├── preferences_dialog.rs  # Settings dialog
+        ├── gitignore_editor.rs    # .gitignore editor dialog
+        └── syntax.rs              # Syntax highlighting via syntect
 ```
 
 Core is a standalone library with no UI dependencies, designed for pluggable frontends.
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+O | Open workspace/repo |
+| Ctrl+Enter | Commit |
+| Ctrl+Shift+S | Stage all |
+| Ctrl+Shift+U | Unstage all |
+| Ctrl+Z | Undo |
+| Ctrl+Shift+Z | Redo |
+| Ctrl+Shift+F | Fetch |
+| Ctrl+Shift+P | Push |
+| Ctrl+Shift+L | Pull |
+| Ctrl+1 | Show commits |
+| Ctrl+2 | Show changes |
+| Ctrl+F | Focus search |
+| Ctrl+Alt+S | Stash save |
+| Ctrl+Alt+P | Stash pop |
 
 ## Requirements
 
@@ -103,6 +182,11 @@ cargo run -p gitpulsar-gtk
 ```sh
 make uninstall
 ```
+
+## Documentation
+
+- [User Guide (English)](docs/guide-en.md)
+- [Руководство пользователя (Русский)](docs/guide-ru.md)
 
 ## License
 

@@ -64,6 +64,17 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
 
     row_box.append(&info_box);
 
+    // Signed commit indicator
+    if commit.is_signed {
+        let signed_icon = gtk::Image::builder()
+            .icon_name("channel-secure-symbolic")
+            .css_classes(["dim-label"])
+            .tooltip_text("Signed commit")
+            .valign(gtk::Align::Center)
+            .build();
+        row_box.append(&signed_icon);
+    }
+
     // Edit message button (pencil icon, only for HEAD commit)
     if is_head {
         let edit_msg_btn = gtk::Button::builder()

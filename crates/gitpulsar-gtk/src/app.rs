@@ -53,8 +53,10 @@ impl GitpulsarApp {
         app.set_accels_for_action("win.show-commits", &["<Control>1"]);
         app.set_accels_for_action("win.show-changes", &["<Control>2"]);
         app.set_accels_for_action("win.focus-search", &["<Control>f"]);
-        app.set_accels_for_action("win.stash-save", &["<Control>z"]);
-        app.set_accels_for_action("win.stash-pop", &["<Control><Shift>z"]);
+        app.set_accels_for_action("win.undo", &["<Control>z"]);
+        app.set_accels_for_action("win.redo", &["<Control><Shift>z"]);
+        app.set_accels_for_action("win.stash-save", &["<Control><Alt>s"]);
+        app.set_accels_for_action("win.stash-pop", &["<Control><Alt>p"]);
 
         Self { app }
     }

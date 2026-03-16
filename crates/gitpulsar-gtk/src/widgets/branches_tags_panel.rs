@@ -117,11 +117,13 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let ll = local_list.clone();
     let rl = remote_list.clone();
     let tl = tags_list.clone();
+    let sl = stashes_list.clone();
     search_entry.connect_search_changed(move |entry| {
         let query = entry.text().to_lowercase();
         let q1 = query.clone();
         let q2 = query.clone();
-        let q3 = query;
+        let q3 = query.clone();
+        let q4 = query;
         ll.set_filter_func(move |row| {
             q1.is_empty() || row.widget_name().to_lowercase().contains(&q1)
         });
@@ -130,6 +132,9 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
         });
         tl.set_filter_func(move |row| {
             q3.is_empty() || row.widget_name().to_lowercase().contains(&q3)
+        });
+        sl.set_filter_func(move |row| {
+            q4.is_empty() || row.widget_name().to_lowercase().contains(&q4)
         });
     });
 

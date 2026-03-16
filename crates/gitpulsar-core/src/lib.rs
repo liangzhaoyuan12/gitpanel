@@ -9,3 +9,8 @@ pub mod stash;
 pub mod tags;
 pub mod blame;
 pub mod commit_ops;
+pub mod gitignore;
+pub mod submodules;
+pub mod worktrees;
+pub mod merge;
+pub mod rebase;

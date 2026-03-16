@@ -11,6 +11,8 @@ pub struct CommitInfo {
     pub committer: Signature,
     pub time: DateTime<Utc>,
     pub parent_ids: Vec<String>,
+    #[serde(default)]
+    pub is_signed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,48 @@ pub enum ResetMode {
     Soft,
     Mixed,
     Hard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmoduleInfo {
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    pub head_id: Option<String>,
+    pub is_initialized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    pub name: String,
+    pub path: String,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictFile {
+    pub path: String,
+    pub ancestor: Option<Vec<u8>>,
+    pub ours: Option<Vec<u8>>,
+    pub theirs: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RebaseAction {
+    Pick,
+    Squash,
+    Fixup,
+    Reword,
+    Edit,
+    Drop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebaseEntry {
+    pub commit_id: String,
+    pub short_id: String,
+    pub message: String,
+    pub action: RebaseAction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

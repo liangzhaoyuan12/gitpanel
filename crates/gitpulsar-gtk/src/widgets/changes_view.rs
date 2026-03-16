@@ -1,10 +1,13 @@
 use adw::prelude::*;
 
-use gitpulsar_core::models::{DiffFile, FileStatusKind, RepoStatus};
+use gitpulsar_core::models::{DiffFile, DiffLineKind, FileStatusKind, RepoStatus};
+
+use super::syntax;
 
 /// Refs returned to window.rs for connecting signals.
 pub struct ChangesViewRefs {
-    pub file_list_box: gtk::ListBox,
+    pub unstaged_list_box: gtk::ListBox,
+    pub staged_list_box: gtk::ListBox,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
 }
@@ -88,29 +91,84 @@ pub fn build_changes_view(
 
     container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // === File list (accordion) ===
-    let file_list_box = gtk::ListBox::builder()
+    // === Scrollable area with two file lists ===
+    let lists_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    // Unstaged section
+    let unstaged_header = gtk::Label::builder()
+        .label("Unstaged Changes")
+        .css_classes(["caption", "dim-label"])
+        .xalign(0.0)
+        .margin_start(8)
+        .margin_top(6)
+        .margin_bottom(2)
+        .build();
+    lists_box.append(&unstaged_header);
+
+    let unstaged_list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
         .build();
-
-    let file_placeholder = gtk::Label::builder()
-        .label("No changes")
+    let unstaged_placeholder = gtk::Label::builder()
+        .label("No unstaged changes")
         .css_classes(["dim-label"])
-        .margin_top(24)
-        .margin_bottom(24)
+        .margin_top(12)
+        .margin_bottom(12)
         .build();
-    file_list_box.set_placeholder(Some(&file_placeholder));
+    unstaged_list_box.set_placeholder(Some(&unstaged_placeholder));
+
+    // DnD: drop target on unstaged list (accepts staged files to unstage)
+    let drop_unstaged = gtk::DropTarget::builder()
+        .actions(gtk::gdk::DragAction::MOVE)
+        .build();
+    drop_unstaged.set_types(&[gtk::glib::Type::STRING]);
+    unstaged_list_box.add_controller(drop_unstaged.clone());
+
+    lists_box.append(&unstaged_list_box);
+    lists_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    // Staged section
+    let staged_header = gtk::Label::builder()
+        .label("Staged Changes")
+        .css_classes(["caption", "dim-label"])
+        .xalign(0.0)
+        .margin_start(8)
+        .margin_top(6)
+        .margin_bottom(2)
+        .build();
+    lists_box.append(&staged_header);
+
+    let staged_list_box = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["navigation-sidebar"])
+        .build();
+    let staged_placeholder = gtk::Label::builder()
+        .label("No staged changes")
+        .css_classes(["dim-label"])
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    staged_list_box.set_placeholder(Some(&staged_placeholder));
+
+    // DnD: drop target on staged list (accepts unstaged files to stage)
+    let drop_staged = gtk::DropTarget::builder()
+        .actions(gtk::gdk::DragAction::MOVE)
+        .build();
+    drop_staged.set_types(&[gtk::glib::Type::STRING]);
+    staged_list_box.add_controller(drop_staged.clone());
+
+    lists_box.append(&staged_list_box);
 
     let file_scrolled = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
-    file_scrolled.set_child(Some(&file_list_box));
+    file_scrolled.set_child(Some(&lists_box));
     container.append(&file_scrolled);
 
     let refs = ChangesViewRefs {
-        file_list_box,
+        unstaged_list_box,
+        staged_list_box,
         stage_all_btn,
         unstage_all_btn,
     };
@@ -156,15 +214,36 @@ pub fn collect_changed_files(status: &RepoStatus) -> Vec<ChangedFileEntry> {
     files
 }
 
-/// Populate the file list with accordion rows.
-pub fn populate_file_list(list_box: &gtk::ListBox, files: &[ChangedFileEntry]) {
-    while let Some(child) = list_box.first_child() {
-        list_box.remove(&child);
+/// Populate both file lists (unstaged and staged) from the collected files.
+pub fn populate_file_lists(
+    unstaged_list: &gtk::ListBox,
+    staged_list: &gtk::ListBox,
+    files: &[ChangedFileEntry],
+) {
+    while let Some(child) = unstaged_list.first_child() {
+        unstaged_list.remove(&child);
+    }
+    while let Some(child) = staged_list.first_child() {
+        staged_list.remove(&child);
     }
 
     for file in files {
         let row = create_file_accordion_row(file);
-        list_box.append(&row);
+        // Add DnD source to each row
+        let path = file.path.clone();
+        let drag_source = gtk::DragSource::builder()
+            .actions(gtk::gdk::DragAction::MOVE)
+            .build();
+        drag_source.connect_prepare(move |_, _, _| {
+            Some(gtk::gdk::ContentProvider::for_value(&gtk::glib::Value::from(&path)))
+        });
+        row.add_controller(drag_source);
+
+        if file.is_staged {
+            staged_list.append(&row);
+        } else {
+            unstaged_list.append(&row);
+        }
     }
 }
 
@@ -268,6 +347,11 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     diff_box.set_margin_end(8);
     diff_box.set_margin_bottom(4);
 
+    // Hunk action buttons container (populated when diff is loaded)
+    let hunk_actions_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    hunk_actions_box.set_widget_name("hunk-actions-box");
+    diff_box.append(&hunk_actions_box);
+
     let diff_text = gtk::TextView::builder()
         .editable(false)
         .monospace(true)
@@ -342,39 +426,37 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     let buffer = textview.buffer();
     buffer.set_text("");
 
-    // Setup tags if not already
+    let is_dark = adw::StyleManager::default().is_dark();
+
+    // Setup diff tags (recreate on each render to handle theme changes)
     let tag_table = buffer.tag_table();
-    if tag_table.lookup("addition").is_none() {
-        let addition_tag = gtk::TextTag::builder()
-            .name("addition")
-            .background("#d4edda")
-            .foreground("#155724")
-            .build();
-        tag_table.add(&addition_tag);
-
-        let deletion_tag = gtk::TextTag::builder()
-            .name("deletion")
-            .background("#f8d7da")
-            .foreground("#721c24")
-            .build();
-        tag_table.add(&deletion_tag);
-
-        let hunk_tag = gtk::TextTag::builder()
-            .name("hunk-header")
-            .background("#ddf4ff")
-            .foreground("#0550ae")
-            .build();
-        tag_table.add(&hunk_tag);
-
-        let lineno_tag = gtk::TextTag::builder()
-            .name("lineno")
-            .foreground("#8b949e")
-            .build();
-        tag_table.add(&lineno_tag);
+    for name in &["addition", "deletion", "hunk-header", "lineno"] {
+        if let Some(tag) = tag_table.lookup(name) {
+            tag_table.remove(&tag);
+        }
     }
+
+    let (add_bg, add_fg, del_bg, del_fg, hunk_bg, hunk_fg, lineno_fg) = if is_dark {
+        ("#1a3a2a", "#a3d9a5", "#3a1a1a", "#d9a3a3", "#1a2a3a", "#6cb6ff", "#6e7681")
+    } else {
+        ("#d4edda", "#155724", "#f8d7da", "#721c24", "#ddf4ff", "#0550ae", "#8b949e")
+    };
+
+    tag_table.add(&gtk::TextTag::builder().name("addition").background(add_bg).foreground(add_fg).build());
+    tag_table.add(&gtk::TextTag::builder().name("deletion").background(del_bg).foreground(del_fg).build());
+    tag_table.add(&gtk::TextTag::builder().name("hunk-header").background(hunk_bg).foreground(hunk_fg).build());
+    tag_table.add(&gtk::TextTag::builder().name("lineno").foreground(lineno_fg).build());
+
+    // Collect all line contents for syntax highlighting
+    let syntax_ref = syntax::detect_syntax(&file.path);
+    let all_lines: Vec<&str> = file.hunks.iter()
+        .flat_map(|h| h.lines.iter().map(|l| l.content.as_str()))
+        .collect();
+    let highlights = syntax_ref.map(|sr| syntax::highlight_lines(sr, &all_lines, is_dark));
 
     let mut iter = buffer.end_iter();
     let mut line_count = 0;
+    let mut global_line_idx = 0;
 
     for hunk in &file.hunks {
         // Hunk header
@@ -385,32 +467,102 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
 
         for line in &hunk.lines {
             let prefix = match line.kind {
-                gitpulsar_core::models::DiffLineKind::Addition => "+",
-                gitpulsar_core::models::DiffLineKind::Deletion => "-",
-                gitpulsar_core::models::DiffLineKind::Context => " ",
+                DiffLineKind::Addition => "+",
+                DiffLineKind::Deletion => "-",
+                DiffLineKind::Context => " ",
             };
 
-            let start = iter.offset();
-            buffer.insert(&mut iter, &format!("{}{}\n", prefix, line.content));
+            let line_start = iter.offset();
+            let text = format!("{}{}\n", prefix, line.content);
+            buffer.insert(&mut iter, &text);
 
-            let tag_name = match line.kind {
-                gitpulsar_core::models::DiffLineKind::Addition => Some("addition"),
-                gitpulsar_core::models::DiffLineKind::Deletion => Some("deletion"),
-                gitpulsar_core::models::DiffLineKind::Context => None,
+            // Apply diff background tag
+            let diff_tag = match line.kind {
+                DiffLineKind::Addition => Some("addition"),
+                DiffLineKind::Deletion => Some("deletion"),
+                DiffLineKind::Context => None,
             };
-
-            if let Some(tag) = tag_name {
-                let start_iter = buffer.iter_at_offset(start);
-                buffer.apply_tag_by_name(tag, &start_iter, &iter);
+            if let Some(tag) = diff_tag {
+                let s = buffer.iter_at_offset(line_start);
+                buffer.apply_tag_by_name(tag, &s, &iter);
             }
 
+            // Apply syntax highlighting on top (foreground only, higher priority)
+            if let Some(ref hl) = highlights {
+                if let Some(spans) = hl.get(global_line_idx) {
+                    let content_offset = line_start + prefix.len() as i32;
+                    for span in spans {
+                        let tag_name = format!("syn_{:02x}{:02x}{:02x}", span.fg.0, span.fg.1, span.fg.2);
+                        if tag_table.lookup(&tag_name).is_none() {
+                            let color = format!("#{:02x}{:02x}{:02x}", span.fg.0, span.fg.1, span.fg.2);
+                            let tag = gtk::TextTag::builder()
+                                .name(&tag_name)
+                                .foreground(&color)
+                                .foreground_set(true)
+                                .build();
+                            tag.set_priority(tag_table.size() - 1);
+                            tag_table.add(&tag);
+                        }
+                        let s = buffer.iter_at_offset(content_offset + span.start as i32);
+                        let e = buffer.iter_at_offset(content_offset + span.end as i32);
+                        buffer.apply_tag_by_name(&tag_name, &s, &e);
+                    }
+                }
+            }
+
+            global_line_idx += 1;
             line_count += 1;
         }
     }
 
-    // Set height based on content (cap at ~20 lines)
+    // Set height based on content (cap at ~25 lines)
     let visible_lines = line_count.min(25).max(3);
     textview.set_height_request(visible_lines as i32 * 18);
+}
+
+/// Get the hunk-actions-box from a file row.
+pub fn get_hunk_actions_box(row: &gtk::ListBoxRow) -> Option<gtk::Box> {
+    let outer_box = row.child()?.downcast::<gtk::Box>().ok()?;
+    find_child_by_name(&outer_box, "hunk-actions-box")
+        .and_then(|w| w.downcast::<gtk::Box>().ok())
+}
+
+/// Populate hunk action buttons for a file diff.
+/// `is_staged` determines whether buttons say "Unstage Hunk" or "Stage Hunk".
+pub fn populate_hunk_actions(hunk_box: &gtk::Box, num_hunks: usize, is_staged: bool) {
+    while let Some(child) = hunk_box.first_child() {
+        hunk_box.remove(&child);
+    }
+
+    if num_hunks <= 1 {
+        return; // No point in per-hunk actions for single-hunk files
+    }
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.set_margin_start(4);
+    row.set_margin_top(2);
+    row.set_margin_bottom(2);
+
+    for i in 0..num_hunks {
+        let label = if is_staged {
+            format!("Unstage Hunk {}", i + 1)
+        } else {
+            format!("Stage Hunk {}", i + 1)
+        };
+        let btn = gtk::Button::builder()
+            .label(&label)
+            .css_classes(["flat", "caption"])
+            .build();
+        let name = if is_staged {
+            format!("unstage-hunk-{}", i)
+        } else {
+            format!("stage-hunk-{}", i)
+        };
+        btn.set_widget_name(&name);
+        row.append(&btn);
+    }
+
+    hunk_box.append(&row);
 }
 
 /// Get the file path from a changes row.

@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod undo;
 mod widgets;
 
 use app::GitpulsarApp;
