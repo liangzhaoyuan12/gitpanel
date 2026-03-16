@@ -64,7 +64,9 @@ release:
     - |
       # Extract release notes for this version from CHANGELOG.md
       VERSION="${CI_COMMIT_TAG#v}"
-      awk "/^## v${VERSION}/,/^## v/" CHANGELOG.md | head -n -1 | tail -n +2 > release_notes.md
+      # Extract section between "## vX.Y.Z" and next "## v" header
+      # Using sed instead of head -n -1 (not supported in BusyBox/Alpine)
+      awk "/^## v${VERSION}/,/^## v/" CHANGELOG.md | sed '1d;$d' > release_notes.md
       if [ ! -s release_notes.md ]; then
         echo "Release ${CI_COMMIT_TAG}" > release_notes.md
       fi
