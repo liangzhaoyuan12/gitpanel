@@ -81,6 +81,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 use super::branches_tags_panel;
 use super::changes_view;
 use super::commit_list;
+use super::conflict_editor;
 use super::gitignore_editor;
 use super::preferences_dialog;
 use super::rebase_editor;
@@ -176,6 +177,8 @@ mod imp {
         pub commits_loaded_count: Cell<usize>,
         /// Undo/redo stack for staging operations.
         pub undo_stack: RefCell<UndoStack>,
+        /// Current panel focus index for Tab cycling.
+        pub focus_panel_index: Cell<u8>,
     }
 
     impl Default for GitpulsarWindow {
@@ -256,6 +259,7 @@ mod imp {
                     .build(),
                 commits_loaded_count: Cell::new(0),
                 undo_stack: RefCell::new(UndoStack::default()),
+                focus_panel_index: Cell::new(0),
             }
         }
     }
@@ -295,6 +299,7 @@ impl GitpulsarWindow {
         window.setup_actions();
         window.setup_commit_context_menu();
         window.setup_branch_context_menu();
+        window.setup_keyboard_navigation();
         window.setup_auto_refresh();
 
         // Auto-open last workspace
@@ -535,7 +540,7 @@ impl GitpulsarWindow {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
 
-        imp.commit_list_box.set_selection_mode(gtk::SelectionMode::None);
+        imp.commit_list_box.set_selection_mode(gtk::SelectionMode::Browse);
         imp.commit_list_box.add_css_class("navigation-sidebar");
 
         let commits_placeholder = gtk::Label::builder()
@@ -1678,6 +1683,66 @@ impl GitpulsarWindow {
         }
     }
 
+    fn stage_selected_lines(&self, path: &str, is_unstage: bool) {
+        // Find the hunk_actions_box for this file — need to find the row
+        // Walk through both lists to find the row with this path
+        let imp = self.imp();
+        let lists = [
+            imp.unstaged_file_list.borrow().clone(),
+            imp.staged_file_list.borrow().clone(),
+        ];
+
+        for list_opt in &lists {
+            let Some(ref list) = list_opt else { continue };
+            let mut row_widget = list.first_child();
+            while let Some(ref rw) = row_widget {
+                if let Ok(row) = rw.clone().downcast::<gtk::ListBoxRow>() {
+                    if row.widget_name() == path {
+                        if let Some(hunk_box) = changes_view::get_hunk_actions_box(&row) {
+                            // Find line-selectors-box inside hunk_box
+                            let mut child = hunk_box.first_child();
+                            while let Some(c) = child {
+                                if c.widget_name() == "line-selectors-box" {
+                                    if let Ok(selectors_box) = c.downcast::<gtk::Box>() {
+                                        // Iterate over each hunk selector
+                                        let mut selector_child = selectors_box.first_child();
+                                        let mut hunk_idx = 0;
+                                        while let Some(sc) = selector_child {
+                                            if let Ok(selector) = sc.clone().downcast::<gtk::Box>() {
+                                                let indices = changes_view::collect_selected_lines(&selector);
+                                                if !indices.is_empty() {
+                                                    let repo_ref = self.imp().repo.borrow();
+                                                    if let Some(ref repo) = *repo_ref {
+                                                        let result = if is_unstage {
+                                                            repo.unstage_lines(path, hunk_idx, &indices)
+                                                        } else {
+                                                            repo.stage_lines(path, hunk_idx, &indices)
+                                                        };
+                                                        if let Err(e) = result {
+                                                            tracing::error!("Failed to stage lines: {}", e);
+                                                            self.show_toast(&format!("Failed: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                                hunk_idx += 1;
+                                            }
+                                            selector_child = sc.next_sibling();
+                                        }
+                                    }
+                                    break;
+                                }
+                                child = c.next_sibling();
+                            }
+                        }
+                        self.refresh_staging();
+                        return;
+                    }
+                }
+                row_widget = rw.next_sibling();
+            }
+        }
+    }
+
     fn on_undo(&self) {
         let op = self.imp().undo_stack.borrow_mut().undo();
         let Some(op) = op else { return };
@@ -1780,10 +1845,28 @@ impl GitpulsarWindow {
 
     /// Handle click on a file in the changes accordion — toggle inline diff.
     fn on_changes_file_activated(&self, row: &gtk::ListBoxRow) {
+        let file_path = row.widget_name().to_string();
+
+        // Check if this is a conflicted file — open conflict editor instead
+        {
+            let repo_ref = self.imp().repo.borrow();
+            if let Some(ref repo) = *repo_ref {
+                if repo.has_conflicts() {
+                    if let Ok(chunks) = repo.parse_conflicts(&file_path) {
+                        if chunks.iter().any(|c| c.is_conflict) {
+                            let fp = file_path.clone();
+                            drop(repo_ref);
+                            self.open_conflict_editor(&fp, &chunks);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         let expanded = changes_view::toggle_file_diff(row);
 
         if expanded {
-            let file_path = row.widget_name().to_string();
             if file_path.is_empty() {
                 return;
             }
@@ -1806,7 +1889,7 @@ impl GitpulsarWindow {
                 }
                 // Populate hunk action buttons
                 if let Some(hunk_box) = changes_view::get_hunk_actions_box(row) {
-                    changes_view::populate_hunk_actions(&hunk_box, file.hunks.len(), is_staged);
+                    changes_view::populate_hunk_actions(&hunk_box, &file.hunks, is_staged);
                     // Connect hunk buttons
                     let win = self.clone();
                     let fp = file_path.clone();
@@ -1826,6 +1909,8 @@ impl GitpulsarWindow {
                                     if let Ok(idx) = idx_str.parse::<usize>() {
                                         win.unstage_hunk(&fp, idx);
                                     }
+                                } else if name == "stage-selected-lines" || name == "unstage-selected-lines" {
+                                    win.stage_selected_lines(&fp, name == "unstage-selected-lines");
                                 }
                                 return;
                             }
@@ -2317,6 +2402,81 @@ impl GitpulsarWindow {
     // AUTO-REFRESH
     // ==========================================
 
+    fn setup_keyboard_navigation(&self) {
+        let win = self.clone();
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.connect_key_pressed(move |_, key, _, modifier| {
+            let imp = win.imp();
+            match key {
+                gdk::Key::Tab if !imp.commit_entry.has_focus() && !modifier.contains(gdk::ModifierType::SHIFT_MASK) => {
+                    win.cycle_focus(true);
+                    glib::Propagation::Stop
+                }
+                gdk::Key::ISO_Left_Tab | gdk::Key::Tab
+                    if !imp.commit_entry.has_focus() && modifier.contains(gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    win.cycle_focus(false);
+                    glib::Propagation::Stop
+                }
+                gdk::Key::Escape => {
+                    // Collapse any expanded commit detail
+                    if let Some(id) = imp.selected_commit_id.borrow().clone() {
+                        let commits = imp.commits.borrow();
+                        if let Some(idx) = commits.iter().position(|c| c.id == id) {
+                            if let Some(row) = imp.commit_list_box.row_at_index(idx as i32) {
+                                commit_list::toggle_detail(&row);
+                            }
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.add_controller(key_ctrl);
+    }
+
+    fn cycle_focus(&self, forward: bool) {
+        let imp = self.imp();
+        let is_commits = imp.view_stack.visible_child_name().as_deref() == Some("commits");
+
+        // Build list of focusable widgets for current view
+        let unstaged = imp.unstaged_file_list.borrow().clone();
+        let staged = imp.staged_file_list.borrow().clone();
+        let branches = imp.branches_local_list.borrow().clone();
+
+        let mut panels: Vec<&gtk::ListBox> = Vec::new();
+        if is_commits {
+            panels.push(&imp.commit_list_box);
+        } else {
+            if let Some(ref ul) = unstaged {
+                panels.push(ul);
+            }
+            if let Some(ref sl) = staged {
+                panels.push(sl);
+            }
+        }
+        if let Some(ref bl) = branches {
+            panels.push(bl);
+        }
+
+        if panels.is_empty() {
+            return;
+        }
+
+        let mut idx = imp.focus_panel_index.get() as usize;
+        if forward {
+            idx = (idx + 1) % panels.len();
+        } else {
+            idx = idx.checked_sub(1).unwrap_or(panels.len() - 1);
+        }
+        imp.focus_panel_index.set(idx as u8);
+
+        if let Some(panel) = panels.get(idx) {
+            panel.grab_focus();
+        }
+    }
+
     fn setup_auto_refresh(&self) {
         let interval = self.imp().config.borrow().refresh_interval_secs;
         self.start_refresh_timer(interval);
@@ -2339,6 +2499,29 @@ impl GitpulsarWindow {
             glib::ControlFlow::Continue
         });
         *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
+    }
+
+    fn open_conflict_editor(&self, path: &str, chunks: &[gitpulsar_core::conflict::ConflictChunk]) {
+        let repo_path = self.repo_path_string();
+        let Some(rp) = repo_path else { return };
+        let fp = path.to_string();
+
+        let win = self.clone();
+        let dialog = conflict_editor::build_conflict_editor(path, chunks, move |resolved_content| {
+            if let Ok(repo) = GitRepo::open(&rp) {
+                match repo.save_resolved_file(&fp, &resolved_content) {
+                    Ok(()) => {
+                        win.show_toast(&format!("Resolved: {}", fp));
+                        win.refresh_staging();
+                        win.trigger_background_refresh();
+                    }
+                    Err(e) => win.show_toast(&format!("Error: {}", e)),
+                }
+            }
+        });
+        dialog.set_transient_for(Some(self));
+        dialog.set_modal(true);
+        dialog.present();
     }
 
     fn show_rebase_editor(&self, commit_count: usize) {

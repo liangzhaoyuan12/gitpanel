@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.0 (2026-03-16)
+
+### New Features
+
+- **Conflict resolution editor** — 3-panel view (Ours | Result | Theirs) with "Accept All Ours/Theirs" and "Mark Resolved". Opens automatically when clicking a conflicted file
+- **Line-level staging** — "Select Lines" button in diff view shows per-line checkboxes, stage/unstage individual lines within a hunk
+- **Conventional commits** — prefix selector button in commit bar (feat/fix/docs/refactor/perf/test/ci/chore/revert), auto-replaces existing prefix
+- **Keyboard navigation** — Tab/Shift+Tab cycles focus between panels, Escape collapses expanded sections, arrow keys navigate lists
+- **Theme-aware diff badge colors** — Modified files use `accent` CSS class matching the changes view
+
 ## v0.3.1 (2026-03-16)
 
 ### New Features

@@ -79,6 +79,13 @@ pub fn build_changes_view(
     spacer.set_hexpand(true);
     action_row.append(&spacer);
 
+    // Conventional commit prefix button
+    let commit_entry_for_template = commit_entry.clone();
+    let template_btn = super::commit_templates::build_template_button(move |prefix| {
+        super::commit_templates::insert_prefix(&commit_entry_for_template.buffer(), prefix);
+    });
+    action_row.append(&template_btn);
+
     action_row.append(amend_check);
 
     commit_button.set_label("Commit");
@@ -529,40 +536,185 @@ pub fn get_hunk_actions_box(row: &gtk::ListBoxRow) -> Option<gtk::Box> {
 
 /// Populate hunk action buttons for a file diff.
 /// `is_staged` determines whether buttons say "Unstage Hunk" or "Stage Hunk".
-pub fn populate_hunk_actions(hunk_box: &gtk::Box, num_hunks: usize, is_staged: bool) {
+/// Populate hunk action buttons for a file diff.
+/// `is_staged` determines whether buttons say "Unstage Hunk" or "Stage Hunk".
+/// `hunks` are the actual diff hunks for building line selectors.
+pub fn populate_hunk_actions(
+    hunk_box: &gtk::Box,
+    hunks: &[gitpulsar_core::models::DiffHunk],
+    is_staged: bool,
+) {
     while let Some(child) = hunk_box.first_child() {
         hunk_box.remove(&child);
     }
 
-    if num_hunks <= 1 {
-        return; // No point in per-hunk actions for single-hunk files
+    let num_hunks = hunks.len();
+    if num_hunks == 0 {
+        return;
     }
 
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     row.set_margin_start(4);
     row.set_margin_top(2);
     row.set_margin_bottom(2);
+    row.set_widget_name("hunk-buttons-row");
 
-    for i in 0..num_hunks {
-        let label = if is_staged {
-            format!("Unstage Hunk {}", i + 1)
-        } else {
-            format!("Stage Hunk {}", i + 1)
-        };
-        let btn = gtk::Button::builder()
-            .label(&label)
-            .css_classes(["flat", "caption"])
-            .build();
-        let name = if is_staged {
-            format!("unstage-hunk-{}", i)
-        } else {
-            format!("stage-hunk-{}", i)
-        };
-        btn.set_widget_name(&name);
-        row.append(&btn);
+    // Hunk-level buttons (always show if multiple hunks)
+    if num_hunks > 1 {
+        for i in 0..num_hunks {
+            let label = if is_staged {
+                format!("Unstage Hunk {}", i + 1)
+            } else {
+                format!("Stage Hunk {}", i + 1)
+            };
+            let btn = gtk::Button::builder()
+                .label(&label)
+                .css_classes(["flat", "caption"])
+                .build();
+            let name = if is_staged {
+                format!("unstage-hunk-{}", i)
+            } else {
+                format!("stage-hunk-{}", i)
+            };
+            btn.set_widget_name(&name);
+            row.append(&btn);
+        }
     }
 
+    // "Select Lines" toggle — opens line-level selection UI
+    let select_lines_btn = gtk::Button::builder()
+        .label("Select Lines")
+        .css_classes(["flat", "caption"])
+        .build();
+    select_lines_btn.set_widget_name("select-lines-btn");
+    row.append(&select_lines_btn);
+
     hunk_box.append(&row);
+
+    // Prepare line selector containers (hidden initially)
+    let selectors_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    selectors_box.set_widget_name("line-selectors-box");
+    selectors_box.set_visible(false);
+
+    for (i, hunk) in hunks.iter().enumerate() {
+        let selector = build_line_selector(hunk, i);
+        selectors_box.append(&selector);
+    }
+
+    // "Stage Selected Lines" button (hidden initially)
+    let stage_lines_btn = gtk::Button::builder()
+        .label(if is_staged { "Unstage Selected Lines" } else { "Stage Selected Lines" })
+        .css_classes(["suggested-action", "caption"])
+        .margin_start(4)
+        .margin_top(4)
+        .build();
+    stage_lines_btn.set_widget_name(if is_staged { "unstage-selected-lines" } else { "stage-selected-lines" });
+    stage_lines_btn.set_visible(false);
+
+    hunk_box.append(&selectors_box);
+    hunk_box.append(&stage_lines_btn);
+
+    // Toggle line selection mode
+    {
+        let selectors = selectors_box.clone();
+        let stage_btn = stage_lines_btn.clone();
+        select_lines_btn.connect_clicked(move |btn| {
+            let visible = !selectors.is_visible();
+            selectors.set_visible(visible);
+            stage_btn.set_visible(visible);
+            btn.set_label(if visible { "Hide Lines" } else { "Select Lines" });
+        });
+    }
+}
+
+/// Build a line-selection ListBox for a single hunk.
+/// Returns the box and a closure to collect selected line indices.
+pub fn build_line_selector(hunk: &gitpulsar_core::models::DiffHunk, hunk_index: usize) -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    container.set_widget_name(&format!("line-selector-{}", hunk_index));
+    container.add_css_class("card");
+    container.set_margin_start(4);
+    container.set_margin_end(4);
+    container.set_margin_top(2);
+    container.set_margin_bottom(2);
+
+    // Hunk header
+    let header_label = gtk::Label::builder()
+        .label(&hunk.header)
+        .css_classes(["caption", "monospace", "dim-label"])
+        .xalign(0.0)
+        .margin_start(4)
+        .margin_top(2)
+        .build();
+    container.append(&header_label);
+
+    for (i, line) in hunk.lines.iter().enumerate() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        row.set_margin_start(4);
+
+        let is_changeable = matches!(line.kind, DiffLineKind::Addition | DiffLineKind::Deletion);
+
+        if is_changeable {
+            let check = gtk::CheckButton::new();
+            check.set_active(false);
+            check.set_widget_name(&format!("line-check-{}-{}", hunk_index, i));
+            row.append(&check);
+        } else {
+            // Spacer to align with checkboxes
+            let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            spacer.set_width_request(20);
+            row.append(&spacer);
+        }
+
+        let prefix = match line.kind {
+            DiffLineKind::Addition => "+",
+            DiffLineKind::Deletion => "-",
+            DiffLineKind::Context => " ",
+        };
+        let css = match line.kind {
+            DiffLineKind::Addition => "success",
+            DiffLineKind::Deletion => "error",
+            DiffLineKind::Context => "dim-label",
+        };
+
+        let content = gtk::Label::builder()
+            .label(&format!("{}{}", prefix, line.content.trim_end()))
+            .css_classes(["caption", "monospace", css])
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .hexpand(true)
+            .build();
+        row.append(&content);
+
+        container.append(&row);
+    }
+
+    container
+}
+
+/// Collect checked line indices from a line-selector box.
+pub fn collect_selected_lines(selector: &gtk::Box) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let mut child = selector.first_child();
+    while let Some(c) = child {
+        if let Ok(row) = c.clone().downcast::<gtk::Box>() {
+            if let Some(first) = row.first_child() {
+                if let Ok(check) = first.downcast::<gtk::CheckButton>() {
+                    if check.is_active() {
+                        let name = check.widget_name().to_string();
+                        // Parse "line-check-{hunk}-{line}"
+                        if let Some(idx_str) = name.rsplit('-').next() {
+                            if let Ok(idx) = idx_str.parse::<usize>() {
+                                indices.push(idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        child = c.next_sibling();
+    }
+    indices
 }
 
 /// Get the file path from a changes row.

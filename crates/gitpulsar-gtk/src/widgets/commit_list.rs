@@ -446,7 +446,7 @@ fn diff_file_badge(file: &DiffFile) -> (&'static str, &'static str) {
     } else if has_deletions && !has_additions {
         ("D", "error")
     } else {
-        ("M", "warning")
+        ("M", "accent")
     }
 }
 

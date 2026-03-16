@@ -14,3 +14,4 @@ pub mod submodules;
 pub mod worktrees;
 pub mod merge;
 pub mod rebase;
+pub mod conflict;
