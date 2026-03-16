@@ -1,12 +1,68 @@
 use adw::prelude::*;
 
-use gitpulsar_core::models::{BranchInfo, StashEntry, TagInfo};
+use gitpulsar_core::models::{BranchInfo, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo};
+
+/// Build a collapsible section: clickable header that toggles list visibility.
+fn build_collapsible_section(parent: &gtk::Box, title: &str, expanded: bool) -> gtk::ListBox {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let header_btn = gtk::Button::builder()
+        .css_classes(["flat"])
+        .build();
+    let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    header_box.set_margin_start(8);
+    header_box.set_margin_top(4);
+    header_box.set_margin_bottom(2);
+
+    let icon_name = if expanded { "pan-down-symbolic" } else { "pan-end-symbolic" };
+    let arrow = gtk::Image::builder()
+        .icon_name(icon_name)
+        .css_classes(["dim-label"])
+        .build();
+    header_box.append(&arrow);
+
+    let label = gtk::Label::builder()
+        .label(title)
+        .css_classes(["heading"])
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    label.set_widget_name(&format!("section-label-{}", title.to_lowercase()));
+    header_box.append(&label);
+
+    header_btn.set_child(Some(&header_box));
+    section.append(&header_btn);
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["navigation-sidebar"])
+        .build();
+    list.set_visible(expanded);
+    section.append(&list);
+
+    let list_ref = list.clone();
+    let arrow_ref = arrow.clone();
+    header_btn.connect_clicked(move |_| {
+        let visible = !list_ref.is_visible();
+        list_ref.set_visible(visible);
+        arrow_ref.set_icon_name(Some(if visible {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        }));
+    });
+
+    parent.append(&section);
+    list
+}
 
 pub struct BranchesTagsRefs {
     pub local_list: gtk::ListBox,
     pub remote_list: gtk::ListBox,
     pub tags_list: gtk::ListBox,
     pub stashes_list: gtk::ListBox,
+    pub submodules_list: gtk::ListBox,
+    pub worktrees_list: gtk::ListBox,
     pub create_branch_btn: gtk::Button,
 }
 
@@ -31,73 +87,12 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
 
     let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // === Local Branches ===
-    let local_header = gtk::Label::builder()
-        .label("Local")
-        .css_classes(["heading"])
-        .xalign(0.0)
-        .margin_start(12)
-        .margin_top(8)
-        .margin_bottom(4)
-        .build();
-    inner.append(&local_header);
-
-    let local_list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
-    inner.append(&local_list);
-
-    // === Remote Branches ===
-    let remote_header = gtk::Label::builder()
-        .label("Remote")
-        .css_classes(["heading"])
-        .xalign(0.0)
-        .margin_start(12)
-        .margin_top(8)
-        .margin_bottom(4)
-        .build();
-    inner.append(&remote_header);
-
-    let remote_list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
-    inner.append(&remote_list);
-
-    // === Tags ===
-    let tags_header = gtk::Label::builder()
-        .label("Tags")
-        .css_classes(["heading"])
-        .xalign(0.0)
-        .margin_start(12)
-        .margin_top(8)
-        .margin_bottom(4)
-        .build();
-    inner.append(&tags_header);
-
-    let tags_list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
-    inner.append(&tags_list);
-
-    // === Stashes ===
-    let stashes_header = gtk::Label::builder()
-        .label("Stashes")
-        .css_classes(["heading"])
-        .xalign(0.0)
-        .margin_start(12)
-        .margin_top(8)
-        .margin_bottom(4)
-        .build();
-    inner.append(&stashes_header);
-
-    let stashes_list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
-    inner.append(&stashes_list);
+    let local_list = build_collapsible_section(&inner, "Local", true);
+    let remote_list = build_collapsible_section(&inner, "Remote", false);
+    let tags_list = build_collapsible_section(&inner, "Tags", false);
+    let stashes_list = build_collapsible_section(&inner, "Stashes", false);
+    let submodules_list = build_collapsible_section(&inner, "Submodules", false);
+    let worktrees_list = build_collapsible_section(&inner, "Worktrees", false);
 
     scrolled.set_child(Some(&inner));
     panel.append(&scrolled);
@@ -118,24 +113,25 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let rl = remote_list.clone();
     let tl = tags_list.clone();
     let sl = stashes_list.clone();
+    let sml = submodules_list.clone();
+    let wtl = worktrees_list.clone();
     search_entry.connect_search_changed(move |entry| {
         let query = entry.text().to_lowercase();
-        let q1 = query.clone();
-        let q2 = query.clone();
-        let q3 = query.clone();
-        let q4 = query;
-        ll.set_filter_func(move |row| {
-            q1.is_empty() || row.widget_name().to_lowercase().contains(&q1)
-        });
-        rl.set_filter_func(move |row| {
-            q2.is_empty() || row.widget_name().to_lowercase().contains(&q2)
-        });
-        tl.set_filter_func(move |row| {
-            q3.is_empty() || row.widget_name().to_lowercase().contains(&q3)
-        });
-        sl.set_filter_func(move |row| {
-            q4.is_empty() || row.widget_name().to_lowercase().contains(&q4)
-        });
+        let filter = move |row: &gtk::ListBoxRow, q: &str| -> bool {
+            q.is_empty() || row.widget_name().to_lowercase().contains(q)
+        };
+        let q = query.clone();
+        ll.set_filter_func(move |row| filter(row, &q));
+        let q = query.clone();
+        rl.set_filter_func(move |row| filter(row, &q));
+        let q = query.clone();
+        tl.set_filter_func(move |row| filter(row, &q));
+        let q = query.clone();
+        sl.set_filter_func(move |row| filter(row, &q));
+        let q = query.clone();
+        sml.set_filter_func(move |row| filter(row, &q));
+        let q = query;
+        wtl.set_filter_func(move |row| filter(row, &q));
     });
 
     let refs = BranchesTagsRefs {
@@ -143,10 +139,106 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
         remote_list,
         tags_list,
         stashes_list,
+        submodules_list,
+        worktrees_list,
         create_branch_btn,
     };
 
     (panel, refs)
+}
+
+/// Apply a row limit to a ListBox: hide rows beyond `limit` and add a "Show all" toggle.
+/// If limit is 0, show everything.
+pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
+    if limit == 0 {
+        return;
+    }
+    let limit = limit as i32;
+    let mut count = 0;
+    let mut child = list.first_child();
+    let mut overflow_rows: Vec<gtk::Widget> = Vec::new();
+
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        if c.widget_name() == "show-more-row" {
+            list.remove(&c);
+        } else {
+            count += 1;
+            if count > limit {
+                c.set_visible(false);
+                overflow_rows.push(c);
+            }
+        }
+        child = next;
+    }
+
+    if overflow_rows.is_empty() {
+        return;
+    }
+
+    let toggle_row = gtk::ListBoxRow::builder()
+        .selectable(false)
+        .activatable(true)
+        .build();
+    toggle_row.set_widget_name("show-more-row");
+    let collapsed_text = format!("Show all ({} more)", overflow_rows.len());
+    let label = gtk::Label::builder()
+        .label(&collapsed_text)
+        .css_classes(["caption", "dim-label"])
+        .margin_top(2)
+        .margin_bottom(2)
+        .build();
+    toggle_row.set_child(Some(&label));
+    list.append(&toggle_row);
+
+    let overflow_rows = std::rc::Rc::new(overflow_rows);
+    let rows = overflow_rows.clone();
+    let collapsed = collapsed_text.clone();
+    list.connect_row_activated(move |_, row| {
+        if row.widget_name() != "show-more-row" {
+            return;
+        }
+        let label = row.child()
+            .and_then(|c| c.downcast::<gtk::Label>().ok());
+        let Some(label) = label else { return };
+
+        let currently_hidden = rows.first().map(|r| !r.is_visible()).unwrap_or(false);
+        for r in rows.iter() {
+            r.set_visible(currently_hidden);
+        }
+        label.set_label(if currently_hidden { "Show less" } else { &collapsed });
+    });
+}
+
+/// Update the section header label to show count, e.g. "Tags (13)".
+/// The list must be inside a section created by `build_collapsible_section`.
+pub fn update_section_header(list: &gtk::ListBox, title: &str, count: usize) {
+    let expected_name = format!("section-label-{}", title.to_lowercase());
+    let section = list.parent();
+    let Some(section) = section else { return };
+
+    // Hide entire section if empty
+    section.set_visible(count > 0);
+
+    // Update label text
+    let mut child = section.first_child();
+    while let Some(c) = child {
+        if let Ok(btn) = c.clone().downcast::<gtk::Button>() {
+            if let Some(header_box) = btn.child() {
+                let mut inner_child = header_box.first_child();
+                while let Some(ic) = inner_child {
+                    if ic.widget_name() == expected_name {
+                        if let Ok(label) = ic.clone().downcast::<gtk::Label>() {
+                            label.set_label(&format!("{} ({})", title, count));
+                            return;
+                        }
+                    }
+                    inner_child = ic.next_sibling();
+                }
+            }
+        }
+        child = c.next_sibling();
+    }
 }
 
 /// Populate the branches panel with branch data.
@@ -256,18 +348,6 @@ where
     }
 
     if entries.is_empty() {
-        let empty = gtk::Label::builder()
-            .label("No stashes")
-            .css_classes(["dim-label"])
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-        let row = gtk::ListBoxRow::builder()
-            .child(&empty)
-            .activatable(false)
-            .selectable(false)
-            .build();
-        stashes_list.append(&row);
         return;
     }
 
@@ -318,5 +398,138 @@ where
             .activatable(false)
             .build();
         stashes_list.append(&row);
+    }
+}
+
+/// Populate the submodules list. Each row has an Update button.
+pub fn populate_submodules<F>(
+    list: &gtk::ListBox,
+    submodules: &[SubmoduleInfo],
+    on_update: F,
+)
+where
+    F: Fn(String) + Clone + 'static,
+{
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    if submodules.is_empty() {
+        return;
+    }
+
+    for sm in submodules {
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row_box.set_margin_start(8);
+        row_box.set_margin_end(4);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+
+        let icon = if sm.is_initialized { "folder-remote-symbolic" } else { "folder-symbolic" };
+        row_box.append(&gtk::Image::builder()
+            .icon_name(icon)
+            .css_classes(["dim-label"])
+            .build());
+
+        let label = gtk::Label::builder()
+            .label(&sm.name)
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(&sm.url)
+            .build();
+        row_box.append(&label);
+
+        if !sm.is_initialized {
+            let init_label = gtk::Label::builder()
+                .label("not init")
+                .css_classes(["caption", "dim-label"])
+                .build();
+            row_box.append(&init_label);
+        }
+
+        let update_btn = gtk::Button::builder()
+            .icon_name("view-refresh-symbolic")
+            .css_classes(["flat", "circular"])
+            .tooltip_text("Update")
+            .valign(gtk::Align::Center)
+            .build();
+        let on_update_clone = on_update.clone();
+        let name = sm.name.clone();
+        update_btn.connect_clicked(move |_| {
+            on_update_clone(name.clone());
+        });
+        row_box.append(&update_btn);
+
+        let row = gtk::ListBoxRow::builder()
+            .child(&row_box)
+            .activatable(false)
+            .build();
+        row.set_widget_name(&sm.name);
+        list.append(&row);
+    }
+}
+
+/// Populate the worktrees list.
+pub fn populate_worktrees<F>(
+    list: &gtk::ListBox,
+    worktrees: &[WorktreeInfo],
+    on_open: F,
+)
+where
+    F: Fn(String) + Clone + 'static,
+{
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    if worktrees.len() <= 1 {
+        // Only the main worktree — nothing interesting to show
+        return;
+    }
+
+    for wt in worktrees {
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row_box.set_margin_start(8);
+        row_box.set_margin_end(4);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+
+        let icon_name = if wt.is_current { "emblem-ok-symbolic" } else { "folder-symbolic" };
+        row_box.append(&gtk::Image::builder()
+            .icon_name(icon_name)
+            .css_classes(["dim-label"])
+            .build());
+
+        let label = gtk::Label::builder()
+            .label(&wt.name)
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(&wt.path)
+            .build();
+        row_box.append(&label);
+
+        if !wt.is_current {
+            let open_btn = gtk::Button::builder()
+                .icon_name("document-open-symbolic")
+                .css_classes(["flat", "circular"])
+                .tooltip_text("Open")
+                .valign(gtk::Align::Center)
+                .build();
+            let on_open_clone = on_open.clone();
+            let path = wt.path.clone();
+            open_btn.connect_clicked(move |_| {
+                on_open_clone(path.clone());
+            });
+            row_box.append(&open_btn);
+        }
+
+        let row = gtk::ListBoxRow::builder()
+            .child(&row_box)
+            .activatable(false)
+            .build();
+        row.set_widget_name(&wt.name);
+        list.append(&row);
     }
 }

@@ -6,7 +6,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry};
+use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
@@ -20,11 +20,16 @@ struct BackgroundRepoData {
     branches: Vec<gitpulsar_core::models::BranchInfo>,
     tags: Vec<gitpulsar_core::models::TagInfo>,
     stash_entries: Vec<StashEntry>,
+    submodules: Vec<SubmoduleInfo>,
+    worktrees: Vec<WorktreeInfo>,
     ahead: usize,
     behind: usize,
     branch_name: Option<String>,
     unstaged_diffs: Vec<DiffFile>,
     staged_diffs: Vec<DiffFile>,
+    has_conflicts: bool,
+    is_merging: bool,
+    is_rebasing: bool,
 }
 
 struct BackgroundRefreshResult {
@@ -78,6 +83,7 @@ use super::changes_view;
 use super::commit_list;
 use super::gitignore_editor;
 use super::preferences_dialog;
+use super::rebase_editor;
 use super::repo_tree;
 
 const COMMIT_PAGE_SIZE: usize = 50;
@@ -155,6 +161,10 @@ mod imp {
         pub staged_file_list: RefCell<Option<gtk::ListBox>>,
         // Stashes list in right sidebar (set during setup_ui)
         pub stashes_list: RefCell<Option<gtk::ListBox>>,
+        pub submodules_list: RefCell<Option<gtk::ListBox>>,
+        pub worktrees_list: RefCell<Option<gtk::ListBox>>,
+        // Merge/rebase banner
+        pub conflict_banner: RefCell<Option<gtk::Box>>,
         // Sidebar header title (folder name)
         pub sidebar_title_label: gtk::Label,
         // Sidebar status
@@ -222,6 +232,9 @@ mod imp {
                 unstaged_file_list: RefCell::new(None),
                 staged_file_list: RefCell::new(None),
                 stashes_list: RefCell::new(None),
+                submodules_list: RefCell::new(None),
+                worktrees_list: RefCell::new(None),
+                conflict_banner: RefCell::new(None),
                 sidebar_title_label: gtk::Label::builder()
                     .label("Gitpulsar")
                     .css_classes(["title"])
@@ -674,6 +687,8 @@ impl GitpulsarWindow {
         let br_list = branches_refs.remote_list.clone();
         let tg_list = branches_refs.tags_list.clone();
         let st_list = branches_refs.stashes_list.clone();
+        let sm_list = branches_refs.submodules_list.clone();
+        let wt_list = branches_refs.worktrees_list.clone();
 
         // ==========================================
         // BOTTOM BAR — CenterBox with ViewSwitcher
@@ -776,8 +791,15 @@ impl GitpulsarWindow {
         // LAYOUT ASSEMBLY
         // ==========================================
 
-        // Center: content_header + ToastOverlay(ViewStack) + bottom bar
-        imp.toast_overlay.set_child(Some(&imp.view_stack));
+        // Center: content_header + ToastOverlay(banner + ViewStack) + bottom bar
+        let center_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // Conflict banner placeholder (populated dynamically)
+        let banner_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        banner_box.set_widget_name("conflict-banner-box");
+        center_content.append(&banner_box);
+        center_content.append(&imp.view_stack);
+        imp.view_stack.set_vexpand(true);
+        imp.toast_overlay.set_child(Some(&center_content));
         let center_toolbar = adw::ToolbarView::new();
         center_toolbar.add_top_bar(&content_header);
         center_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
@@ -853,6 +875,8 @@ impl GitpulsarWindow {
         *imp.branches_remote_list.borrow_mut() = Some(br_list);
         *imp.tags_list.borrow_mut() = Some(tg_list);
         *imp.stashes_list.borrow_mut() = Some(st_list);
+        *imp.submodules_list.borrow_mut() = Some(sm_list);
+        *imp.worktrees_list.borrow_mut() = Some(wt_list);
 
         self.set_content(Some(&outer_split));
 
@@ -1205,6 +1229,11 @@ impl GitpulsarWindow {
             let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
             let branch_name = repo.current_branch_name();
             let stash_entries = repo.stash_list().unwrap_or_default();
+            let submodules = repo.list_submodules().unwrap_or_default();
+            let worktrees = repo.list_worktrees().unwrap_or_default();
+            let has_conflicts = repo.has_conflicts();
+            let is_merging = repo.is_merging();
+            let is_rebasing = repo.is_rebasing();
 
             // Run independent heavy operations in parallel
             let path2 = path.clone();
@@ -1242,11 +1271,16 @@ impl GitpulsarWindow {
                 branches,
                 tags,
                 stash_entries,
+                submodules,
+                worktrees,
                 ahead,
                 behind,
                 branch_name,
                 unstaged_diffs,
                 staged_diffs,
+                has_conflicts,
+                is_merging,
+                is_rebasing,
             }).ok();
         });
 
@@ -1281,6 +1315,13 @@ impl GitpulsarWindow {
 
                 // Populate stashes in right sidebar
                 win.populate_stashes_data(&data.stash_entries);
+
+                // Populate submodules & worktrees
+                win.populate_submodules_data(&data.submodules);
+                win.populate_worktrees_data(&data.worktrees);
+
+                // Show/hide conflict banner
+                win.update_conflict_banner(data.has_conflicts, data.is_merging, data.is_rebasing);
 
                 // Update sidebar status
                 if let Some(ref path_str) = win.repo_path_string() {
@@ -1871,17 +1912,29 @@ impl GitpulsarWindow {
         let remote = imp.branches_remote_list.borrow().clone();
         let tags_list = imp.tags_list.borrow().clone();
 
+        let limit = imp.config.borrow().sidebar_items_limit;
+
+        let local_count = branches.iter().filter(|b| !b.is_remote).count();
+        let remote_count = branches.iter().filter(|b| b.is_remote).count();
+
         if let (Some(ref local), Some(ref remote)) = (local, remote) {
             branches_tags_panel::populate_branches(local, remote, branches);
+            branches_tags_panel::update_section_header(local, "Local", local_count);
+            branches_tags_panel::update_section_header(remote, "Remote", remote_count);
+            branches_tags_panel::apply_row_limit(local, limit);
+            branches_tags_panel::apply_row_limit(remote, limit);
         }
 
         if let Some(ref tl) = tags_list {
             branches_tags_panel::populate_tags(tl, tags);
+            branches_tags_panel::update_section_header(tl, "Tags", tags.len());
+            branches_tags_panel::apply_row_limit(tl, limit);
         }
     }
 
     fn populate_stashes_data(&self, entries: &[StashEntry]) {
         let imp = self.imp();
+        let limit = imp.config.borrow().sidebar_items_limit;
         let stashes_list = imp.stashes_list.borrow().clone();
         if let Some(ref sl) = stashes_list {
             let win_apply = self.clone();
@@ -1892,7 +1945,142 @@ impl GitpulsarWindow {
                 move |idx| win_apply.on_stash_apply(idx),
                 move |idx| win_drop.on_stash_drop(idx),
             );
+            branches_tags_panel::update_section_header(sl, "Stashes", entries.len());
+            branches_tags_panel::apply_row_limit(sl, limit);
         }
+    }
+
+    fn populate_submodules_data(&self, submodules: &[SubmoduleInfo]) {
+        let imp = self.imp();
+        let limit = imp.config.borrow().sidebar_items_limit;
+        let list = imp.submodules_list.borrow().clone();
+        if let Some(ref sl) = list {
+            let win = self.clone();
+            branches_tags_panel::populate_submodules(sl, submodules, move |name| {
+                win.run_git_op("Submodule Update", {
+                    let name = name.clone();
+                    move |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.submodule_update(&name)
+                    }
+                });
+            });
+            branches_tags_panel::update_section_header(sl, "Submodules", submodules.len());
+            branches_tags_panel::apply_row_limit(sl, limit);
+        }
+    }
+
+    fn populate_worktrees_data(&self, worktrees: &[WorktreeInfo]) {
+        let imp = self.imp();
+        let list = imp.worktrees_list.borrow().clone();
+        if let Some(ref wl) = list {
+            let win = self.clone();
+            branches_tags_panel::populate_worktrees(wl, worktrees, move |path| {
+                let p = std::path::PathBuf::from(&path);
+                if p.is_dir() {
+                    win.open_workspace(&p);
+                }
+            });
+            // Only count extra worktrees (exclude main)
+            let extra = if worktrees.len() > 1 { worktrees.len() } else { 0 };
+            branches_tags_panel::update_section_header(wl, "Worktrees", extra);
+        }
+    }
+
+    fn update_conflict_banner(&self, has_conflicts: bool, is_merging: bool, is_rebasing: bool) {
+        // Find the banner box in the center content
+        let toast_child = self.imp().toast_overlay.child();
+        let banner_box = toast_child.as_ref()
+            .and_then(|c| c.first_child())
+            .and_then(|w| w.downcast::<gtk::Box>().ok());
+
+        let Some(banner_box) = banner_box else { return };
+        if banner_box.widget_name() != "conflict-banner-box" { return; }
+
+        // Clear old banner
+        while let Some(child) = banner_box.first_child() {
+            banner_box.remove(&child);
+        }
+
+        if !has_conflicts && !is_merging && !is_rebasing {
+            return;
+        }
+
+        let banner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        banner.add_css_class("card");
+        banner.set_margin_start(8);
+        banner.set_margin_end(8);
+        banner.set_margin_top(4);
+        banner.set_margin_bottom(4);
+
+        let icon = gtk::Image::builder()
+            .icon_name("dialog-warning-symbolic")
+            .css_classes(["warning"])
+            .build();
+        banner.append(&icon);
+
+        let msg = if has_conflicts {
+            "Conflicts detected — resolve files and mark as resolved"
+        } else if is_rebasing {
+            "Rebase in progress"
+        } else {
+            "Merge in progress"
+        };
+
+        let label = gtk::Label::builder()
+            .label(msg)
+            .hexpand(true)
+            .xalign(0.0)
+            .build();
+        banner.append(&label);
+
+        if is_merging || is_rebasing {
+            let continue_btn = gtk::Button::builder()
+                .label("Continue")
+                .css_classes(["suggested-action", "pill"])
+                .build();
+            let win = self.clone();
+            let rebasing = is_rebasing;
+            continue_btn.connect_clicked(move |_| {
+                if rebasing {
+                    win.run_git_op("Rebase Continue", |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.continue_rebase()
+                    });
+                } else {
+                    win.run_git_op("Merge Continue", |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.continue_merge()
+                    });
+                }
+            });
+            banner.append(&continue_btn);
+
+            let abort_btn = gtk::Button::builder()
+                .label("Abort")
+                .css_classes(["destructive-action", "pill"])
+                .build();
+            let win = self.clone();
+            let rebasing = is_rebasing;
+            abort_btn.connect_clicked(move |_| {
+                if rebasing {
+                    win.run_git_op("Rebase Abort", |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.abort_rebase()?;
+                        Ok("Rebase aborted".to_string())
+                    });
+                } else {
+                    win.run_git_op("Merge Abort", |path| {
+                        let repo = GitRepo::open(path)?;
+                        repo.abort_merge()?;
+                        Ok("Merge aborted".to_string())
+                    });
+                }
+            });
+            banner.append(&abort_btn);
+        }
+
+        banner_box.append(&banner);
     }
 
     fn on_stash_apply(&self, index: usize) {
@@ -2151,6 +2339,31 @@ impl GitpulsarWindow {
             glib::ControlFlow::Continue
         });
         *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
+    }
+
+    fn show_rebase_editor(&self, commit_count: usize) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+        let entries = match repo.list_rebase_commits(commit_count) {
+            Ok(e) => e,
+            Err(e) => {
+                self.show_toast(&format!("Failed to prepare rebase: {}", e));
+                return;
+            }
+        };
+        let onto = format!("HEAD~{}", commit_count);
+        drop(repo_ref);
+
+        let win = self.clone();
+        let dialog = rebase_editor::build_rebase_editor(&entries, &onto, move |modified, onto| {
+            win.run_git_op("Interactive Rebase", move |path| {
+                let repo = GitRepo::open(path)?;
+                repo.execute_rebase(&modified, &onto)
+            });
+        });
+        dialog.set_transient_for(Some(self));
+        dialog.set_modal(true);
+        dialog.present();
     }
 
     fn open_gitignore_editor(&self) {
@@ -2664,6 +2877,22 @@ impl GitpulsarWindow {
                 w6.show_create_tag_dialog(&sha_clone);
             });
             menu_box.append(&create_tag_btn);
+
+            // Interactive Rebase (onto this commit)
+            if idx > 0 {
+                let rebase_btn = gtk::Button::builder()
+                    .label("Interactive Rebase…")
+                    .css_classes(["flat"])
+                    .build();
+                let pp_rb = popover.clone();
+                let w_rb = win.clone();
+                let commit_count = idx;
+                rebase_btn.connect_clicked(move |_| {
+                    pp_rb.popdown();
+                    w_rb.show_rebase_editor(commit_count);
+                });
+                menu_box.append(&rebase_btn);
+            }
 
             // Edit commit message (only for HEAD / idx==0)
             if idx == 0 {

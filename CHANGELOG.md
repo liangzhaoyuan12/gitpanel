@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.1 (2026-03-16)
+
+### New Features
+
+- **Submodules panel** in sidebar — list, init, update submodules
+- **Worktrees panel** in sidebar — list worktrees, open in new workspace
+- **Merge/rebase conflict banner** — shown at top with Continue/Abort buttons
+- **Interactive rebase editor** — right-click commit → Interactive Rebase, pick/squash/fixup/reword/edit/drop
+- **Collapsible sidebar sections** — click header to expand/collapse
+- **Section item counts** — headers show counts, e.g. "Tags (73)"
+- **Sidebar items limit** — configurable in Preferences (default 5, "Show all" expander)
+- Empty sections (Stashes, Submodules, Worktrees) auto-hide when unused
+
 ## v0.3.0 (2026-03-16)
 
 Major feature release with 2400+ new lines across 31 files.

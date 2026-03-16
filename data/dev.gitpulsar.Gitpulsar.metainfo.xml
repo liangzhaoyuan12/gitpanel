@@ -45,6 +45,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.3.1" date="2026-03-16">
+      <description>
+        <p>UI polish: submodules and worktrees panels in sidebar, merge/rebase conflict banner with continue/abort, interactive rebase editor, collapsible sidebar sections with item counts and configurable limit, auto-hide empty sections.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-03-16">
       <description>
         <p>Major feature release: syntax-highlighted diffs, split staged/unstaged with drag-and-drop, partial hunk staging, undo/redo, paginated commits, parallel workspace scanning, merge/rebase support, submodules, worktrees, commit signing indicator, .gitignore editor, performance optimizations.</p>

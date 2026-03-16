@@ -7,3 +7,4 @@ pub mod changes_view;
 pub mod preferences_dialog;
 pub mod gitignore_editor;
 pub mod syntax;
+pub mod rebase_editor;

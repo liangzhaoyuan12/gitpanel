@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub refresh_interval_secs: u32,
     #[serde(default = "default_commit_files_limit")]
     pub commit_files_limit: u32,
+    #[serde(default = "default_sidebar_items_limit")]
+    pub sidebar_items_limit: u32,
     #[serde(default)]
     pub recent_workspaces: Vec<String>,
 }
@@ -16,12 +18,17 @@ fn default_commit_files_limit() -> u32 {
     10
 }
 
+fn default_sidebar_items_limit() -> u32 {
+    5
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             date_format: DateFormat::European,
             refresh_interval_secs: 15,
             commit_files_limit: default_commit_files_limit(),
+            sidebar_items_limit: default_sidebar_items_limit(),
             recent_workspaces: Vec::new(),
         }
     }

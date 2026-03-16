@@ -48,6 +48,22 @@ where
         .build();
     display_group.add(&files_limit_row);
 
+    // Sidebar items limit
+    let sidebar_limit_adj = gtk::Adjustment::new(
+        config.sidebar_items_limit as f64,
+        0.0,
+        50.0,
+        1.0,
+        5.0,
+        0.0,
+    );
+    let sidebar_limit_row = adw::SpinRow::builder()
+        .title("Sidebar items limit")
+        .subtitle("0 = show all items per section")
+        .adjustment(&sidebar_limit_adj)
+        .build();
+    display_group.add(&sidebar_limit_row);
+
     page.add(&display_group);
 
     // --- Updates group ---
@@ -90,11 +106,13 @@ where
         let date_row = date_row.clone();
         let spin_row = spin_row.clone();
         let files_limit_row = files_limit_row.clone();
+        let sidebar_limit_row = sidebar_limit_row.clone();
         let recent = config.recent_workspaces.clone();
         move || AppConfig {
             date_format: DateFormat::from_index(date_row.selected()),
             refresh_interval_secs: spin_row.value() as u32,
             commit_files_limit: files_limit_row.value() as u32,
+            sidebar_items_limit: sidebar_limit_row.value() as u32,
             recent_workspaces: recent.clone(),
         }
     };
@@ -119,6 +137,14 @@ where
         let on_changed = on_changed.clone();
         let build_config = build_config.clone();
         files_limit_row.connect_value_notify(move |_| {
+            on_changed(build_config());
+        });
+    }
+
+    {
+        let on_changed = on_changed.clone();
+        let build_config = build_config.clone();
+        sidebar_limit_row.connect_value_notify(move |_| {
             on_changed(build_config());
         });
     }
