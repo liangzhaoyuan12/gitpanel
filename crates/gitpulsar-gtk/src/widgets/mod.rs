@@ -9,4 +9,5 @@ pub mod gitignore_editor;
 pub mod syntax;
 pub mod rebase_editor;
 pub mod commit_templates;
+pub mod blame_view;
 pub mod conflict_editor;

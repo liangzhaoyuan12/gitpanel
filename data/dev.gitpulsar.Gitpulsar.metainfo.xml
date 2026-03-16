@@ -45,6 +45,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.4.1" date="2026-03-16">
+      <description>
+        <p>Blame view for per-line annotations, branch graph moved to integrated tab (Ctrl+3) with lazy background computation, fixed hang on repo switch.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-03-16">
       <description>
         <p>3-way conflict resolution editor, line-level staging, conventional commit prefixes, keyboard navigation, theme-aware diff colors.</p>

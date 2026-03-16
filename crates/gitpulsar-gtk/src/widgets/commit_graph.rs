@@ -131,71 +131,9 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
     rows
 }
 
-/// Show a separate window with the full branch graph visualization.
-pub fn show_graph_window(parent: &impl IsA<gtk::Window>, commits: &[CommitInfo]) {
-    let rows = compute_graph(commits);
-    let max_lanes = rows.iter().map(|r| r.num_active_lanes).max().unwrap_or(1).max(1);
-
-    let graph_width = (max_lanes as f64 * LANE_WIDTH + PADDING * 2.0).ceil() as i32;
-    let total_height = (rows.len() as f64 * ROW_HEIGHT).ceil() as i32;
-
-    // Drawing area for the graph lines
-    let da = gtk::DrawingArea::builder()
-        .content_width(graph_width)
-        .content_height(total_height)
-        .build();
-
-    let rows_for_draw = rows.clone();
-    da.set_draw_func(move |_da, cr, _w, _h| {
-        for (i, row) in rows_for_draw.iter().enumerate() {
-            let y_offset = i as f64 * ROW_HEIGHT;
-            let _ = cr.save();
-            cr.translate(0.0, y_offset);
-            draw_graph_row(cr, row, ROW_HEIGHT, &rows_for_draw, i);
-            let _ = cr.restore();
-        }
-    });
-
-    // Labels column for commit info
-    let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    for row in &rows {
-        let label = gtk::Label::builder()
-            .label(&format!("{} {}", row.short_id, row.summary))
-            .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["caption"])
-            .height_request(ROW_HEIGHT as i32)
-            .build();
-        labels_box.append(&label);
-    }
-
-    // Horizontal layout: graph | labels
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    content.append(&da);
-    content.append(&labels_box);
-
-    let scrolled = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
-    scrolled.set_child(Some(&content));
-
-    let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&scrolled));
-
-    let window = adw::Window::builder()
-        .title("Branch Graph")
-        .default_width(800)
-        .default_height(600)
-        .transient_for(parent)
-        .content(&toolbar)
-        .build();
-
-    window.present();
+/// Public wrapper for drawing a single graph row (used by graph tab).
+pub fn draw_graph_row_public(cr: &cairo::Context, row: &GraphRow, height: f64, all_rows: &[GraphRow], row_idx: usize) {
+    draw_graph_row(cr, row, height, all_rows, row_idx);
 }
 
 fn draw_graph_row(cr: &cairo::Context, row: &GraphRow, height: f64, all_rows: &[GraphRow], row_idx: usize) {
@@ -253,6 +191,29 @@ fn draw_graph_row(cr: &cairo::Context, row: &GraphRow, height: f64, all_rows: &[
     cr.set_source_rgb(r, g, b);
     cr.arc(commit_x, mid_y, DOT_RADIUS, 0.0, 2.0 * std::f64::consts::PI);
     let _ = cr.fill();
+}
+
+/// Create a small inline graph widget for a single commit row.
+/// Uses Rc to share graph data across all rows without cloning.
+pub fn create_inline_graph(graph_rows: &std::rc::Rc<Vec<GraphRow>>, row_idx: usize, max_lanes: usize) -> gtk::DrawingArea {
+    let width = (max_lanes as f64 * LANE_WIDTH + PADDING * 2.0).ceil() as i32;
+    let row_height = ROW_HEIGHT as i32;
+
+    let da = gtk::DrawingArea::builder()
+        .content_width(width.min(120))
+        .content_height(row_height)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let rows = graph_rows.clone();
+    let idx = row_idx;
+    da.set_draw_func(move |_da, cr, _w, _h| {
+        if let Some(row) = rows.get(idx) {
+            draw_graph_row(cr, row, ROW_HEIGHT, &rows, idx);
+        }
+    });
+
+    da
 }
 
 fn lane_x(lane: usize) -> f64 {

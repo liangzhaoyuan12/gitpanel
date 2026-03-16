@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.1 (2026-03-16)
+
+### New Features
+
+- **Blame view** — hover a file in changes view, click "Blame" to see per-line annotations (author, date, commit) with theme-aware colors
+- **Graph tab** — branch graph moved from separate window to a third ViewStack tab (Ctrl+3), computed in background with spinner
+- Graph button in header bar now switches to the Graph tab
+
+### Improvements
+
+- Removed separate graph window — graph is now integrated into the main UI
+- Graph computed lazily on tab switch (no performance impact on repo load)
+- Fixed hang when switching repos (graph no longer computed automatically)
+
 ## v0.4.0 (2026-03-16)
 
 ### New Features

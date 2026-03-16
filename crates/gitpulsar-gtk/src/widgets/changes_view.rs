@@ -343,6 +343,16 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
         btn_box.append(&discard_btn);
     }
 
+    // Blame button (always available)
+    let blame_btn = gtk::Button::builder()
+        .icon_name("view-list-symbolic")
+        .css_classes(["flat", "circular"])
+        .tooltip_text("Blame")
+        .valign(gtk::Align::Center)
+        .build();
+    blame_btn.set_widget_name("blame-file");
+    btn_box.append(&blame_btn);
+
     header.append(&btn_box);
     outer_box.append(&header);
 

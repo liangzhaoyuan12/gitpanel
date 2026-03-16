@@ -2,11 +2,20 @@ use adw::prelude::*;
 
 use gitpulsar_core::models::{CommitInfo, DiffFile};
 use crate::config::DateFormat;
+use super::commit_graph;
 
 /// Create an expandable commit row.
 /// The detail section is hidden by default; click to toggle.
 /// `is_head` marks the first commit (HEAD) for the edit-message button.
-pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool, is_head: bool, date_format: DateFormat) -> gtk::ListBoxRow {
+/// `graph_data` is optional — if provided, renders an inline branch graph.
+pub fn create_commit_row(
+    commit: &CommitInfo,
+    tags: &[String],
+    is_unpushed: bool,
+    is_head: bool,
+    date_format: DateFormat,
+    graph_data: Option<(&std::rc::Rc<Vec<commit_graph::GraphRow>>, usize, usize)>,
+) -> gtk::ListBoxRow {
     let outer_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // === Compact summary row ===
@@ -15,6 +24,12 @@ pub fn create_commit_row(commit: &CommitInfo, tags: &[String], is_unpushed: bool
     row_box.set_margin_end(8);
     row_box.set_margin_top(6);
     row_box.set_margin_bottom(6);
+
+    // Inline graph (if computed)
+    if let Some((graph_rows, row_idx, max_lanes)) = graph_data {
+        let graph_da = commit_graph::create_inline_graph(graph_rows, row_idx, max_lanes);
+        row_box.append(&graph_da);
+    }
 
     // Hash (monospace, dim)
     let hash_label = gtk::Label::builder()

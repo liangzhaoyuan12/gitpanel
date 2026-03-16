@@ -81,6 +81,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 use super::branches_tags_panel;
 use super::changes_view;
 use super::commit_list;
+use super::blame_view;
 use super::conflict_editor;
 use super::gitignore_editor;
 use super::preferences_dialog;
@@ -409,7 +410,7 @@ impl GitpulsarWindow {
             .build();
         let win = self.clone();
         graph_btn.connect_clicked(move |_| {
-            win.show_branch_graph();
+            win.imp().view_stack.set_visible_child_name("graph");
         });
         content_header.pack_end(&graph_btn);
 
@@ -660,9 +661,27 @@ impl GitpulsarWindow {
         *imp.unstaged_file_list.borrow_mut() = Some(changes_refs.unstaged_list_box.clone());
         *imp.staged_file_list.borrow_mut() = Some(changes_refs.staged_list_box.clone());
 
+        // --- Graph page ---
+        let graph_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        graph_page.set_widget_name("graph-page");
+        let graph_scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let graph_placeholder = gtk::Label::builder()
+            .label("Select a repository to view the graph")
+            .css_classes(["dim-label"])
+            .margin_top(24)
+            .build();
+        graph_scrolled.set_child(Some(&graph_placeholder));
+        graph_page.append(&graph_scrolled);
+
         // --- ViewStack setup ---
         imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "emoji-recent-symbolic");
         imp.view_stack.add_titled_with_icon(&changes_box, Some("changes"), "Changes", "document-edit-symbolic");
+        imp.view_stack.add_titled_with_icon(&graph_page, Some("graph"), "Graph", "view-app-grid-symbolic");
 
         // ==========================================
         // RIGHT SIDEBAR — branches & tags panel
@@ -767,11 +786,13 @@ impl GitpulsarWindow {
         // Sync view_stack → compact toggles
         let ct = commits_toggle.clone();
         let cht = changes_toggle.clone();
+        let win_for_graph = self.clone();
         imp.view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(name) = stack.visible_child_name() {
                 match name.as_str() {
                     "commits" => { if !ct.is_active() { ct.set_active(true); } }
                     "changes" => { if !cht.is_active() { cht.set_active(true); } }
+                    "graph" => { win_for_graph.populate_graph_tab(); }
                     _ => {}
                 }
             }
@@ -1064,6 +1085,14 @@ impl GitpulsarWindow {
             window.imp().view_stack.set_visible_child_name("changes");
         });
         self.add_action(&show_changes_action);
+
+        // Show graph page
+        let show_graph_action = gio::SimpleAction::new("show-graph", None);
+        let window = self.clone();
+        show_graph_action.connect_activate(move |_, _| {
+            window.imp().view_stack.set_visible_child_name("graph");
+        });
+        self.add_action(&show_graph_action);
 
         // Focus search
         let focus_search_action = gio::SimpleAction::new("focus-search", None);
@@ -1371,7 +1400,7 @@ impl GitpulsarWindow {
             let is_unpushed = global_idx < ahead;
             let is_head = global_idx == 0;
             let date_format = imp.config.borrow().date_format;
-            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head, date_format);
+            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head, date_format, None);
 
             // Connect edit-message button for HEAD commit
             if is_head {
@@ -1433,7 +1462,7 @@ impl GitpulsarWindow {
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
                     let is_unpushed = global_idx < ahead;
-                    let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, false, date_format);
+                    let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, false, date_format, None);
                     list_box.append(&row);
                 }
 
@@ -1971,6 +2000,8 @@ impl GitpulsarWindow {
                                     win.discard_file_with_confirm(&path);
                                 } else if name == "unstage-file" {
                                     win.unstage_file(&path);
+                                } else if name == "blame-file" {
+                                    win.show_blame(&path);
                                 }
                             }
                             return;
@@ -2499,6 +2530,25 @@ impl GitpulsarWindow {
             glib::ControlFlow::Continue
         });
         *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
+    }
+
+    fn show_blame(&self, path: &str) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+        match repo.blame_file(path, None) {
+            Ok(lines) => {
+                drop(repo_ref);
+                let dialog = blame_view::build_blame_dialog(path, &lines, |_commit_id| {
+                    // Could navigate to commit — future enhancement
+                });
+                dialog.set_transient_for(Some(self));
+                dialog.set_modal(true);
+                dialog.present();
+            }
+            Err(e) => {
+                self.show_toast(&format!("Blame failed: {}", e));
+            }
+        }
     }
 
     fn open_conflict_editor(&self, path: &str, chunks: &[gitpulsar_core::conflict::ConflictChunk]) {
@@ -3331,12 +3381,77 @@ impl GitpulsarWindow {
         dialog.present();
     }
 
-    fn show_branch_graph(&self) {
-        let commits = self.imp().commits.borrow();
+    fn populate_graph_tab(&self) {
+        let commits = self.imp().commits.borrow().clone();
         if commits.is_empty() {
             return;
         }
-        super::commit_graph::show_graph_window(self.upcast_ref::<gtk::Window>(), &commits);
+
+        // Find the graph page's ScrolledWindow
+        let graph_page = self.imp().view_stack.child_by_name("graph");
+        let Some(graph_page) = graph_page else { return };
+        let Some(graph_box) = graph_page.downcast_ref::<gtk::Box>() else { return };
+        let Some(scrolled) = graph_box.first_child().and_then(|c| c.downcast::<gtk::ScrolledWindow>().ok()) else { return };
+
+        // Show spinner while computing
+        let spinner = gtk::Spinner::builder()
+            .spinning(true)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .vexpand(true)
+            .build();
+        scrolled.set_child(Some(&spinner));
+
+        // Compute graph in background
+        let (tx, rx) = async_channel::bounded::<Vec<super::commit_graph::GraphRow>>(1);
+        std::thread::spawn(move || {
+            let rows = super::commit_graph::compute_graph(&commits);
+            let _ = tx.send_blocking(rows);
+        });
+
+        let scrolled_ref = scrolled.clone();
+        glib::spawn_future_local(async move {
+            if let Ok(rows) = rx.recv().await {
+                let max_lanes = rows.iter().map(|r| r.num_active_lanes).max().unwrap_or(1).max(1);
+                let graph_width = (max_lanes as f64 * 16.0 + 16.0).ceil() as i32;
+                let total_height = (rows.len() as f64 * 32.0).ceil() as i32;
+
+                let da = gtk::DrawingArea::builder()
+                    .content_width(graph_width)
+                    .content_height(total_height)
+                    .build();
+
+                let rows_for_draw = rows.clone();
+                da.set_draw_func(move |_da, cr, _w, _h| {
+                    for (i, row) in rows_for_draw.iter().enumerate() {
+                        let y_offset = i as f64 * 32.0;
+                        let _ = cr.save();
+                        cr.translate(0.0, y_offset);
+                        super::commit_graph::draw_graph_row_public(cr, row, 32.0, &rows_for_draw, i);
+                        let _ = cr.restore();
+                    }
+                });
+
+                // Labels column
+                let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                for row in &rows {
+                    let label = gtk::Label::builder()
+                        .label(&format!("{} {}", row.short_id, row.summary))
+                        .xalign(0.0)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .css_classes(["caption"])
+                        .height_request(32)
+                        .build();
+                    labels_box.append(&label);
+                }
+
+                let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+                content.append(&da);
+                content.append(&labels_box);
+
+                scrolled_ref.set_child(Some(&content));
+            }
+        });
     }
 
     fn show_edit_message_dialog(&self, original_message: &str) {
