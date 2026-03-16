@@ -8,7 +8,6 @@ pub struct BranchesTagsRefs {
     pub tags_list: gtk::ListBox,
     pub stashes_list: gtk::ListBox,
     pub create_branch_btn: gtk::Button,
-    pub search_entry: gtk::SearchEntry,
 }
 
 pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
@@ -140,7 +139,6 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
         tags_list,
         stashes_list,
         create_branch_btn,
-        search_entry,
     };
 
     (panel, refs)

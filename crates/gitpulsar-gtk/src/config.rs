@@ -6,8 +6,14 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub date_format: DateFormat,
     pub refresh_interval_secs: u32,
+    #[serde(default = "default_commit_files_limit")]
+    pub commit_files_limit: u32,
     #[serde(default)]
     pub recent_workspaces: Vec<String>,
+}
+
+fn default_commit_files_limit() -> u32 {
+    10
 }
 
 impl Default for AppConfig {
@@ -15,6 +21,7 @@ impl Default for AppConfig {
         Self {
             date_format: DateFormat::European,
             refresh_interval_secs: 15,
+            commit_files_limit: default_commit_files_limit(),
             recent_workspaces: Vec::new(),
         }
     }

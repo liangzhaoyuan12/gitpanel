@@ -5,9 +5,6 @@ use gitpulsar_core::models::{DiffFile, FileStatusKind, RepoStatus};
 /// Refs returned to window.rs for connecting signals.
 pub struct ChangesViewRefs {
     pub file_list_box: gtk::ListBox,
-    pub commit_entry: gtk::TextView,
-    pub commit_button: gtk::Button,
-    pub amend_check: gtk::CheckButton,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
 }
@@ -114,9 +111,6 @@ pub fn build_changes_view(
 
     let refs = ChangesViewRefs {
         file_list_box,
-        commit_entry: commit_entry.clone(),
-        commit_button: commit_button.clone(),
-        amend_check: amend_check.clone(),
         stage_all_btn,
         unstage_all_btn,
     };

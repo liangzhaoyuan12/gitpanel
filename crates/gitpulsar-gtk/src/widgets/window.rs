@@ -78,6 +78,8 @@ use super::commit_list;
 use super::preferences_dialog;
 use super::repo_tree;
 
+const COMMIT_PAGE_SIZE: usize = 50;
+
 /// Run a git CLI command with a 30-second timeout.
 /// Returns stdout on success, or an anyhow error with stderr on failure.
 fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> {
@@ -157,6 +159,8 @@ mod imp {
         pub sidebar_status_label: gtk::Label,
         // Hamburger menu button (for updating Recent menu)
         pub menu_btn: gtk::MenuButton,
+        /// Number of commits currently loaded (for pagination).
+        pub commits_loaded_count: Cell<usize>,
     }
 
     impl Default for GitpulsarWindow {
@@ -231,6 +235,7 @@ mod imp {
                     .icon_name("open-menu-symbolic")
                     .tooltip_text("Menu")
                     .build(),
+                commits_loaded_count: Cell::new(0),
             }
         }
     }
@@ -524,7 +529,11 @@ impl GitpulsarWindow {
         // Connect commit activation — toggle expand/collapse detail
         let win = self.clone();
         imp.commit_list_box.connect_row_activated(move |_, row| {
-            win.on_commit_selected(row.index() as usize);
+            if row.widget_name() == "load-more-row" {
+                win.load_more_commits();
+            } else {
+                win.on_commit_selected(row.index() as usize);
+            }
         });
 
         commit_scrolled.set_child(Some(&imp.commit_list_box));
@@ -1115,16 +1124,41 @@ impl GitpulsarWindow {
         let (tx, rx) = async_channel::bounded::<BackgroundRepoData>(1);
         std::thread::spawn(move || {
             let Ok(mut repo) = GitRepo::open(&path) else { return };
-            let commits = repo.log(200).unwrap_or_default();
-            let tags_map = repo.tags_by_commit().unwrap_or_default();
-            let status = repo.status().ok();
-            let branches = repo.branches().unwrap_or_default();
-            let tags = repo.tags().unwrap_or_default();
-            let stash_entries = repo.stash_list().unwrap_or_default();
+
+            // Collect quick scalar data on this thread
             let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
             let branch_name = repo.current_branch_name();
-            let unstaged_diffs = repo.diff_unstaged().unwrap_or_default();
-            let staged_diffs = repo.diff_staged().unwrap_or_default();
+            let stash_entries = repo.stash_list().unwrap_or_default();
+
+            // Run independent heavy operations in parallel
+            let path2 = path.clone();
+            let path3 = path.clone();
+
+            let commits_handle = std::thread::spawn(move || {
+                let Ok(repo) = GitRepo::open(&path2) else {
+                    return (Vec::new(), HashMap::new(), Vec::new());
+                };
+                let commits = repo.log(COMMIT_PAGE_SIZE).unwrap_or_default();
+                let tags_map = repo.tags_by_commit().unwrap_or_default();
+                let tags = repo.tags().unwrap_or_default();
+                (commits, tags_map, tags)
+            });
+
+            let status_handle = std::thread::spawn(move || {
+                let Ok(repo) = GitRepo::open(&path3) else {
+                    return (None, Vec::new(), Vec::new(), Vec::new());
+                };
+                let status = repo.status(true).ok();
+                let branches = repo.branches().unwrap_or_default();
+                let unstaged_diffs = repo.diff_unstaged().unwrap_or_default();
+                let staged_diffs = repo.diff_staged().unwrap_or_default();
+                (status, branches, unstaged_diffs, staged_diffs)
+            });
+
+            let (commits, tags_map, tags) = commits_handle.join().unwrap_or_default();
+            let (status, branches, unstaged_diffs, staged_diffs) =
+                status_handle.join().unwrap_or((None, Vec::new(), Vec::new(), Vec::new()));
+
             tx.send_blocking(BackgroundRepoData {
                 commits,
                 tags_map,
@@ -1152,7 +1186,8 @@ impl GitpulsarWindow {
                 imp.ahead_label.set_label(&format!("▲ {}", data.ahead));
                 imp.behind_label.set_label(&format!("▼ {}", data.behind));
 
-                // Load commits
+                // Load commits (clear first so offset=0 for full rebuild)
+                imp.commits.borrow_mut().clear();
                 win.populate_commit_list(&data.commits, data.ahead, &data.tags_map);
                 *imp.commits.borrow_mut() = data.commits;
 
@@ -1203,13 +1238,16 @@ impl GitpulsarWindow {
             list_box.remove(&child);
         }
 
+        let offset = imp.commits.borrow().len();
+
         for (idx, commit_info) in commits.iter().enumerate() {
+            let global_idx = offset + idx;
             let tags = tags_map
                 .get(&commit_info.id)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            let is_unpushed = idx < ahead;
-            let is_head = idx == 0;
+            let is_unpushed = global_idx < ahead;
+            let is_head = global_idx == 0;
             let date_format = imp.config.borrow().date_format;
             let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head, date_format);
 
@@ -1226,6 +1264,94 @@ impl GitpulsarWindow {
 
             list_box.append(&row);
         }
+
+        // Show "Load more" button if we got a full page
+        if commits.len() >= COMMIT_PAGE_SIZE {
+            self.append_load_more_row();
+        }
+
+        imp.commits_loaded_count.set(offset + commits.len());
+    }
+
+    fn load_more_commits(&self) {
+        let imp = self.imp();
+
+        let repo_path = self.repo_path_string();
+        let Some(path) = repo_path else { return };
+
+        let skip = imp.commits_loaded_count.get();
+
+        // Remove the "Load more" row
+        self.remove_load_more_row();
+
+        let (tx, rx) = async_channel::bounded::<(Vec<CommitInfo>, HashMap<String, Vec<String>>)>(1);
+        std::thread::spawn(move || {
+            let Ok(repo) = GitRepo::open(&path) else { return };
+            let commits = repo.log_page(skip, COMMIT_PAGE_SIZE).unwrap_or_default();
+            let tags_map = repo.tags_by_commit().unwrap_or_default();
+            let _ = tx.send_blocking((commits, tags_map));
+        });
+
+        let win = self.clone();
+        glib::spawn_future_local(async move {
+            if let Ok((new_commits, tags_map)) = rx.recv().await {
+                let imp = win.imp();
+                let list_box = &imp.commit_list_box;
+                let ahead = imp.ahead_label.label()
+                    .strip_prefix("▲ ")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let offset = imp.commits_loaded_count.get();
+                let date_format = imp.config.borrow().date_format;
+
+                for (idx, commit_info) in new_commits.iter().enumerate() {
+                    let global_idx = offset + idx;
+                    let tags = tags_map
+                        .get(&commit_info.id)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let is_unpushed = global_idx < ahead;
+                    let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, false, date_format);
+                    list_box.append(&row);
+                }
+
+                // Add "Load more" if full page
+                if new_commits.len() >= COMMIT_PAGE_SIZE {
+                    win.append_load_more_row();
+                }
+
+                imp.commits_loaded_count.set(offset + new_commits.len());
+                imp.commits.borrow_mut().extend(new_commits);
+            }
+        });
+    }
+
+    fn remove_load_more_row(&self) {
+        let list_box = &self.imp().commit_list_box;
+        let n_rows = list_box.observe_children().n_items();
+        if n_rows > 0 {
+            if let Some(last_row) = list_box.row_at_index((n_rows - 1) as i32) {
+                if last_row.widget_name() == "load-more-row" {
+                    list_box.remove(&last_row);
+                }
+            }
+        }
+    }
+
+    fn append_load_more_row(&self) {
+        let load_more_row = gtk::ListBoxRow::builder()
+            .selectable(false)
+            .activatable(true)
+            .build();
+        load_more_row.set_widget_name("load-more-row");
+        let label = gtk::Label::builder()
+            .label("Load more commits...")
+            .css_classes(["dim-label"])
+            .margin_top(8)
+            .margin_bottom(8)
+            .build();
+        load_more_row.set_child(Some(&label));
+        self.imp().commit_list_box.append(&load_more_row);
     }
 
     fn on_commit_selected(&self, index: usize) {
@@ -1241,16 +1367,31 @@ impl GitpulsarWindow {
                 let expanded = commit_list::toggle_detail(&row);
 
                 if expanded {
-                    // Load file list for this commit
-                    let repo_ref = imp.repo.borrow();
-                    if let Some(ref repo) = *repo_ref {
-                        if let Ok(files) = repo.diff_commit(&commit_id) {
-                            if let Some(files_box) = commit_list::get_files_box(&row) {
-                                commit_list::populate_commit_files(&files_box, &files);
-                            }
-                        }
-                    }
+                    // Load file list asynchronously to avoid blocking the UI
+                    let repo_path = self.repo_path_string();
+                    let files_box = commit_list::get_files_box(&row);
+                    let limit = imp.config.borrow().commit_files_limit;
+                    let cid = commit_id.clone();
 
+                    if let (Some(path), Some(files_box)) = (repo_path, files_box) {
+                        // Show spinner while loading
+                        commit_list::show_files_loading(&files_box);
+
+                        let (tx, rx) = async_channel::bounded::<Vec<DiffFile>>(1);
+                        std::thread::spawn(move || {
+                            let files = GitRepo::open(&path)
+                                .ok()
+                                .and_then(|r| r.diff_commit(&cid).ok())
+                                .unwrap_or_default();
+                            let _ = tx.send_blocking(files);
+                        });
+
+                        glib::spawn_future_local(async move {
+                            if let Ok(files) = rx.recv().await {
+                                commit_list::populate_commit_files(&files_box, &files, limit);
+                            }
+                        });
+                    }
                 }
             }
 
@@ -1425,7 +1566,7 @@ impl GitpulsarWindow {
             if let Ok(diffs) = repo.diff_staged() {
                 *self.imp().cached_staged_diffs.borrow_mut() = diffs;
             }
-            if let Ok(status) = repo.status() {
+            if let Ok(status) = repo.status(true) {
                 self.refresh_changes_list(&status);
                 // Update sidebar status
                 let name = repo.path().file_name()
@@ -1859,7 +2000,10 @@ impl GitpulsarWindow {
                         .strip_prefix("▲ ")
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap_or(0);
+                    // Clear so offset=0 for full rebuild
+                    win.imp().commits.borrow_mut().clear();
                     win.populate_commit_list(&commits, ahead, &tags_map);
+                    *win.imp().commits.borrow_mut() = commits;
                 }
             }
 
@@ -1902,16 +2046,28 @@ impl GitpulsarWindow {
             }
         };
 
+        let prev_status_hash = imp.last_status_hash.get();
         let (tx, rx) = async_channel::bounded::<BackgroundRefreshResult>(1);
 
         std::thread::spawn(move || {
+            // Run repo status and workspace scan in parallel
+            let workspace_handle = workspace_root.map(|root| {
+                std::thread::spawn(move || workspace::scan_workspace(&root).ok())
+            });
+
             let (status, ahead, behind, unstaged_diffs, staged_diffs) =
                 if let Some(ref p) = repo_path {
                     if let Ok(repo) = GitRepo::open(p) {
-                        let st = repo.status().ok();
+                        let st = repo.status(false).ok();
                         let (a, b) = repo.ahead_behind().unwrap_or((0, 0));
-                        let ud = repo.diff_unstaged().unwrap_or_default();
-                        let sd = repo.diff_staged().unwrap_or_default();
+                        // Only compute diffs if status actually changed
+                        let status_hash = st.as_ref().map(|s| hash_status(s)).unwrap_or(0);
+                        let (ud, sd) = if status_hash != prev_status_hash {
+                            (repo.diff_unstaged().unwrap_or_default(),
+                             repo.diff_staged().unwrap_or_default())
+                        } else {
+                            (Vec::new(), Vec::new())
+                        };
                         (st, a, b, ud, sd)
                     } else {
                         (None, 0, 0, Vec::new(), Vec::new())
@@ -1921,9 +2077,9 @@ impl GitpulsarWindow {
                 };
             let status_hash = status.as_ref().map(|s| hash_status(s)).unwrap_or(0);
 
-            let workspace_entries = workspace_root.and_then(|root| {
-                workspace::scan_workspace(&root).ok()
-            });
+            let workspace_entries = workspace_handle
+                .and_then(|h| h.join().ok())
+                .flatten();
             let workspace_hash = workspace_entries.as_ref().map(|e| hash_workspace(e)).unwrap_or(0);
 
             tx.send_blocking(BackgroundRefreshResult {

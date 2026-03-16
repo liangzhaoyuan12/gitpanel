@@ -36,7 +36,7 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
         }]);
     }
 
-    let mut entries = Vec::new();
+    let mut dirs: Vec<(String, PathBuf, bool)> = Vec::new();
 
     let read_dir = std::fs::read_dir(root)?;
     for entry in read_dir {
@@ -55,19 +55,61 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
         }
 
         let is_git_repo = path.join(".git").exists();
-        let indicator = if is_git_repo {
-            compute_indicator(&path)
-        } else {
-            None
+        dirs.push((name, path, is_git_repo));
+    }
+
+    // Compute indicators in parallel for git repos
+    let git_paths: Vec<(usize, PathBuf)> = dirs
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, is_git))| *is_git)
+        .map(|(i, (_, path, _))| (i, path.clone()))
+        .collect();
+
+    let indicators: Vec<(usize, Option<RepoIndicator>)> = if git_paths.len() <= 1 {
+        // No point in parallelizing for 0-1 repos
+        git_paths
+            .into_iter()
+            .map(|(i, path)| (i, compute_indicator(&path)))
+            .collect()
+    } else {
+        // Parallel indicator computation
+        let (tx, rx) = std::sync::mpsc::channel();
+        let num_threads = git_paths.len().min(8);
+        let chunks: Vec<Vec<(usize, PathBuf)>> = {
+            let chunk_size = (git_paths.len() + num_threads - 1) / num_threads;
+            git_paths.chunks(chunk_size).map(|c| c.to_vec()).collect()
         };
 
-        entries.push(WorkspaceEntry {
+        for chunk in chunks {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for (i, path) in chunk {
+                    let indicator = compute_indicator(&path);
+                    let _ = tx.send((i, indicator));
+                }
+            });
+        }
+        drop(tx);
+
+        rx.into_iter().collect()
+    };
+
+    let mut indicator_map: Vec<Option<RepoIndicator>> = vec![None; dirs.len()];
+    for (i, indicator) in indicators {
+        indicator_map[i] = indicator;
+    }
+
+    let mut entries: Vec<WorkspaceEntry> = dirs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, path, is_git_repo))| WorkspaceEntry {
             name,
             path,
             is_git_repo,
-            indicator,
-        });
-    }
+            indicator: indicator_map[i].take(),
+        })
+        .collect();
 
     entries.sort_by(|a, b| {
         // Git repos first, then alphabetically

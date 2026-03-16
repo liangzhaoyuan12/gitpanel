@@ -3,7 +3,7 @@ BINDIR = $(PREFIX)/bin
 DATADIR = $(PREFIX)/share
 APP_ID = dev.gitpulsar.Gitpulsar
 
-.PHONY: build install uninstall
+.PHONY: build install uninstall help
 
 build:
 	cargo build --release
@@ -20,3 +20,15 @@ uninstall:
 	rm -f $(DATADIR)/applications/$(APP_ID).desktop
 	rm -f $(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+
+help:
+	@echo "Usage: make [target]"
+	@echo ""
+	@echo "Targets:"
+	@echo "  build      Build release binary (cargo build --release)"
+	@echo "  install    Build and install to PREFIX (default: ~/.local)"
+	@echo "  uninstall  Remove installed files"
+	@echo "  help       Show this help"
+	@echo ""
+	@echo "Variables:"
+	@echo "  PREFIX     Installation prefix (default: $(HOME)/.local)"

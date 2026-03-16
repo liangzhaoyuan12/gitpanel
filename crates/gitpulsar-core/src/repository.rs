@@ -18,10 +18,12 @@ impl GitRepo {
         self.repo.workdir().unwrap_or(self.repo.path())
     }
 
-    pub fn status(&self) -> Result<RepoStatus> {
+    /// Get repository status. When `recurse_untracked` is false, untracked
+    /// directories are listed as a single entry (faster for background polling).
+    pub fn status(&self, recurse_untracked: bool) -> Result<RepoStatus> {
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
+            .recurse_untracked_dirs(recurse_untracked)
             .include_ignored(false);
 
         let statuses = self.repo.statuses(Some(&mut opts))?;
@@ -92,6 +94,11 @@ impl GitRepo {
     }
 
     pub fn log(&self, max_count: usize) -> Result<Vec<CommitInfo>> {
+        self.log_page(0, max_count)
+    }
+
+    /// Load a page of commits, skipping the first `skip` entries.
+    pub fn log_page(&self, skip: usize, max_count: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TIME)?;
@@ -99,7 +106,10 @@ impl GitRepo {
         let mut commits = Vec::new();
 
         for (i, oid) in revwalk.enumerate() {
-            if i >= max_count {
+            if i < skip {
+                continue;
+            }
+            if commits.len() >= max_count {
                 break;
             }
 
@@ -128,7 +138,9 @@ impl GitRepo {
                     .map(|oid| Some(oid) == head_oid)
                     .unwrap_or(false);
 
-                let (ahead, behind) = if *branch_type == BranchType::Local {
+                // Only compute ahead/behind for the HEAD branch to avoid
+                // expensive graph walks for every local branch.
+                let (ahead, behind) = if is_head && *branch_type == BranchType::Local {
                     match branch.upstream() {
                         Ok(upstream) => {
                             let local_oid = branch.get().target();
