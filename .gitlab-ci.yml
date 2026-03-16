@@ -61,11 +61,19 @@ release:
     - job: appimage
       artifacts: true
   script:
-    - echo "Creating release for ${CI_COMMIT_TAG}"
+    - |
+      # Extract release notes for this version from CHANGELOG.md
+      # Grabs everything between "## vX.Y.Z" and the next "## v" header
+      VERSION="${CI_COMMIT_TAG#v}"
+      awk "/^## v${VERSION}/,/^## v/" CHANGELOG.md | head -n -1 | tail -n +2 > release_notes.md
+      if [ ! -s release_notes.md ]; then
+        echo "Release ${CI_COMMIT_TAG}" > release_notes.md
+      fi
+      cat release_notes.md
   release:
     tag_name: $CI_COMMIT_TAG
     name: "Gitpulsar ${CI_COMMIT_TAG}"
-    description: "See [CHANGELOG](https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/blob/${CI_COMMIT_TAG}/data/dev.gitpulsar.Gitpulsar.metainfo.xml) for details."
+    description: ./release_notes.md
     assets:
       links:
         - name: "Gitpulsar-${CI_COMMIT_TAG}-x86_64.AppImage"
