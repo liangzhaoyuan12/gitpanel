@@ -1,9 +1,10 @@
 [Desktop Entry]
 Name=Gitpulsar
 Comment=Git repository manager
-Exec=gitpulsar-gtk
+Exec=gitpulsar-gtk %U
 Icon=dev.gitpulsar.Gitpulsar
 Terminal=false
 Type=Application
 Categories=Development;RevisionControl;GTK;GNOME;
-Keywords=git;repository;vcs;
+Keywords=git;repository;vcs;version-control;
+MimeType=inode/directory;

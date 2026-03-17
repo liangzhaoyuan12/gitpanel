@@ -41,6 +41,14 @@
 
   <url type="homepage">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
   <url type="bugtracker">https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/issues</url>
+  <url type="vcs-browser">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/raw/main/data/screenshots/main.png</image>
+      <caption>Commit history with syntax-highlighted diffs</caption>
+    </screenshot>
+  </screenshots>
 
   <content_rating type="oars-1.1" />
 
@@ -89,6 +97,6 @@
   </recommends>
 
   <requires>
-    <display_length compare="ge">360</display_length>
+    <display_length compare="ge">800</display_length>
   </requires>
 </component>
