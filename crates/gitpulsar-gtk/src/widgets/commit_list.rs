@@ -124,15 +124,19 @@ pub fn create_commit_row(
 
     outer_box.append(&row_box);
 
-    // === Detail section (hidden by default) ===
+    // === Detail section (hidden by default, with slide animation) ===
+    let detail_revealer = gtk::Revealer::builder()
+        .reveal_child(false)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(200)
+        .build();
+    detail_revealer.set_widget_name("detail-box");
+
     let detail_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    detail_box.set_widget_name("detail-box");
     detail_box.set_margin_start(16);
     detail_box.set_margin_end(8);
     detail_box.set_margin_bottom(8);
-    detail_box.set_visible(false);
     detail_box.add_css_class("card");
-    detail_box.set_margin_top(0);
 
     let detail_inner = gtk::Box::new(gtk::Orientation::Vertical, 4);
     detail_inner.set_margin_start(12);
@@ -287,7 +291,8 @@ pub fn create_commit_row(
     detail_inner.append(&details_expander);
 
     detail_box.append(&detail_inner);
-    outer_box.append(&detail_box);
+    detail_revealer.set_child(Some(&detail_box));
+    outer_box.append(&detail_revealer);
 
     let row = gtk::ListBoxRow::new();
     row.set_child(Some(&outer_box));
@@ -310,18 +315,21 @@ pub fn toggle_detail(row: &gtk::ListBoxRow) -> bool {
     let expand_icon = find_child_by_name(&outer_box, "expand-icon");
 
     if let Some(detail) = detail_box {
-        let new_visible = !detail.is_visible();
-        detail.set_visible(new_visible);
-        if let Some(icon) = expand_icon {
-            if let Ok(img) = icon.downcast::<gtk::Image>() {
-                img.set_icon_name(Some(if new_visible {
-                    "pan-down-symbolic"
-                } else {
-                    "pan-end-symbolic"
-                }));
+        // detail-box is a Revealer
+        if let Ok(revealer) = detail.downcast::<gtk::Revealer>() {
+            let new_visible = !revealer.reveals_child();
+            revealer.set_reveal_child(new_visible);
+            if let Some(icon) = expand_icon {
+                if let Ok(img) = icon.downcast::<gtk::Image>() {
+                    img.set_icon_name(Some(if new_visible {
+                        "pan-down-symbolic"
+                    } else {
+                        "pan-end-symbolic"
+                    }));
+                }
             }
+            return new_visible;
         }
-        return new_visible;
     }
     false
 }
@@ -417,17 +425,27 @@ pub fn populate_commit_files(files_box: &gtk::Box, files: &[DiffFile], limit: u3
 }
 
 fn build_file_row(file: &DiffFile) -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
     let file_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     file_row.set_margin_start(4);
 
-    // Status badge
-    let (badge_text, badge_class) = diff_file_badge(file);
-    let badge = gtk::Label::builder()
-        .label(badge_text)
-        .css_classes(["caption", "monospace", badge_class])
-        .width_chars(2)
+    // Expand arrow
+    let arrow = gtk::Image::builder()
+        .icon_name("pan-end-symbolic")
+        .css_classes(["dim-label"])
+        .pixel_size(12)
         .build();
-    file_row.append(&badge);
+    file_row.append(&arrow);
+
+    // Status icon
+    let (icon_name, icon_class) = diff_file_icon(file);
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .css_classes([icon_class])
+        .pixel_size(14)
+        .build();
+    file_row.append(&icon);
 
     // File path
     let path_label = gtk::Label::builder()
@@ -448,20 +466,87 @@ fn build_file_row(file: &DiffFile) -> gtk::Box {
         .build();
     file_row.append(&stats_label);
 
-    file_row
+    // Clickable header
+    let header_btn = gtk::Button::builder()
+        .child(&file_row)
+        .css_classes(["flat"])
+        .build();
+    container.append(&header_btn);
+
+    // Inline diff (hidden by default)
+    let diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    diff_box.set_visible(false);
+    diff_box.set_margin_start(16);
+    diff_box.set_margin_end(4);
+    diff_box.set_margin_bottom(4);
+
+    let diff_tv = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .left_margin(4)
+        .right_margin(4)
+        .top_margin(4)
+        .bottom_margin(4)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::None)
+        .build();
+    diff_tv.add_css_class("card");
+
+    // Render the diff immediately since we already have the data
+    super::changes_view::render_file_diff(&diff_tv, file);
+
+    // Cap height
+    let line_count = file.hunks.iter().map(|h| h.lines.len() + 1).sum::<usize>();
+    let visible_lines = line_count.min(25).max(3);
+    diff_tv.set_height_request(visible_lines as i32 * 18);
+
+    diff_box.append(&diff_tv);
+    container.append(&diff_box);
+
+    // Toggle diff on click
+    {
+        let diff_box = diff_box.clone();
+        let arrow = arrow.clone();
+        header_btn.connect_clicked(move |_| {
+            let visible = !diff_box.is_visible();
+            diff_box.set_visible(visible);
+            arrow.set_icon_name(Some(if visible {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            }));
+        });
+    }
+
+    container
 }
 
-/// Determine badge text and CSS class for a diff file.
+/// Icon name and CSS class for a diff file status.
+fn diff_file_icon(file: &DiffFile) -> (&'static str, &'static str) {
+    let has_additions = file.stats.insertions > 0;
+    let has_deletions = file.stats.deletions > 0;
+
+    if has_additions && !has_deletions {
+        ("list-add-symbolic", "success")
+    } else if has_deletions && !has_additions {
+        ("list-remove-symbolic", "error")
+    } else {
+        ("document-edit-symbolic", "accent")
+    }
+}
+
+/// Icon name and CSS class for a diff file status (legacy, kept for reference).
+#[allow(dead_code)]
 fn diff_file_badge(file: &DiffFile) -> (&'static str, &'static str) {
     let has_additions = file.stats.insertions > 0;
     let has_deletions = file.stats.deletions > 0;
 
     if has_additions && !has_deletions {
-        ("A", "success")
+        ("list-add-symbolic", "success")
     } else if has_deletions && !has_additions {
-        ("D", "error")
+        ("list-remove-symbolic", "error")
     } else {
-        ("M", "accent")
+        ("document-edit-symbolic", "accent")
     }
 }
 
@@ -482,6 +567,19 @@ fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {
         if let Ok(inner_box) = c.clone().downcast::<gtk::Box>() {
             if let Some(found) = find_child_by_name(&inner_box, name) {
                 return Some(found);
+            }
+        }
+        // Recurse into revealers
+        if let Ok(revealer) = c.clone().downcast::<gtk::Revealer>() {
+            if let Some(rev_child) = revealer.child() {
+                if rev_child.widget_name() == name {
+                    return Some(rev_child);
+                }
+                if let Ok(inner_box) = rev_child.downcast::<gtk::Box>() {
+                    if let Some(found) = find_child_by_name(&inner_box, name) {
+                        return Some(found);
+                    }
+                }
             }
         }
         child = c.next_sibling();

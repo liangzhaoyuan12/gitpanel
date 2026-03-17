@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.4.2 (2026-03-17)
+
+### New Features
+
+- **Inline diff in commit files** — click a file in expanded commit to see full diff with syntax highlighting
+- **Colored status icons** — replaced text badges (A/M/D) with symbolic icons in both changes view and commit detail
+- **Slide animations** — smooth Revealer transitions for commit detail, diff accordion, and sidebar sections
+- **Custom GNOME icons** — branch-fork, commit, tag-outline, git, branch-compare, pull-request from Icon Library
+- **"Gitpulsar" title** in content header bar
+
+### Improvements
+
+- Graph tab refreshes when switching repos while on graph view
+- Replaced all missing icons (emblem-ok, tag) with available alternatives
+- Git repos in sidebar use `git-symbolic` icon
+- Branch rows show `branch-fork-symbolic` icon (green for HEAD)
+- Tag rows use `tag-outline-symbolic`
+- Changes tab uses `branch-compare-symbolic`
+- Removed separate graph button from header (accessible via tab)
+- Removed "Workspace" label from sidebar
+- Open folder button no longer hidden on narrow windows
+- Minimum window size set to 800x500 for proper desktop layout
+- Icons installed via Makefile to system icon theme
+
 ## v0.4.1 (2026-03-16)
 
 ### New Features

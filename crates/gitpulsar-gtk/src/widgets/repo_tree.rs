@@ -14,11 +14,14 @@ pub fn create_repo_row(entry: &WorkspaceEntry) -> gtk::ListBoxRow {
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
     let icon_name = if entry.is_git_repo {
-        "folder-remote-symbolic"
+        "git-symbolic"
     } else {
         "folder-symbolic"
     };
-    let icon = gtk::Image::from_icon_name(icon_name);
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .pixel_size(16)
+        .build();
     if !entry.is_git_repo {
         icon.add_css_class("dim-label");
     }

@@ -292,8 +292,8 @@ impl GitpulsarWindow {
             .property("title", "Gitpulsar")
             .property("default-width", 1200)
             .property("default-height", 800)
-            .property("width-request", 390)
-            .property("height-request", 400)
+            .property("width-request", 800)
+            .property("height-request", 500)
             .build();
 
         window.setup_ui();
@@ -339,8 +339,11 @@ impl GitpulsarWindow {
         let content_header = adw::HeaderBar::new();
         content_header.set_show_start_title_buttons(false);
         content_header.set_show_end_title_buttons(true);
-        // Empty title widget to prevent window title "Gitpulsar" from leaking
-        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        let content_title = gtk::Label::builder()
+            .label("Gitpulsar")
+            .css_classes(["title"])
+            .build();
+        content_header.set_title_widget(Some(&content_title));
 
         // Content header left: toggle repo tree
         let toggle_repo_tree = gtk::ToggleButton::builder()
@@ -404,20 +407,15 @@ impl GitpulsarWindow {
         content_header.pack_end(&search_toggle);
 
         // Content header right: branch graph button
-        let graph_btn = gtk::Button::builder()
-            .icon_name("org.gnome.Settings-network-symbolic")
-            .tooltip_text("Branch Graph")
-            .build();
-        let win = self.clone();
-        graph_btn.connect_clicked(move |_| {
-            win.imp().view_stack.set_visible_child_name("graph");
-        });
-        content_header.pack_end(&graph_btn);
+        // Graph tab accessible via Ctrl+3 or ViewSwitcher
 
         // Content header right: branch label
         let branch_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         imp.branch_label.set_label("—");
-        branch_content.append(&gtk::Image::from_icon_name("view-list-symbolic"));
+        branch_content.append(&gtk::Image::builder()
+            .icon_name("branch-fork-symbolic")
+            .pixel_size(16)
+            .build());
         branch_content.append(&imp.branch_label);
         content_header.pack_end(&branch_content);
 
@@ -435,16 +433,6 @@ impl GitpulsarWindow {
         // LEFT SIDEBAR — repo tree (full height with own HeaderBar)
         // ==========================================
         let repo_sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-
-        let repo_header = gtk::Label::builder()
-            .label("Workspace")
-            .css_classes(["heading"])
-            .xalign(0.0)
-            .margin_start(12)
-            .margin_top(8)
-            .margin_bottom(4)
-            .build();
-        repo_sidebar_content.append(&repo_header);
 
         let repo_scrolled = gtk::ScrolledWindow::builder()
             .vexpand(true)
@@ -679,9 +667,9 @@ impl GitpulsarWindow {
         graph_page.append(&graph_scrolled);
 
         // --- ViewStack setup ---
-        imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "emoji-recent-symbolic");
-        imp.view_stack.add_titled_with_icon(&changes_box, Some("changes"), "Changes", "document-edit-symbolic");
-        imp.view_stack.add_titled_with_icon(&graph_page, Some("graph"), "Graph", "view-app-grid-symbolic");
+        imp.view_stack.add_titled_with_icon(&commits_page, Some("commits"), "Commits", "commit-symbolic");
+        imp.view_stack.add_titled_with_icon(&changes_box, Some("changes"), "Changes", "branch-compare-symbolic");
+        imp.view_stack.add_titled_with_icon(&graph_page, Some("graph"), "Graph", "branch-fork-symbolic");
 
         // ==========================================
         // RIGHT SIDEBAR — branches & tags panel
@@ -759,7 +747,7 @@ impl GitpulsarWindow {
         compact_switcher.set_visible(false);
 
         let commits_toggle = gtk::ToggleButton::builder()
-            .icon_name("emoji-recent-symbolic")
+            .icon_name("commit-symbolic")
             .tooltip_text("Commits")
             .active(true)
             .css_classes(["flat"])
@@ -928,13 +916,10 @@ impl GitpulsarWindow {
         ));
         bp_narrow.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
-        // Window buttons on content header (only visible header now)
         bp_narrow.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
-        // Hide text labels
+        // Hide non-essential labels in narrow mode
         bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&graph_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&open_button, "visible", Some(&false.to_value()));
         // Footer: icon-only switcher
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
@@ -1364,6 +1349,11 @@ impl GitpulsarWindow {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
                     win.update_sidebar_status(&name, data.status.as_ref());
+                }
+
+                // Refresh graph if currently visible
+                if win.imp().view_stack.visible_child_name().as_deref() == Some("graph") {
+                    win.populate_graph_tab();
                 }
             }
         });
@@ -2130,7 +2120,7 @@ impl GitpulsarWindow {
         banner.set_margin_bottom(4);
 
         let icon = gtk::Image::builder()
-            .icon_name("dialog-warning-symbolic")
+            .icon_name("pull-request-merged-symbolic")
             .css_classes(["warning"])
             .build();
         banner.append(&icon);

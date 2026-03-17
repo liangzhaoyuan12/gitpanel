@@ -13,6 +13,9 @@ install: build
 	install -Dm644 data/$(APP_ID).desktop $(DATADIR)/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).metainfo.xml $(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APP_ID).svg $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	@for icon in data/icons/hicolor/scalable/actions/*.svg; do \
+		install -Dm644 "$$icon" "$(DATADIR)/icons/hicolor/scalable/actions/$$(basename $$icon)"; \
+	done
 	@echo "Installed to $(PREFIX). Make sure $(BINDIR) is in your PATH."
 
 uninstall:
@@ -20,6 +23,11 @@ uninstall:
 	rm -f $(DATADIR)/applications/$(APP_ID).desktop
 	rm -f $(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/actions/branch-*.svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/actions/commit-*.svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/actions/history-*.svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/actions/pull-request-*.svg
+	rm -f $(DATADIR)/icons/hicolor/scalable/actions/tag-*.svg
 
 help:
 	@echo "Usage: make [target]"

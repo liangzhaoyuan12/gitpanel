@@ -37,14 +37,20 @@ fn build_collapsible_section(parent: &gtk::Box, title: &str, expanded: bool) -> 
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
         .build();
-    list.set_visible(expanded);
-    section.append(&list);
 
-    let list_ref = list.clone();
+    let revealer = gtk::Revealer::builder()
+        .reveal_child(expanded)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(150)
+        .child(&list)
+        .build();
+    section.append(&revealer);
+
+    let revealer_ref = revealer.clone();
     let arrow_ref = arrow.clone();
     header_btn.connect_clicked(move |_| {
-        let visible = !list_ref.is_visible();
-        list_ref.set_visible(visible);
+        let visible = !revealer_ref.reveals_child();
+        revealer_ref.set_reveal_child(visible);
         arrow_ref.set_icon_name(Some(if visible {
             "pan-down-symbolic"
         } else {
@@ -258,10 +264,18 @@ pub fn populate_branches(local_list: &gtk::ListBox, remote_list: &gtk::ListBox, 
         row_box.set_margin_top(4);
         row_box.set_margin_bottom(4);
 
+        let branch_icon = gtk::Image::builder()
+            .icon_name("branch-fork-symbolic")
+            .css_classes(if branch.is_head { vec!["success"] } else { vec!["dim-label"] })
+            .pixel_size(14)
+            .build();
+        row_box.append(&branch_icon);
+
         if branch.is_head {
             row_box.append(&gtk::Image::builder()
                 .icon_name("object-select-symbolic")
                 .css_classes(["success"])
+                .pixel_size(12)
                 .build());
         }
 
@@ -309,8 +323,9 @@ pub fn populate_tags(tags_list: &gtk::ListBox, tags: &[TagInfo]) {
         row_box.set_margin_bottom(4);
 
         row_box.append(&gtk::Image::builder()
-            .icon_name("tag-symbolic")
+            .icon_name("tag-outline-symbolic")
             .css_classes(["dim-label"])
+            .pixel_size(14)
             .build());
 
         let name_label = gtk::Label::builder()
@@ -495,7 +510,7 @@ where
         row_box.set_margin_top(4);
         row_box.set_margin_bottom(4);
 
-        let icon_name = if wt.is_current { "emblem-ok-symbolic" } else { "folder-symbolic" };
+        let icon_name = if wt.is_current { "object-select-symbolic" } else { "folder-symbolic" };
         row_box.append(&gtk::Image::builder()
             .icon_name(icon_name)
             .css_classes(["dim-label"])

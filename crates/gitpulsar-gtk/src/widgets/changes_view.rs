@@ -274,30 +274,32 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     expand_icon.set_widget_name("expand-icon");
     header.append(&expand_icon);
 
-    // Status badge
-    let (badge_text, badge_css) = match file.status {
-        FileStatusKind::New => ("A", "success"),
-        FileStatusKind::Modified => ("M", "accent"),
-        FileStatusKind::Deleted => ("D", "error"),
-        FileStatusKind::Renamed => ("R", "accent"),
-        FileStatusKind::Typechange => ("T", "warning"),
+    // Status icon
+    let (icon_name, icon_css, tooltip) = match file.status {
+        FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
+        FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
+        FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
+        FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
+        FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
     };
 
-    let badge = gtk::Label::builder()
-        .label(badge_text)
-        .css_classes(["caption", badge_css])
-        .width_chars(2)
+    let status_icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .css_classes([icon_css])
+        .pixel_size(14)
+        .tooltip_text(tooltip)
         .build();
-    header.append(&badge);
+    header.append(&status_icon);
 
     // Staged indicator
     if file.is_staged {
-        let staged_badge = gtk::Label::builder()
-            .label("S")
-            .css_classes(["caption", "success"])
+        let staged_icon = gtk::Image::builder()
+            .icon_name("object-select-symbolic")
+            .css_classes(["success"])
+            .pixel_size(12)
             .tooltip_text("Staged")
             .build();
-        header.append(&staged_badge);
+        header.append(&staged_icon);
     }
 
     // File path
@@ -356,10 +358,15 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     header.append(&btn_box);
     outer_box.append(&header);
 
-    // === Diff section (hidden by default) ===
+    // === Diff section (hidden by default, with animation) ===
+    let diff_revealer = gtk::Revealer::builder()
+        .reveal_child(false)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(200)
+        .build();
+    diff_revealer.set_widget_name("diff-box");
+
     let diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    diff_box.set_widget_name("diff-box");
-    diff_box.set_visible(false);
     diff_box.set_margin_start(16);
     diff_box.set_margin_end(8);
     diff_box.set_margin_bottom(4);
@@ -384,7 +391,8 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
 
     // Will be sized dynamically when diff is loaded
     diff_box.append(&diff_text);
-    outer_box.append(&diff_box);
+    diff_revealer.set_child(Some(&diff_box));
+    outer_box.append(&diff_revealer);
 
     let row = gtk::ListBoxRow::new();
     row.set_child(Some(&outer_box));
@@ -415,18 +423,20 @@ pub fn toggle_file_diff(row: &gtk::ListBoxRow) -> bool {
     let expand_icon = find_child_by_name(&outer_box, "expand-icon");
 
     if let Some(diff) = diff_box {
-        let new_visible = !diff.is_visible();
-        diff.set_visible(new_visible);
-        if let Some(icon) = expand_icon {
-            if let Ok(img) = icon.downcast::<gtk::Image>() {
-                img.set_icon_name(Some(if new_visible {
-                    "pan-down-symbolic"
-                } else {
-                    "pan-end-symbolic"
-                }));
+        if let Ok(revealer) = diff.downcast::<gtk::Revealer>() {
+            let new_visible = !revealer.reveals_child();
+            revealer.set_reveal_child(new_visible);
+            if let Some(icon) = expand_icon {
+                if let Ok(img) = icon.downcast::<gtk::Image>() {
+                    img.set_icon_name(Some(if new_visible {
+                        "pan-down-symbolic"
+                    } else {
+                        "pan-end-symbolic"
+                    }));
+                }
             }
+            return new_visible;
         }
-        return new_visible;
     }
     false
 }
@@ -742,6 +752,18 @@ fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {
         if let Ok(inner_box) = c.clone().downcast::<gtk::Box>() {
             if let Some(found) = find_child_by_name(&inner_box, name) {
                 return Some(found);
+            }
+        }
+        if let Ok(revealer) = c.clone().downcast::<gtk::Revealer>() {
+            if let Some(rev_child) = revealer.child() {
+                if rev_child.widget_name() == name {
+                    return Some(rev_child);
+                }
+                if let Ok(inner_box) = rev_child.downcast::<gtk::Box>() {
+                    if let Some(found) = find_child_by_name(&inner_box, name) {
+                        return Some(found);
+                    }
+                }
             }
         }
         child = c.next_sibling();
