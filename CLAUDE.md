@@ -71,3 +71,22 @@ Two-crate workspace:
 ## CI
 
 GitLab CI (`.gitlab-ci.yml`): triggers on `v*` tags, builds on Fedora 41, produces AppImage via linuxdeploy. `NO_STRIP=true` due to Fedora 41 .relr.dyn incompatibility.
+Release notes auto-extracted from `CHANGELOG.md` via `sed -n` (not `awk` — cascades; not `head -n -1` — BusyBox incompatible).
+
+## Release Process
+
+1. Update version in `Cargo.toml` (workspace level)
+2. Add section to `CHANGELOG.md` (`## vX.Y.Z (date)`)
+3. Add release entry to `data/dev.gitpulsar.Gitpulsar.metainfo.xml`
+4. About dialog version auto-reads from `env!("CARGO_PKG_VERSION")`
+5. `git tag vX.Y.Z && git push origin vX.Y.Z` — CI builds AppImage + creates release with notes from CHANGELOG
+
+## Gotchas
+
+- **Icons**: Many symbolic icons (tag-symbolic, emblem-ok-symbolic) don't exist in standard Adwaita. Verify with `Gtk.IconTheme.has_icon()`. Custom icons in `data/icons/hicolor/scalable/actions/`, installed via Makefile.
+- **RefCell borrows**: Can't store `&T` from `RefCell::borrow()` in a Vec that outlives the borrow scope. Clone the Option first: `let x = imp.field.borrow().clone();`
+- **Revealer vs set_visible**: Use `gtk::Revealer` for animated show/hide. `find_child_by_name` must recurse into Revealers (not just Boxes).
+- **Performance**: Never compute `commit_graph::compute_graph` on UI thread — use background thread. Use `Rc` for shared data across DrawingArea closures, not `.to_vec()` per row.
+- **Alpine/BusyBox**: CI release image is Alpine-based. `head -n -1` and `tail -n +2` may not work. Use `sed` instead.
+- **gio::Menu icons**: `MenuItem::set_attribute_value("icon", ...)` doesn't render in libadwaita PopoverMenu.
+- **status(bool)**: `repo.status(true)` for full recursive untracked scan, `repo.status(false)` for fast background polling.
