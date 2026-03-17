@@ -48,6 +48,5 @@ modules:
     sources:
       - type: git
         url: https://gitlab.com/ilshat.ishdavletov/gitpulsar.git
-        tag: v0.4.2
-        commit: 9edb8dffcf1b0ec138faa8af5fd3f535f7540d1c
+        commit: 59c6ef68b45959046343ed6c9bb01e6d7a346c8b
       - cargo-sources.json
