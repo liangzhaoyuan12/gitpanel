@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.gitpulsar.Gitpulsar</id>
+  <id>io.gitlab.ilshat_ishdavletov.Gitpulsar</id>
 
   <name>Gitpulsar</name>
   <summary>Git repository manager</summary>
@@ -33,9 +33,9 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">dev.gitpulsar.Gitpulsar.desktop</launchable>
+  <launchable type="desktop-id">io.gitlab.ilshat_ishdavletov.Gitpulsar.desktop</launchable>
 
-  <developer id="dev.gitpulsar">
+  <developer id="io.gitlab.ilshat_ishdavletov">
     <name>Ilshat Ishdavletov</name>
   </developer>
 

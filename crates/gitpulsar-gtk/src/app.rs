@@ -10,13 +10,13 @@ pub struct GitpulsarApp {
 impl GitpulsarApp {
     pub fn new() -> Self {
         let app = adw::Application::builder()
-            .application_id("dev.gitpulsar.Gitpulsar")
+            .application_id("io.gitlab.ilshat_ishdavletov.Gitpulsar")
             .flags(gio::ApplicationFlags::HANDLES_OPEN)
             .build();
 
         app.connect_activate(|app| {
             // Set window icon
-            gtk::Window::set_default_icon_name("dev.gitpulsar.Gitpulsar");
+            gtk::Window::set_default_icon_name("io.gitlab.ilshat_ishdavletov.Gitpulsar");
 
             // Add icon search path for development builds
             let display = gtk::gdk::Display::default().unwrap();

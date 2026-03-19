@@ -36,15 +36,15 @@ appimage:
     - mkdir -p AppDir/usr/share/applications
     - mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
     - cp target/release/gitpulsar-gtk AppDir/usr/bin/
-    - cp data/dev.gitpulsar.Gitpulsar.desktop AppDir/usr/share/applications/
-    - cp data/icons/hicolor/scalable/apps/dev.gitpulsar.Gitpulsar.svg AppDir/usr/share/icons/hicolor/scalable/apps/
+    - cp data/io.gitlab.ilshat_ishdavletov.Gitpulsar.desktop AppDir/usr/share/applications/
+    - cp data/icons/hicolor/scalable/apps/io.gitlab.ilshat_ishdavletov.Gitpulsar.svg AppDir/usr/share/icons/hicolor/scalable/apps/
     # Build AppImage (NO_STRIP: linuxdeploy's bundled strip is too old for Fedora's .relr.dyn)
     - export DEPLOY_GTK_VERSION=4
     - export NO_STRIP=true
     - ./linuxdeploy --appdir AppDir
         --plugin gtk
-        --desktop-file AppDir/usr/share/applications/dev.gitpulsar.Gitpulsar.desktop
-        --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/dev.gitpulsar.Gitpulsar.svg
+        --desktop-file AppDir/usr/share/applications/io.gitlab.ilshat_ishdavletov.Gitpulsar.desktop
+        --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/io.gitlab.ilshat_ishdavletov.Gitpulsar.svg
         --output appimage
     - mv Gitpulsar-*.AppImage "Gitpulsar-${CI_COMMIT_TAG}-x86_64.AppImage"
   artifacts:

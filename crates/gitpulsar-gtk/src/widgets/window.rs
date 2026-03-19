@@ -1117,7 +1117,7 @@ impl GitpulsarWindow {
         about_action.connect_activate(move |_, _| {
             let dialog = adw::AboutWindow::builder()
                 .application_name("Gitpulsar")
-                .application_icon("dev.gitpulsar.Gitpulsar")
+                .application_icon("io.gitlab.ilshat_ishdavletov.Gitpulsar")
                 .developer_name("Ilshat Ishdavletov")
                 .version(env!("CARGO_PKG_VERSION"))
                 .website("https://gitlab.com/ilshat.ishdavletov/gitpulsar")
