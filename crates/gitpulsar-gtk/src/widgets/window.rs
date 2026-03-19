@@ -2350,6 +2350,9 @@ impl GitpulsarWindow {
     }
 
     fn refresh_after_remote_op(&self) {
+        // Force commit list rebuild by resetting hash (push changes unpushed indicators)
+        self.imp().last_commits_hash.set(0);
+        self.imp().last_status_hash.set(0);
         // Re-open repo since the background thread may have changed state
         let path = self.repo_path_string();
         if let Some(path) = path {
@@ -2358,6 +2361,8 @@ impl GitpulsarWindow {
                 *self.imp().repo.borrow_mut() = Some(repo);
             }
         }
+        // Also refresh workspace sidebar indicators
+        self.trigger_background_refresh();
     }
 
     // ==========================================

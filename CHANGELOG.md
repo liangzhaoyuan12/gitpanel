@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.3 (2026-03-19)
+
+### Bug Fixes
+
+- Fixed unpushed commit indicators not clearing after push
+- Fixed sidebar repo indicators not updating after push/pull/fetch
+- Force commit list rebuild after remote operations to reflect pushed state
+
 ## v0.4.2 (2026-03-17)
 
 ### New Features

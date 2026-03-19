@@ -53,6 +53,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.4.3" date="2026-03-19">
+      <description>
+        <p>Fixed unpushed commit indicators and sidebar not updating after push/pull/fetch.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-03-17">
       <description>
         <p>Inline diff for commit files, colored status icons, slide animations, custom GNOME icons (branch, tag, git, commit), graph tab auto-refresh, minimum window size 800x500.</p>
