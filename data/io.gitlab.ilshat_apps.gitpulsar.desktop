@@ -2,7 +2,7 @@
 Name=Gitpulsar
 Comment=Git repository manager
 Exec=gitpulsar-gtk %U
-Icon=io.gitlab.ilshat_apps.Gitpulsar
+Icon=io.gitlab.ilshat_apps.gitpulsar
 Terminal=false
 Type=Application
 Categories=Development;RevisionControl;GTK;GNOME;

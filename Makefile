@@ -1,7 +1,7 @@
 PREFIX ?= $(HOME)/.local
 BINDIR = $(PREFIX)/bin
 DATADIR = $(PREFIX)/share
-APP_ID = io.gitlab.ilshat_apps.Gitpulsar
+APP_ID = io.gitlab.ilshat_apps.gitpulsar
 
 .PHONY: build install uninstall help
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-GitPulsar — GNOME-native Git GUI written in Rust with GTK4/libadwaita. App ID: `io.gitlab.ilshat_apps.Gitpulsar`.
+GitPulsar — GNOME-native Git GUI written in Rust with GTK4/libadwaita. App ID: `io.gitlab.ilshat_apps.gitpulsar`.
 
 ## Build & Run
 
@@ -77,7 +77,7 @@ Release notes auto-extracted from `CHANGELOG.md` via `sed -n` (not `awk` — cas
 
 1. Update version in `Cargo.toml` (workspace level)
 2. Add section to `CHANGELOG.md` (`## vX.Y.Z (date)`)
-3. Add release entry to `data/io.gitlab.ilshat_apps.Gitpulsar.metainfo.xml`
+3. Add release entry to `data/io.gitlab.ilshat_apps.gitpulsar.metainfo.xml`
 4. About dialog version auto-reads from `env!("CARGO_PKG_VERSION")`
 5. `git tag vX.Y.Z && git push origin vX.Y.Z` — CI builds AppImage + creates release with notes from CHANGELOG
 
