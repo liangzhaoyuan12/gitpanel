@@ -86,7 +86,7 @@ impl DateFormat {
 fn config_path() -> PathBuf {
     let dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("io.gitlab.ilshat_ishdavletov");
+        .join("io.gitlab.ilshat_apps");
     dir.join("config.json")
 }
 

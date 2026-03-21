@@ -1,7 +1,7 @@
 PREFIX ?= $(HOME)/.local
 BINDIR = $(PREFIX)/bin
 DATADIR = $(PREFIX)/share
-APP_ID = io.gitlab.ilshat_ishdavletov.Gitpulsar
+APP_ID = io.gitlab.ilshat_apps.Gitpulsar
 
 .PHONY: build install uninstall help
 
@@ -11,6 +11,7 @@ build:
 install: build
 	install -Dm755 target/release/gitpulsar-gtk $(BINDIR)/gitpulsar-gtk
 	install -Dm644 data/$(APP_ID).desktop $(DATADIR)/applications/$(APP_ID).desktop
+	sed -i 's|Icon=$(APP_ID)|Icon=$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg|' $(DATADIR)/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).metainfo.xml $(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APP_ID).svg $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
 	@for icon in data/icons/hicolor/scalable/actions/*.svg; do \

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-GitPulsar — GNOME-native Git GUI written in Rust with GTK4/libadwaita. App ID: `io.gitlab.ilshat_ishdavletov.Gitpulsar`.
+GitPulsar — GNOME-native Git GUI written in Rust with GTK4/libadwaita. App ID: `io.gitlab.ilshat_apps.Gitpulsar`.
 
 ## Build & Run
 
@@ -63,7 +63,7 @@ Two-crate workspace:
 - **Changes view**: Split into unstaged/staged ListBoxes with drag-and-drop between them.
 - **Undo/redo**: `UndoStack` in `undo.rs` tracks staging ops and discards (with saved file content for restore).
 - **Syntax highlighting**: `syntect` crate in `syntax.rs`, lazy-loaded SyntaxSet/ThemeSet, theme-aware (dark/light via `adw::StyleManager`).
-- **Config**: JSON at `~/.config/io.gitlab.ilshat_ishdavletov/config.json` — date format, refresh interval, commit files limit, recent workspaces.
+- **Config**: JSON at `~/.config/io.gitlab.ilshat_apps/config.json` — date format, refresh interval, commit files limit, recent workspaces.
 - **CLI open**: App uses `HANDLES_OPEN` flag — accepts repo path as CLI argument (`gitpulsar-gtk /path/to/repo`).
 - **Branch graph**: `commit_graph.rs` renders via cairo, not standard GTK widgets — separate drawing model.
 - **Hunk staging**: Builds partial unified-diff patches and applies via `git2::Repository::apply` to index.
@@ -77,7 +77,7 @@ Release notes auto-extracted from `CHANGELOG.md` via `sed -n` (not `awk` — cas
 
 1. Update version in `Cargo.toml` (workspace level)
 2. Add section to `CHANGELOG.md` (`## vX.Y.Z (date)`)
-3. Add release entry to `data/io.gitlab.ilshat_ishdavletov.Gitpulsar.metainfo.xml`
+3. Add release entry to `data/io.gitlab.ilshat_apps.Gitpulsar.metainfo.xml`
 4. About dialog version auto-reads from `env!("CARGO_PKG_VERSION")`
 5. `git tag vX.Y.Z && git push origin vX.Y.Z` — CI builds AppImage + creates release with notes from CHANGELOG
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.gitlab.ilshat_ishdavletov.Gitpulsar</id>
+  <id>io.gitlab.ilshat_apps.Gitpulsar</id>
 
   <name>Gitpulsar</name>
   <summary>Git repository manager</summary>
@@ -33,19 +33,19 @@
     </ul>
   </description>
 
-  <launchable type="desktop-id">io.gitlab.ilshat_ishdavletov.Gitpulsar.desktop</launchable>
+  <launchable type="desktop-id">io.gitlab.ilshat_apps.Gitpulsar.desktop</launchable>
 
-  <developer id="io.gitlab.ilshat_ishdavletov">
+  <developer id="io.gitlab.ilshat_apps">
     <name>Ilshat Ishdavletov</name>
   </developer>
 
-  <url type="homepage">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
-  <url type="bugtracker">https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/issues</url>
-  <url type="vcs-browser">https://gitlab.com/ilshat.ishdavletov/gitpulsar</url>
+  <url type="homepage">https://gitlab.com/ilshat-apps/gitpulsar</url>
+  <url type="bugtracker">https://gitlab.com/ilshat-apps/gitpulsar/-/issues</url>
+  <url type="vcs-browser">https://gitlab.com/ilshat-apps/gitpulsar</url>
 
   <screenshots>
     <screenshot type="default">
-      <image>https://gitlab.com/ilshat.ishdavletov/gitpulsar/-/raw/main/data/screenshots/main.png</image>
+      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/main.png</image>
       <caption>Commit history with syntax-highlighted diffs</caption>
     </screenshot>
   </screenshots>
