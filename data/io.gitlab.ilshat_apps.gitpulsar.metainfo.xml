@@ -49,9 +49,13 @@
   <url type="vcs-browser">https://gitlab.com/ilshat-apps/gitpulsar</url>
 
   <screenshots>
-    <screenshot type="default">
-      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/main.png</image>
-      <caption>Commit history with syntax-highlighted diffs</caption>
+    <screenshot type="default" xml:lang="en">
+      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/light.png</image>
+      <caption>Commit history with branches and tags</caption>
+    </screenshot>
+    <screenshot xml:lang="en">
+      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/dark.png</image>
+      <caption>Dark theme with commit history</caption>
     </screenshot>
   </screenshots>
 

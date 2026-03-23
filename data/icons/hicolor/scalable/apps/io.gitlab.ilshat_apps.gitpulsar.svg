@@ -5,47 +5,25 @@
       <stop offset="0%" stop-color="#3584e4"/>
       <stop offset="100%" stop-color="#1a5fb4"/>
     </linearGradient>
-    <linearGradient id="glow" x1="0.5" y1="0" x2="0.5" y2="1">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
   </defs>
 
   <!-- Rounded square background (GNOME style) -->
   <rect x="4" y="4" width="120" height="120" rx="28" ry="28" fill="url(#bg)"/>
-  <rect x="4" y="4" width="120" height="120" rx="28" ry="28" fill="url(#glow)" opacity="0.5"/>
 
-  <!-- Subtle border -->
-  <rect x="4" y="4" width="120" height="120" rx="28" ry="28"
-        fill="none" stroke="#1a5fb4" stroke-width="1" opacity="0.3"/>
-
-  <!-- Pulsar star (center bright dot with rays) -->
-  <circle cx="64" cy="52" r="8" fill="#ffffff" opacity="0.95"/>
-  <circle cx="64" cy="52" r="12" fill="#ffffff" opacity="0.2"/>
-  <circle cx="64" cy="52" r="18" fill="#ffffff" opacity="0.08"/>
-
-  <!-- Pulsar horizontal beam -->
-  <ellipse cx="64" cy="52" rx="30" ry="3" fill="#ffffff" opacity="0.4"/>
-
-  <!-- Git branch lines emanating from pulsar -->
-  <!-- Main branch (straight down) -->
-  <line x1="64" y1="60" x2="64" y2="105" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+  <!-- Main branch (vertical line) -->
+  <line x1="64" y1="28" x2="64" y2="100" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
 
   <!-- Left branch -->
-  <path d="M64,70 C64,70 50,75 40,90" stroke="#99c1f1" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.8"/>
+  <path d="M64,50 C56,55 44,60 38,72" stroke="#99c1f1" stroke-width="3.5" stroke-linecap="round" fill="none"/>
 
-  <!-- Right branch -->
-  <path d="M64,65 C64,65 78,70 88,82" stroke="#8ff0a4" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.8"/>
+  <!-- Right branch (merge) -->
+  <path d="M64,42 C72,47 84,52 88,62" stroke="#8ff0a4" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <path d="M88,62 C84,72 72,80 64,82" stroke="#8ff0a4" stroke-width="3.5" stroke-linecap="round" fill="none"/>
 
-  <!-- Branch merge back -->
-  <path d="M88,82 C88,88 75,95 64,95" stroke="#8ff0a4" stroke-width="2.5" stroke-linecap="round" fill="none" opacity="0.6"/>
-
-  <!-- Commit dots on branches -->
-  <circle cx="64" cy="75" r="3.5" fill="#ffffff"/>
-  <circle cx="64" cy="90" r="3.5" fill="#ffffff"/>
-  <circle cx="64" cy="105" r="3.5" fill="#ffffff"/>
-  <circle cx="52" cy="80" r="3" fill="#99c1f1"/>
-  <circle cx="40" cy="90" r="3" fill="#99c1f1"/>
-  <circle cx="76" cy="72" r="3" fill="#8ff0a4"/>
-  <circle cx="88" cy="82" r="3" fill="#8ff0a4"/>
+  <!-- Commit dots -->
+  <circle cx="64" cy="38" r="5" fill="#ffffff"/>
+  <circle cx="64" cy="60" r="5" fill="#ffffff"/>
+  <circle cx="64" cy="82" r="5" fill="#ffffff"/>
+  <circle cx="38" cy="72" r="4.5" fill="#99c1f1"/>
+  <circle cx="88" cy="62" r="4.5" fill="#8ff0a4"/>
 </svg>
