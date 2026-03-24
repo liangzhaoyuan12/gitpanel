@@ -24,7 +24,7 @@ A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 - **Submodules** — list, init, update submodules
 - **Worktrees** — list, add, remove git worktrees
 - **.gitignore editor** — edit .gitignore from the app menu
-- **Adaptive layout** — responsive 3-panel design for desktop and mobile
+- **Adaptive layout** — 3-tier responsive design: desktop, tablet (<860sp), mobile (<500sp). Minimum 360px width
 - **Auto-refresh** — configurable polling with hash-based skip
 - **Preferences** — date format, refresh interval, commit files limit
 

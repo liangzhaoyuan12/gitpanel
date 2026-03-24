@@ -67,6 +67,7 @@ Two-crate workspace:
 - **CLI open**: App uses `HANDLES_OPEN` flag — accepts repo path as CLI argument (`gitpulsar-gtk /path/to/repo`).
 - **Branch graph**: `commit_graph.rs` renders via cairo, not standard GTK widgets — separate drawing model.
 - **Hunk staging**: Builds partial unified-diff patches and applies via `git2::Repository::apply` to index.
+- **Adaptive layout**: 3-tier `AdwBreakpoint` system — tablet (<860sp), narrow (<600sp), mobile (<500sp). Uses `sp` units for Large Text scaling. Min window 360x294.
 
 ## CI
 
