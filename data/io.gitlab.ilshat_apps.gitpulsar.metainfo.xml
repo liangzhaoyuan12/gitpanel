@@ -104,13 +104,18 @@
     </release>
   </releases>
 
-  <recommends>
+  <supports>
     <control>pointing</control>
     <control>keyboard</control>
     <control>touch</control>
+  </supports>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
   </recommends>
 
   <requires>
-    <display_length compare="ge">800</display_length>
+    <display_length compare="ge">360</display_length>
   </requires>
 </component>

@@ -292,8 +292,8 @@ impl GitpulsarWindow {
             .property("title", "Gitpulsar")
             .property("default-width", 1200)
             .property("default-height", 800)
-            .property("width-request", 800)
-            .property("height-request", 500)
+            .property("width-request", 360)
+            .property("height-request", 294)
             .build();
 
         window.setup_ui();
@@ -757,9 +757,16 @@ impl GitpulsarWindow {
             .tooltip_text("Changes")
             .css_classes(["flat"])
             .build();
+        let graph_toggle = gtk::ToggleButton::builder()
+            .icon_name("branch-fork-symbolic")
+            .tooltip_text("Graph")
+            .css_classes(["flat"])
+            .build();
         changes_toggle.set_group(Some(&commits_toggle));
+        graph_toggle.set_group(Some(&commits_toggle));
         compact_switcher.append(&commits_toggle);
         compact_switcher.append(&changes_toggle);
+        compact_switcher.append(&graph_toggle);
 
         // Sync compact toggles → view_stack
         let vs = imp.view_stack.clone();
@@ -770,17 +777,25 @@ impl GitpulsarWindow {
         changes_toggle.connect_toggled(move |btn| {
             if btn.is_active() { vs.set_visible_child_name("changes"); }
         });
+        let vs = imp.view_stack.clone();
+        graph_toggle.connect_toggled(move |btn| {
+            if btn.is_active() { vs.set_visible_child_name("graph"); }
+        });
 
         // Sync view_stack → compact toggles
         let ct = commits_toggle.clone();
         let cht = changes_toggle.clone();
+        let gt = graph_toggle.clone();
         let win_for_graph = self.clone();
         imp.view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(name) = stack.visible_child_name() {
                 match name.as_str() {
                     "commits" => { if !ct.is_active() { ct.set_active(true); } }
                     "changes" => { if !cht.is_active() { cht.set_active(true); } }
-                    "graph" => { win_for_graph.populate_graph_tab(); }
+                    "graph" => {
+                        if !gt.is_active() { gt.set_active(true); }
+                        win_for_graph.populate_graph_tab();
+                    }
                     _ => {}
                 }
             }
@@ -898,32 +913,48 @@ impl GitpulsarWindow {
         // BREAKPOINTS
         // ==========================================
 
-        // Medium (<1000px): collapse inner split, move window buttons to content header
-        let bp_medium = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        // Tablet (<860sp): collapse repo sidebar
+        let bp_tablet = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
-            1000.0,
-            adw::LengthUnit::Px,
+            860.0,
+            adw::LengthUnit::Sp,
         ));
-        bp_medium.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
-        bp_medium.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
-        self.add_breakpoint(bp_medium);
+        bp_tablet.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_tablet.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
+        self.add_breakpoint(bp_tablet);
 
-        // Narrow (<700px): collapse both, strip labels, compact footer
+        // Narrow (<600sp): collapse inner split, compact switcher, hide branch
         let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
             adw::BreakpointConditionLengthType::MaxWidth,
-            700.0,
-            adw::LengthUnit::Px,
+            600.0,
+            adw::LengthUnit::Sp,
         ));
         bp_narrow.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
-        // Hide non-essential labels in narrow mode
         bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
-        // Footer: icon-only switcher
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
         self.add_breakpoint(bp_narrow);
+
+        // Mobile (<500sp): hide content title, remote buttons move to icons only
+        let bp_mobile = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            500.0,
+            adw::LengthUnit::Sp,
+        ));
+        bp_mobile.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_mobile.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        bp_mobile.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
+        bp_mobile.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&branch_content, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&content_title, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&view_switcher, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
+        // Hide stash button label area in bottom bar
+        bp_mobile.add_setter(&stash_btn, "visible", Some(&false.to_value()));
+        self.add_breakpoint(bp_mobile);
     }
 
     fn rebuild_hamburger_menu(&self) {
