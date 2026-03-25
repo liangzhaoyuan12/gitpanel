@@ -7,23 +7,18 @@
     </linearGradient>
   </defs>
 
-  <!-- Rounded square background (GNOME style) -->
+  <!-- Rounded square background -->
   <rect x="4" y="4" width="120" height="120" rx="28" ry="28" fill="url(#bg)"/>
 
-  <!-- Main branch (vertical line) -->
-  <line x1="64" y1="28" x2="64" y2="100" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <!-- Main branch (vertical line, within safe zone) -->
+  <line x1="56" y1="32" x2="56" y2="96" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
 
-  <!-- Left branch -->
-  <path d="M64,50 C56,55 44,60 38,72" stroke="#99c1f1" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <!-- Branch out and merge back -->
+  <path d="M56,48 C64,48 76,54 80,64" stroke="#8ff0a4" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M80,64 C76,74 64,80 56,80" stroke="#8ff0a4" stroke-width="4" stroke-linecap="round" fill="none"/>
 
-  <!-- Right branch (merge) -->
-  <path d="M64,42 C72,47 84,52 88,62" stroke="#8ff0a4" stroke-width="3.5" stroke-linecap="round" fill="none"/>
-  <path d="M88,62 C84,72 72,80 64,82" stroke="#8ff0a4" stroke-width="3.5" stroke-linecap="round" fill="none"/>
-
-  <!-- Commit dots -->
-  <circle cx="64" cy="38" r="5" fill="#ffffff"/>
-  <circle cx="64" cy="60" r="5" fill="#ffffff"/>
-  <circle cx="64" cy="82" r="5" fill="#ffffff"/>
-  <circle cx="38" cy="72" r="4.5" fill="#99c1f1"/>
-  <circle cx="88" cy="62" r="4.5" fill="#8ff0a4"/>
+  <!-- Commit dots (3 only) -->
+  <circle cx="56" cy="48" r="6" fill="#ffffff"/>
+  <circle cx="56" cy="80" r="6" fill="#ffffff"/>
+  <circle cx="80" cy="64" r="5.5" fill="#8ff0a4"/>
 </svg>

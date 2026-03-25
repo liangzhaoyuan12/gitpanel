@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.1 (2026-03-25)
+
+### Improvements
+
+- Redesigned app icon — simplified, fits GNOME HIG safe zone
+- Updated screenshots to 1000x700 (Flathub quality guidelines)
+
 ## v0.5.0 (2026-03-25)
 
 ### New Features
