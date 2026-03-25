@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.5.0 (2026-03-25)
+
+### New Features
+
+- **Mobile-adaptive layout** — 3-tier responsive design: tablet (<860sp), narrow (<600sp), mobile (<500sp)
+- **Blame view** — per-line annotations (author, date, commit) with theme-aware colors
+- **Inline diff in commit files** — click a file in commit detail to see full diff
+- **Integrated graph tab** — branch graph as ViewStack tab (Ctrl+3), computed in background
+- **Custom GNOME icons** — branch-fork, commit, tag-outline, git, branch-compare
+
+### Improvements
+
+- Minimum window size 360x294 (GNOME HIG phone portrait)
+- Breakpoints use sp units (scale with Large Text accessibility)
+- Graph toggle in compact switcher for narrow screens
+- Colored status icons replace text badges
+- Slide animations for commit detail, diff accordion, sidebar sections
+- Fixed unpushed indicators not clearing after push
+- Git CLI bundled in Flatpak (fixes push/pull/fetch in sandbox)
+- SSH auth support in Flatpak
+- Redesigned app icon (GNOME HIG compliant)
+
 ## v0.4.3 (2026-03-19)
 
 ### Bug Fixes
