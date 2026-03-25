@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=Gitpulsar
-Comment=Git repository manager
+Comment=Browse and manage Git repositories
 Exec=gitpulsar-gtk %U
 Icon=io.gitlab.ilshat_apps.gitpulsar
 Terminal=false
 Type=Application
-Categories=Development;RevisionControl;GTK;GNOME;
-Keywords=git;repository;vcs;version-control;
+Categories=Development;RevisionControl;
+Keywords=git;repository;vcs;version-control;GTK;GNOME;branch;commit;staging;
 MimeType=inode/directory;

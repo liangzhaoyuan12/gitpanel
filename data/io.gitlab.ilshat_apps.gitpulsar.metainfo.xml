@@ -3,38 +3,40 @@
   <id>io.gitlab.ilshat_apps.gitpulsar</id>
 
   <name>Gitpulsar</name>
-  <summary>Git repository manager</summary>
+  <summary>Browse and manage Git repositories</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
 
   <branding>
-    <color type="primary" scheme_preference="light">#3466A4</color>
-    <color type="primary" scheme_preference="dark">#1a2a3a</color>
+    <color type="primary" scheme_preference="light">#8fa9d4</color>
+    <color type="primary" scheme_preference="dark">#2a4a7a</color>
   </branding>
 
   <description>
     <p>
-      Gitpulsar is a modern, GNOME-native Git graphical client built with GTK4 and
-      libadwaita. It provides an intuitive interface for managing Git repositories
-      with features like commit browsing, staging, branching, stashing, and
-      side-by-side diff viewing.
+      Gitpulsar helps you work with Git repositories through a clean, visual
+      interface. Open a folder with multiple projects and switch between them
+      from the sidebar, or focus on a single repository.
     </p>
-    <p>Features:</p>
+    <p>
+      Stage and unstage files with drag-and-drop, review syntax-highlighted
+      diffs, and commit with conventional commit prefixes. Partial staging
+      lets you pick individual hunks or even specific lines within a file.
+    </p>
+    <p>
+      The integrated branch graph shows your project topology at a glance.
+      Blame view annotates every line with its author and commit. When merge
+      conflicts arise, a three-panel editor helps you resolve them visually.
+    </p>
     <ul>
-      <li>Multi-repository workspace support with parallel scanning</li>
-      <li>Syntax-highlighted diffs with dark/light theme support</li>
-      <li>Split staged/unstaged lists with drag-and-drop</li>
-      <li>Partial staging — stage individual hunks</li>
-      <li>Undo/redo for staging operations and discards</li>
-      <li>Paginated commit history with async file loading</li>
-      <li>Branch management, tags, stashes with search</li>
-      <li>Remote operations (fetch, pull, push) via git CLI</li>
-      <li>Merge conflict detection and interactive rebase</li>
-      <li>Submodules and worktrees management</li>
-      <li>Commit signing indicator</li>
-      <li>.gitignore editor</li>
-      <li>Adaptive layout for mobile and desktop</li>
+      <li>Multi-repository workspace with parallel scanning</li>
+      <li>Syntax-highlighted diffs with dark and light theme support</li>
+      <li>Drag-and-drop staging with hunk and line-level control</li>
+      <li>Undo and redo for staging operations and discards</li>
+      <li>Branch graph, blame view, and conflict resolution editor</li>
+      <li>Interactive rebase, submodules, and worktrees</li>
+      <li>Keyboard navigation and adaptive layout for all screen sizes</li>
     </ul>
   </description>
 
@@ -49,12 +51,12 @@
   <url type="vcs-browser">https://gitlab.com/ilshat-apps/gitpulsar</url>
 
   <screenshots>
-    <screenshot type="default" xml:lang="en">
-      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/light.png</image>
+    <screenshot type="default">
+      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/v0.5.1/data/screenshots/light.png</image>
       <caption>Commit history with branches and tags</caption>
     </screenshot>
-    <screenshot xml:lang="en">
-      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/main/data/screenshots/dark.png</image>
+    <screenshot>
+      <image>https://gitlab.com/ilshat-apps/gitpulsar/-/raw/v0.5.1/data/screenshots/dark.png</image>
       <caption>Dark theme with commit history</caption>
     </screenshot>
   </screenshots>
@@ -64,52 +66,32 @@
   <releases>
     <release version="0.5.1" date="2026-03-25">
       <description>
-        <p>Redesigned app icon (GNOME HIG safe zone), updated screenshots to 1000x700.</p>
+        <p>Redesigned app icon to fit GNOME HIG safe zone. Updated screenshots to 1000x700 for Flathub quality guidelines.</p>
       </description>
     </release>
     <release version="0.5.0" date="2026-03-25">
       <description>
-        <p>Mobile-adaptive layout with 3-tier responsive design, blame view, integrated graph tab, inline commit diffs, custom GNOME icons, slide animations, git CLI in Flatpak sandbox.</p>
+        <p>Mobile-adaptive layout with three-tier responsive breakpoints. Added blame view, integrated graph tab, inline commit diffs, and custom GNOME icons. Slide animations for expanding panels. Bundled git CLI in Flatpak sandbox.</p>
       </description>
     </release>
     <release version="0.4.3" date="2026-03-19">
       <description>
-        <p>Fixed unpushed commit indicators and sidebar not updating after push/pull/fetch.</p>
-      </description>
-    </release>
-    <release version="0.4.2" date="2026-03-17">
-      <description>
-        <p>Inline diff for commit files, colored status icons, slide animations, custom GNOME icons (branch, tag, git, commit), graph tab auto-refresh, minimum window size 800x500.</p>
-      </description>
-    </release>
-    <release version="0.4.1" date="2026-03-16">
-      <description>
-        <p>Blame view for per-line annotations, branch graph moved to integrated tab (Ctrl+3) with lazy background computation, fixed hang on repo switch.</p>
+        <p>Fixed unpushed commit indicators and sidebar not updating after push, pull, or fetch.</p>
       </description>
     </release>
     <release version="0.4.0" date="2026-03-16">
       <description>
-        <p>3-way conflict resolution editor, line-level staging, conventional commit prefixes, keyboard navigation, theme-aware diff colors.</p>
-      </description>
-    </release>
-    <release version="0.3.1" date="2026-03-16">
-      <description>
-        <p>UI polish: submodules and worktrees panels in sidebar, merge/rebase conflict banner with continue/abort, interactive rebase editor, collapsible sidebar sections with item counts and configurable limit, auto-hide empty sections.</p>
+        <p>Three-way conflict resolution editor, line-level staging, conventional commit prefixes, keyboard navigation, and theme-aware diff colors.</p>
       </description>
     </release>
     <release version="0.3.0" date="2026-03-16">
       <description>
-        <p>Major feature release: syntax-highlighted diffs, split staged/unstaged with drag-and-drop, partial hunk staging, undo/redo, paginated commits, parallel workspace scanning, merge/rebase support, submodules, worktrees, commit signing indicator, .gitignore editor, performance optimizations.</p>
-      </description>
-    </release>
-    <release version="0.1.1" date="2026-03-06">
-      <description>
-        <p>Auto set-upstream on push, layout and stability fixes.</p>
+        <p>Syntax-highlighted diffs, split staged and unstaged lists with drag-and-drop, partial hunk staging, undo and redo, paginated commits, parallel workspace scanning, and performance optimizations.</p>
       </description>
     </release>
     <release version="0.1.0" date="2026-03-06">
       <description>
-        <p>Initial release with core Git functionality.</p>
+        <p>Initial release with commit browsing, staging, branches, tags, stash, remote operations, and adaptive layout.</p>
       </description>
     </release>
   </releases>
