@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.2 (2026-03-25)
+
+### Improvements
+
+- Rewritten Flathub description (prose instead of bullet list)
+- Screenshot URLs pinned to version tag
+- Updated branding colors
+- Consolidated release history in metainfo
+- Improved desktop entry keywords
+
 ## v0.5.1 (2026-03-25)
 
 ### Improvements

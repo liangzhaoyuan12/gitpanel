@@ -64,6 +64,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.5.2" date="2026-03-25">
+      <description>
+        <p>Improved Flathub metadata: rewritten app description, pinned screenshot URLs to version tag, updated branding colors and keywords.</p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-03-25">
       <description>
         <p>Redesigned app icon to fit GNOME HIG safe zone. Updated screenshots to 1000x700 for Flathub quality guidelines.</p>
