@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.3 (2026-03-31)
+
+### Improvements
+
+- Redesigned icon: GNOME HIG squircle shape, pulsar rays, better dark background contrast
+- Wider and centered git branch symbol within safe zone
+
 ## v0.5.2 (2026-03-25)
 
 ### Improvements
