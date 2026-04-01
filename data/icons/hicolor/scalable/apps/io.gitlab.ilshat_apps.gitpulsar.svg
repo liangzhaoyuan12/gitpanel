@@ -1,29 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <defs>
-    <linearGradient id="bg" x1="64" y1="4" x2="64" y2="124" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="64" y1="8" x2="64" y2="120" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#62a0ea"/>
       <stop offset="1" stop-color="#1c71d8"/>
     </linearGradient>
   </defs>
 
-  <!-- GNOME HIG squircle (superellipse) background -->
-  <path d="M 4,44 C 4,19.7 19.7,4 44,4 H 84 C 108.3,4 124,19.7 124,44 V 84 C 124,108.3 108.3,124 84,124 H 44 C 19.7,124 4,108.3 4,84 Z" fill="url(#bg)"/>
+  <!-- GNOME HIG squircle background with proper margin (8px from edges) -->
+  <path d="M 8,44 C 8,22.4 22.4,8 44,8 H 84 C 105.6,8 120,22.4 120,44 V 84 C 120,105.6 105.6,120 84,120 H 44 C 22.4,120 8,105.6 8,84 Z" fill="url(#bg)"/>
 
   <!-- Main branch (vertical line) -->
-  <line x1="44" y1="28" x2="44" y2="100" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <line x1="46" y1="32" x2="46" y2="98" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
 
   <!-- Feature branch out and merge back -->
-  <path d="M44,44 C56,44 76,52 84,64" stroke="#8ff0a4" stroke-width="5" stroke-linecap="round" fill="none"/>
-  <path d="M84,64 C76,76 56,84 44,84" stroke="#8ff0a4" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M46,46 C56,46 74,54 82,64" stroke="#8ff0a4" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M82,64 C74,74 56,82 46,82" stroke="#8ff0a4" stroke-width="5" stroke-linecap="round" fill="none"/>
 
   <!-- Commit nodes -->
-  <circle cx="44" cy="44" r="8" fill="#ffffff"/>
-  <circle cx="44" cy="84" r="8" fill="#ffffff"/>
-  <circle cx="84" cy="64" r="7" fill="#8ff0a4"/>
+  <circle cx="46" cy="46" r="7.5" fill="#ffffff"/>
+  <circle cx="46" cy="82" r="7.5" fill="#ffffff"/>
+  <circle cx="82" cy="64" r="6.5" fill="#8ff0a4"/>
 
   <!-- Pulsar rays -->
-  <line x1="95" y1="64" x2="102" y2="64" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
-  <line x1="93" y1="54" x2="98" y2="49" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
-  <line x1="93" y1="74" x2="98" y2="79" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
+  <line x1="92" y1="64" x2="99" y2="64" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
+  <line x1="90" y1="55" x2="95" y2="50" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
+  <line x1="90" y1="73" x2="95" y2="78" stroke="#8ff0a4" stroke-width="3" stroke-linecap="round"/>
 </svg>
