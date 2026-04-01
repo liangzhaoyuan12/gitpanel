@@ -854,7 +854,7 @@ impl GitpulsarWindow {
         inner_split.set_content(Some(&center_toolbar));
         inner_split.set_collapsed(false);
         inner_split.set_show_sidebar(true);
-        inner_split.set_min_sidebar_width(180.0);
+        inner_split.set_min_sidebar_width(120.0);
         inner_split.set_max_sidebar_width(300.0);
 
         // Content header: no window buttons by default (right_header has end buttons)
@@ -867,7 +867,7 @@ impl GitpulsarWindow {
         outer_split.set_content(Some(&inner_split));
         outer_split.set_collapsed(false);
         outer_split.set_show_sidebar(true);
-        outer_split.set_min_sidebar_width(180.0);
+        outer_split.set_min_sidebar_width(140.0);
         outer_split.set_max_sidebar_width(280.0);
         outer_split.set_vexpand(true);
 
@@ -952,6 +952,11 @@ impl GitpulsarWindow {
         bp_mobile.add_setter(&content_title, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&view_switcher, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
+        // Hide non-essential header items to fit on 360px screens
+        bp_mobile.add_setter(&search_toggle, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&open_button, "visible", Some(&false.to_value()));
+        // Remove title widget to free header space for sidebar toggles + close button
+        bp_mobile.add_setter(&content_header, "show-title", Some(&false.to_value()));
         // Hide stash button label area in bottom bar
         bp_mobile.add_setter(&stash_btn, "visible", Some(&false.to_value()));
         self.add_breakpoint(bp_mobile);
@@ -1146,17 +1151,15 @@ impl GitpulsarWindow {
         let about_action = gio::SimpleAction::new("about", None);
         let window = self.clone();
         about_action.connect_activate(move |_, _| {
-            let dialog = adw::AboutWindow::builder()
+            let dialog = adw::AboutDialog::builder()
                 .application_name("Gitpulsar")
                 .application_icon("io.gitlab.ilshat_apps.gitpulsar")
                 .developer_name("Ilshat Ishdavletov")
                 .version(env!("CARGO_PKG_VERSION"))
                 .website("https://gitlab.com/ilshat.ishdavletov/gitpulsar")
                 .license_type(gtk::License::Gpl30)
-                .transient_for(&window)
-                .modal(true)
                 .build();
-            dialog.present();
+            dialog.present(Some(&window));
         });
         self.add_action(&about_action);
 
@@ -1216,13 +1219,12 @@ impl GitpulsarWindow {
             }
             Err(e) => {
                 tracing::error!("Failed to scan workspace: {}", e);
-                let dialog = adw::MessageDialog::new(
-                    Some(self),
+                let dialog = adw::AlertDialog::new(
                     Some("Error"),
                     Some(&format!("Failed to open workspace:\n{}", e)),
                 );
                 dialog.add_response("ok", "OK");
-                dialog.present();
+                dialog.present(Some(self));
             }
         }
     }
@@ -1249,13 +1251,12 @@ impl GitpulsarWindow {
             }
             Err(e) => {
                 tracing::error!("Failed to open repository: {}", e);
-                let dialog = adw::MessageDialog::new(
-                    Some(self),
+                let dialog = adw::AlertDialog::new(
                     Some("Error"),
                     Some(&format!("Failed to open repository:\n{}", e)),
                 );
                 dialog.add_response("ok", "OK");
-                dialog.present();
+                dialog.present(Some(self));
             }
         }
     }
@@ -1608,13 +1609,12 @@ impl GitpulsarWindow {
                     tracing::error!("Failed to {}: {}", if is_amend { "amend" } else { "commit" }, e);
                     drop(repo_ref);
                     let title = if is_amend { "Amend Failed" } else { "Commit Failed" };
-                    let dialog = adw::MessageDialog::new(
-                        Some(self),
+                    let dialog = adw::AlertDialog::new(
                         Some(title),
                         Some(&format!("{}", e)),
                     );
                     dialog.add_response("ok", "OK");
-                    dialog.present();
+                    dialog.present(Some(self));
                 }
             }
         }
@@ -1669,8 +1669,7 @@ impl GitpulsarWindow {
     }
 
     fn discard_file_with_confirm(&self, path: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Discard Changes?"),
             Some(&format!(
                 "This will permanently discard all changes to:\n\n<b>{}</b>",
@@ -1706,7 +1705,7 @@ impl GitpulsarWindow {
                 }
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn stage_hunk(&self, path: &str, hunk_index: usize) {
@@ -2239,15 +2238,14 @@ impl GitpulsarWindow {
     }
 
     fn show_error_dialog(&self, title: &str, body: &str) {
-        let dialog = adw::MessageDialog::new(Some(self), Some(title), Some(body));
+        let dialog = adw::AlertDialog::new(Some(title), Some(body));
         dialog.set_body_use_markup(false);
         dialog.add_response("ok", "OK");
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_push_rejected_dialog(&self, _body: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Push Rejected"),
             Some("Remote has new commits. Pull first, then push again."),
         );
@@ -2263,7 +2261,7 @@ impl GitpulsarWindow {
                 win.on_pull();
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     // ==========================================
@@ -2360,8 +2358,7 @@ impl GitpulsarWindow {
     }
 
     fn show_force_push_dialog(&self) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Force Push?"),
             Some("This will overwrite the remote branch. This action cannot be undone and may cause others to lose work."),
         );
@@ -2377,7 +2374,7 @@ impl GitpulsarWindow {
                 win.on_push(true);
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn refresh_after_remote_op(&self) {
@@ -2420,8 +2417,7 @@ impl GitpulsarWindow {
     }
 
     fn show_create_branch_dialog(&self) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Create New Branch"),
             Some("Enter the name for the new branch (created from HEAD):"),
         );
@@ -2452,7 +2448,7 @@ impl GitpulsarWindow {
                 });
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     // ==========================================
@@ -2567,9 +2563,7 @@ impl GitpulsarWindow {
                 let dialog = blame_view::build_blame_dialog(path, &lines, |_commit_id| {
                     // Could navigate to commit — future enhancement
                 });
-                dialog.set_transient_for(Some(self));
-                dialog.set_modal(true);
-                dialog.present();
+                dialog.present(Some(self));
             }
             Err(e) => {
                 self.show_toast(&format!("Blame failed: {}", e));
@@ -2595,9 +2589,7 @@ impl GitpulsarWindow {
                 }
             }
         });
-        dialog.set_transient_for(Some(self));
-        dialog.set_modal(true);
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_rebase_editor(&self, commit_count: usize) {
@@ -2620,9 +2612,7 @@ impl GitpulsarWindow {
                 repo.execute_rebase(&modified, &onto)
             });
         });
-        dialog.set_transient_for(Some(self));
-        dialog.set_modal(true);
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn open_gitignore_editor(&self) {
@@ -2644,9 +2634,7 @@ impl GitpulsarWindow {
                 }
             }
         });
-        dialog.set_transient_for(Some(self));
-        dialog.set_modal(true);
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn open_preferences(&self) {
@@ -2694,9 +2682,7 @@ impl GitpulsarWindow {
                 win.start_refresh_timer(new_config.refresh_interval_secs);
             }
         });
-        dialog.set_transient_for(Some(self));
-        dialog.set_modal(true);
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     /// Run status + workspace scan in a background thread, then apply results on UI thread.
@@ -3257,8 +3243,7 @@ impl GitpulsarWindow {
     }
 
     fn show_rename_branch_dialog(&self, old_name: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Rename Branch"),
             Some(&format!("Rename branch '{}':", old_name)),
         );
@@ -3293,12 +3278,11 @@ impl GitpulsarWindow {
                 });
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_delete_branch_dialog(&self, name: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Delete Branch?"),
             Some(&format!("Delete branch '{}'? This cannot be undone.", name)),
         );
@@ -3327,12 +3311,11 @@ impl GitpulsarWindow {
                 });
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_revert_confirm_dialog(&self, commit_id: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Revert Commit?"),
             Some("This will create a new commit that undoes the changes of the selected commit."),
         );
@@ -3353,7 +3336,7 @@ impl GitpulsarWindow {
                 });
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_reset_confirm_dialog(&self, commit_id: &str, mode: ResetMode) {
@@ -3378,8 +3361,7 @@ impl GitpulsarWindow {
             ),
         };
 
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some(&format!("Reset {} to {}?", mode_str, short)),
             Some(&body),
         );
@@ -3404,7 +3386,7 @@ impl GitpulsarWindow {
                 });
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn populate_graph_tab(&self) {
@@ -3481,12 +3463,10 @@ impl GitpulsarWindow {
     }
 
     fn show_edit_message_dialog(&self, original_message: &str) {
-        let dialog = adw::Window::builder()
+        let dialog = adw::Dialog::builder()
             .title("Edit Commit Message")
-            .default_width(600)
-            .default_height(400)
-            .modal(true)
-            .transient_for(self)
+            .content_width(600)
+            .content_height(400)
             .build();
 
         let toolbar_view = adw::ToolbarView::new();
@@ -3521,7 +3501,7 @@ impl GitpulsarWindow {
         scroll.set_child(Some(&text_view));
         toolbar_view.set_content(Some(&scroll));
 
-        dialog.set_content(Some(&toolbar_view));
+        dialog.set_child(Some(&toolbar_view));
 
         let win = self.clone();
         let dlg = dialog.clone();
@@ -3538,12 +3518,11 @@ impl GitpulsarWindow {
                 repo.amend_commit(Some(&msg))
             });
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
     fn show_create_tag_dialog(&self, commit_id: &str) {
-        let dialog = adw::MessageDialog::new(
-            Some(self),
+        let dialog = adw::AlertDialog::new(
             Some("Create Tag"),
             Some("Create a new tag on the selected commit:"),
         );
@@ -3614,7 +3593,7 @@ impl GitpulsarWindow {
                 }
             }
         });
-        dialog.present();
+        dialog.present(Some(self));
     }
 
 }

@@ -9,17 +9,17 @@ pub fn build_rebase_editor<F>(
     entries: &[RebaseEntry],
     onto: &str,
     on_execute: F,
-) -> adw::Window
+) -> adw::Dialog
 where
     F: Fn(Vec<RebaseEntry>, String) + 'static,
 {
-    let dialog = adw::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title("Interactive Rebase")
-        .default_width(600)
-        .default_height(500)
+        .content_width(600)
+        .content_height(500)
         .build();
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let toolbar_view = adw::ToolbarView::new();
 
     let header = adw::HeaderBar::new();
     let execute_btn = gtk::Button::builder()
@@ -27,7 +27,9 @@ where
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&execute_btn);
-    vbox.append(&header);
+    toolbar_view.add_top_bar(&header);
+
+    let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let info_label = gtk::Label::builder()
         .label(&format!("Rebasing {} commits onto {}", entries.len(), onto))
@@ -37,7 +39,7 @@ where
         .margin_bottom(4)
         .xalign(0.0)
         .build();
-    vbox.append(&info_label);
+    content_box.append(&info_label);
 
     // Build the commit list with action dropdowns
     let list_box = gtk::ListBox::builder()
@@ -78,9 +80,10 @@ where
         .child(&list_box)
         .vexpand(true)
         .build();
-    vbox.append(&scrolled);
+    content_box.append(&scrolled);
+    toolbar_view.set_content(Some(&content_box));
 
-    dialog.set_content(Some(&vbox));
+    dialog.set_child(Some(&toolbar_view));
 
     // Execute handler
     {

@@ -2,11 +2,11 @@ use adw::prelude::*;
 
 use crate::config::{AppConfig, DateFormat};
 
-pub fn build_preferences_dialog<F>(config: &AppConfig, on_changed: F) -> adw::PreferencesWindow
+pub fn build_preferences_dialog<F>(config: &AppConfig, on_changed: F) -> adw::PreferencesDialog
 where
     F: Fn(AppConfig) + Clone + 'static,
 {
-    let dialog = adw::PreferencesWindow::new();
+    let dialog = adw::PreferencesDialog::new();
 
     // === General page ===
     let page = adw::PreferencesPage::builder()

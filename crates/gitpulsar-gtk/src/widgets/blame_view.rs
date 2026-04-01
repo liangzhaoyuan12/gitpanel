@@ -3,19 +3,19 @@ use adw::prelude::*;
 use gitpulsar_core::models::BlameLine;
 
 /// Build a blame viewer dialog for a file.
-pub fn build_blame_dialog<F>(file_path: &str, lines: &[BlameLine], _on_commit_click: F) -> adw::Window
+pub fn build_blame_dialog<F>(file_path: &str, lines: &[BlameLine], _on_commit_click: F) -> adw::Dialog
 where
     F: Fn(String) + 'static,
 {
-    let dialog = adw::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(&format!("Blame: {}", file_path))
-        .default_width(800)
-        .default_height(600)
+        .content_width(800)
+        .content_height(600)
         .build();
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let toolbar_view = adw::ToolbarView::new();
     let header = adw::HeaderBar::new();
-    vbox.append(&header);
+    toolbar_view.add_top_bar(&header);
 
     let tv = gtk::TextView::builder()
         .editable(false)
@@ -35,9 +35,9 @@ where
         .child(&tv)
         .vexpand(true)
         .build();
-    vbox.append(&scrolled);
+    toolbar_view.set_content(Some(&scrolled));
 
-    dialog.set_content(Some(&vbox));
+    dialog.set_child(Some(&toolbar_view));
     dialog
 }
 

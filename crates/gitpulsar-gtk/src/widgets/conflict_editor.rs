@@ -9,17 +9,17 @@ pub fn build_conflict_editor<F>(
     file_path: &str,
     chunks: &[ConflictChunk],
     on_resolve: F,
-) -> adw::Window
+) -> adw::Dialog
 where
     F: Fn(String) + 'static,
 {
-    let dialog = adw::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(&format!("Resolve: {}", file_path))
-        .default_width(900)
-        .default_height(600)
+        .content_width(900)
+        .content_height(600)
         .build();
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let toolbar_view = adw::ToolbarView::new();
 
     // Header bar
     let header = adw::HeaderBar::new();
@@ -28,7 +28,9 @@ where
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&resolve_btn);
-    vbox.append(&header);
+    toolbar_view.add_top_bar(&header);
+
+    let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // Three-pane layout
     let panes = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -50,7 +52,7 @@ where
     let theirs_view = create_text_panel("Theirs", false);
     panes.append(&theirs_view.0);
 
-    vbox.append(&panes);
+    content_box.append(&panes);
 
     // Action buttons per conflict chunk
     let actions_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -80,7 +82,8 @@ where
         .build();
     actions_bar.append(&accept_theirs_all);
 
-    vbox.append(&actions_bar);
+    content_box.append(&actions_bar);
+    toolbar_view.set_content(Some(&content_box));
 
     // Populate panels
     let ours_buf = ours_view.1.buffer();
@@ -139,7 +142,7 @@ where
         });
     }
 
-    dialog.set_content(Some(&vbox));
+    dialog.set_child(Some(&toolbar_view));
 
     // Resolve handler
     {

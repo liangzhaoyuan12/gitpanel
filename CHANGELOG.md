@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.4 (2026-04-01)
+
+### Improvements
+
+- Migrated all dialogs to AdwDialog API (adaptive: floating on desktop, bottom sheet on mobile)
+- AboutWindow → AboutDialog, PreferencesWindow → PreferencesDialog, MessageDialog → AlertDialog
+- Blame, conflict editor, rebase editor, gitignore editor now use AdwDialog
+- Enabled libadwaita v1_5 features
+- Mobile: hide title and non-essential header buttons at <500sp, keep sidebar toggles visible
+- Reduced split view min sidebar widths for narrow screens
+
 ## v0.5.3 (2026-03-31)
 
 ### Improvements

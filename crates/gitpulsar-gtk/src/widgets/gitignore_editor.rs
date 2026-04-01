@@ -3,17 +3,17 @@ use adw::prelude::*;
 /// Build a .gitignore editor dialog.
 /// `content` is the current .gitignore text.
 /// `on_save` is called with the new content when the user clicks Save.
-pub fn build_gitignore_editor<F>(content: &str, on_save: F) -> adw::Window
+pub fn build_gitignore_editor<F>(content: &str, on_save: F) -> adw::Dialog
 where
     F: Fn(String) + 'static,
 {
-    let dialog = adw::Window::builder()
+    let dialog = adw::Dialog::builder()
         .title(".gitignore")
-        .default_width(500)
-        .default_height(450)
+        .content_width(500)
+        .content_height(450)
         .build();
 
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let toolbar_view = adw::ToolbarView::new();
 
     // Header bar with Save button
     let header = adw::HeaderBar::new();
@@ -22,7 +22,7 @@ where
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&save_btn);
-    vbox.append(&header);
+    toolbar_view.add_top_bar(&header);
 
     // Text editor
     let text_view = gtk::TextView::builder()
@@ -40,9 +40,9 @@ where
         .child(&text_view)
         .vexpand(true)
         .build();
-    vbox.append(&scrolled);
+    toolbar_view.set_content(Some(&scrolled));
 
-    dialog.set_content(Some(&vbox));
+    dialog.set_child(Some(&toolbar_view));
 
     // Save handler
     {
