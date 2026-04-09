@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.0 (2026-04-09)
+
+### Improvements
+
+- Skip background refresh when window is not active (saves 10-15% CPU when on another desktop)
+- Auto-refresh on window focus regain — instant update when switching back
+- Throttle workspace scan to every 4th tick (~60s) instead of every tick
+- Cache ahead/behind counts to avoid redundant UI redraws
+- Icon canvas footprint adjusted (8px margin) for Flathub guidelines
+
 ## v0.5.4 (2026-04-01)
 
 ### Improvements

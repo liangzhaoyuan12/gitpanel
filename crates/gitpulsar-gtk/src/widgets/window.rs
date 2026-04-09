@@ -128,6 +128,11 @@ mod imp {
         pub last_commits_hash: Cell<u64>,
         /// Guard to prevent concurrent background refreshes.
         pub refresh_in_progress: Cell<bool>,
+        /// Tick counter for throttling workspace scans.
+        pub refresh_tick: Cell<u32>,
+        /// Cached ahead/behind to skip redundant UI updates.
+        pub last_ahead: Cell<usize>,
+        pub last_behind: Cell<usize>,
         /// Cached unstaged diffs from last refresh.
         pub cached_unstaged_diffs: RefCell<Vec<DiffFile>>,
         /// Cached staged diffs from last refresh.
@@ -193,6 +198,9 @@ mod imp {
                 last_workspace_hash: Cell::new(0),
                 last_commits_hash: Cell::new(0),
                 refresh_in_progress: Cell::new(false),
+                refresh_tick: Cell::new(0),
+                last_ahead: Cell::new(0),
+                last_behind: Cell::new(0),
                 cached_unstaged_diffs: RefCell::new(Vec::new()),
                 cached_staged_diffs: RefCell::new(Vec::new()),
                 config: RefCell::new(AppConfig::load()),
@@ -2533,6 +2541,14 @@ impl GitpulsarWindow {
     fn setup_auto_refresh(&self) {
         let interval = self.imp().config.borrow().refresh_interval_secs;
         self.start_refresh_timer(interval);
+
+        // Refresh immediately when window regains focus (e.g. switching back from another desktop)
+        let win = self.clone();
+        self.connect_is_active_notify(move |w| {
+            if w.is_active() {
+                win.trigger_background_refresh();
+            }
+        });
     }
 
     fn start_refresh_timer(&self, interval_secs: u32) {
@@ -2548,7 +2564,10 @@ impl GitpulsarWindow {
             let Some(win) = win.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            win.trigger_background_refresh();
+            // Skip background refresh when window is not active (on another desktop/minimized)
+            if win.is_active() {
+                win.trigger_background_refresh();
+            }
             glib::ControlFlow::Continue
         });
         *self.imp().refresh_source_id.borrow_mut() = Some(source_id);
@@ -2716,13 +2735,21 @@ impl GitpulsarWindow {
         };
 
         let prev_status_hash = imp.last_status_hash.get();
+        // Throttle workspace scans: only every 4th tick (~60s at 15s interval)
+        let tick = imp.refresh_tick.get();
+        imp.refresh_tick.set(tick.wrapping_add(1));
+        let scan_workspace = tick % 4 == 0;
         let (tx, rx) = async_channel::bounded::<BackgroundRefreshResult>(1);
 
         std::thread::spawn(move || {
-            // Run repo status and workspace scan in parallel
-            let workspace_handle = workspace_root.map(|root| {
-                std::thread::spawn(move || workspace::scan_workspace(&root).ok())
-            });
+            // Run workspace scan only every Nth tick to reduce CPU
+            let workspace_handle = if scan_workspace {
+                workspace_root.map(|root| {
+                    std::thread::spawn(move || workspace::scan_workspace(&root).ok())
+                })
+            } else {
+                None
+            };
 
             let (status, ahead, behind, unstaged_diffs, staged_diffs) =
                 if let Some(ref p) = repo_path {
@@ -2790,8 +2817,12 @@ impl GitpulsarWindow {
                 }
             }
 
-            imp.ahead_label.set_label(&format!("▲ {}", result.ahead));
-            imp.behind_label.set_label(&format!("▼ {}", result.behind));
+            if result.ahead != imp.last_ahead.get() || result.behind != imp.last_behind.get() {
+                imp.last_ahead.set(result.ahead);
+                imp.last_behind.set(result.behind);
+                imp.ahead_label.set_label(&format!("▲ {}", result.ahead));
+                imp.behind_label.set_label(&format!("▼ {}", result.behind));
+            }
 
             // Apply workspace indicators only if changed
             if let Some(new_entries) = result.workspace_entries {
