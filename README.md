@@ -6,6 +6,7 @@ A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 
 ## Features
 
+- **Clone repository** — clone from URL with a built-in dialog
 - **Multi-repo workspace** — open a folder, browse all Git repositories inside
 - **Commit history** — searchable list with expandable details, paginated loading
 - **Commit detail** — prominent message display, file list with configurable limit, collapsible technical details
@@ -24,6 +25,9 @@ A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 - **Submodules** — list, init, update submodules
 - **Worktrees** — list, add, remove git worktrees
 - **.gitignore editor** — edit .gitignore from the app menu
+- **File history** — per-file commit log via the history button on each file row
+- **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
+- **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)
 - **Adaptive layout** — 3-tier responsive design: desktop, tablet (<860sp), mobile (<500sp). Minimum 360px width
 - **Auto-refresh** — configurable polling with hash-based skip
 - **Preferences** — date format, refresh interval, commit files limit
@@ -40,6 +44,14 @@ gitpulsar-gtk /path/to/repo       # open a single repository
 ```
 
 Or use **Ctrl+O** inside the app to open a folder. If the folder contains multiple Git repositories, they appear in the left sidebar. Click a repository to select it.
+
+### Repository indicators
+
+Each repository in the sidebar shows colored dots to the right of its name (hover for tooltip):
+
+- **● green** — unpushed commits ahead of remote
+- **● yellow** — uncommitted changes in tracked files (modified, staged, deleted)
+- **● blue** — only untracked files (new files not yet added)
 
 ### Working with changes
 

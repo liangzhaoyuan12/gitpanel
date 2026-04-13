@@ -72,6 +72,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
         e.is_git_repo.hash(&mut hasher);
         if let Some(ref ind) = e.indicator {
             ind.is_dirty.hash(&mut hasher);
+            ind.has_tracked_changes.hash(&mut hasher);
             ind.ahead.hash(&mut hasher);
         }
     }
@@ -83,6 +84,8 @@ use super::changes_view;
 use super::commit_list;
 use super::blame_view;
 use super::conflict_editor;
+use super::file_history_dialog;
+use super::clone_dialog;
 use super::gitignore_editor;
 use super::preferences_dialog;
 use super::rebase_editor;
@@ -308,6 +311,7 @@ impl GitpulsarWindow {
         window.setup_actions();
         window.setup_commit_context_menu();
         window.setup_branch_context_menu();
+        window.setup_tag_context_menu();
         window.setup_keyboard_navigation();
         window.setup_auto_refresh();
 
@@ -992,7 +996,9 @@ impl GitpulsarWindow {
             menu_model.append_submenu(Some("Recent"), &recent_submenu);
         }
 
+        menu_model.append(Some("Clone Repository…"), Some("win.clone-repo"));
         menu_model.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
+        menu_model.append(Some("Apply Patch…"), Some("win.apply-patch"));
         menu_model.append(Some("Preferences"), Some("win.preferences"));
         menu_model.append(Some("About Gitpulsar"), Some("win.about"));
 
@@ -1042,6 +1048,22 @@ impl GitpulsarWindow {
             }
         });
         self.add_action(&open_recent_action);
+
+        // Clone action
+        let clone_action = gio::SimpleAction::new("clone-repo", None);
+        let window = self.clone();
+        clone_action.connect_activate(move |_, _| {
+            window.show_clone_dialog();
+        });
+        self.add_action(&clone_action);
+
+        // Apply patch action
+        let apply_patch_action = gio::SimpleAction::new("apply-patch", None);
+        let window = self.clone();
+        apply_patch_action.connect_activate(move |_, _| {
+            window.show_apply_patch_dialog();
+        });
+        self.add_action(&apply_patch_action);
 
         // Force push action
         let force_push_action = gio::SimpleAction::new("force-push", None);
@@ -1838,6 +1860,39 @@ impl GitpulsarWindow {
     }
 
     /// Update the sidebar status bar with repo name and git status summary.
+    /// Recompute and apply indicator for the active repo without full workspace scan.
+    fn refresh_active_repo_indicator(&self, path_str: &str) {
+        let imp = self.imp();
+        let Ok(repo) = GitRepo::open(path_str) else { return };
+        let (tracked, untracked) = repo.dirty_kinds();
+        let (ahead, _) = repo.ahead_behind().unwrap_or((0, 0));
+        let branch = repo.current_branch_name();
+        let new_indicator = gitpulsar_core::workspace::RepoIndicator {
+            is_dirty: tracked || untracked,
+            has_tracked_changes: tracked,
+            ahead,
+            branch,
+        };
+
+        let mut entries = imp.workspace_entries.borrow_mut();
+        let Some(idx) = entries.iter().position(|e| e.path.to_string_lossy() == path_str) else {
+            return;
+        };
+        entries[idx].indicator = Some(new_indicator);
+        let entries_clone = entries.clone();
+        drop(entries);
+
+        let selected_idx = imp.repo_list_box.selected_row().map(|r| r.index());
+        repo_tree::populate_repo_list(&imp.repo_list_box, &entries_clone);
+        if let Some(i) = selected_idx {
+            if let Some(row) = imp.repo_list_box.row_at_index(i) {
+                imp.repo_list_box.select_row(Some(&row));
+            }
+        }
+        // Reset workspace hash so throttled scan doesn't immediately override
+        imp.last_workspace_hash.set(0);
+    }
+
     fn update_sidebar_status(&self, repo_name: &str, status: Option<&RepoStatus>) {
         let imp = self.imp();
         imp.sidebar_repo_name_label.set_label(repo_name);
@@ -2030,6 +2085,8 @@ impl GitpulsarWindow {
                                     win.unstage_file(&path);
                                 } else if name == "blame-file" {
                                     win.show_blame(&path);
+                                } else if name == "history-file" {
+                                    win.show_file_history(&path);
                                 }
                             }
                             return;
@@ -2590,6 +2647,173 @@ impl GitpulsarWindow {
         }
     }
 
+    fn show_clone_dialog(&self) {
+        let win = self.clone();
+        let dialog = clone_dialog::build_clone_dialog(move |url, dest| {
+            win.clone_repository(&url, &dest);
+        });
+        dialog.present(Some(self));
+    }
+
+    fn clone_repository(&self, url: &str, dest_dir: &str) {
+        let url = url.to_string();
+        let dest_dir = dest_dir.to_string();
+        self.show_toast(&format!("Cloning {}…", url));
+
+        let win = self.clone();
+        let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
+
+        std::thread::spawn(move || {
+            use std::process::Command;
+            let output = Command::new("git")
+                .args(["clone", "--progress", &url])
+                .current_dir(&dest_dir)
+                .output();
+            let result = match output {
+                Ok(o) if o.status.success() => {
+                    // Derive cloned repo name from URL
+                    let name = url
+                        .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(".git")
+                        .to_string();
+                    let path = std::path::Path::new(&dest_dir).join(&name);
+                    Ok(path.to_string_lossy().to_string())
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                    Err(stderr.trim().to_string())
+                }
+                Err(e) => Err(format!("Failed to run git: {}", e)),
+            };
+            let _ = tx.send_blocking(result);
+        });
+
+        glib::spawn_future_local(async move {
+            match rx.recv().await {
+                Ok(Ok(path)) => {
+                    win.show_toast(&format!("Cloned to {}", path));
+                    win.open_workspace(std::path::Path::new(&path));
+                }
+                Ok(Err(e)) => {
+                    win.show_error_dialog("Clone Failed", &e);
+                }
+                Err(_) => {}
+            }
+        });
+    }
+
+    fn export_commit_patch(&self, sha: &str) {
+        let Some(repo_path) = self.repo_path_string() else { return };
+        let sha = sha.to_string();
+        let default_name = format!("{}.patch", &sha[..7.min(sha.len())]);
+
+        let dialog = gtk::FileChooserDialog::new(
+            Some("Save patch as"),
+            Some(self),
+            gtk::FileChooserAction::Save,
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Save", gtk::ResponseType::Accept),
+            ],
+        );
+        dialog.set_modal(true);
+        dialog.set_current_name(&default_name);
+
+        let win = self.clone();
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(file) = dialog.file() {
+                    if let Some(path) = file.path() {
+                        match run_git_cmd(&repo_path, &["format-patch", "-1", "--stdout", &sha]) {
+                            Ok(content) => {
+                                if let Err(e) = std::fs::write(&path, content) {
+                                    win.show_error_dialog("Export Failed", &format!("Failed to write patch: {}", e));
+                                } else {
+                                    win.show_toast(&format!("Patch saved: {}", path.display()));
+                                }
+                            }
+                            Err(e) => {
+                                win.show_error_dialog("Export Failed", &format!("{}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn show_apply_patch_dialog(&self) {
+        let Some(repo_path) = self.repo_path_string() else {
+            self.show_toast("Open a repository first");
+            return;
+        };
+
+        let dialog = gtk::FileChooserDialog::new(
+            Some("Select patch file to apply"),
+            Some(self),
+            gtk::FileChooserAction::Open,
+            &[
+                ("Cancel", gtk::ResponseType::Cancel),
+                ("Apply", gtk::ResponseType::Accept),
+            ],
+        );
+        dialog.set_modal(true);
+
+        let win = self.clone();
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(file) = dialog.file() {
+                    if let Some(path) = file.path() {
+                        let path_str = path.to_string_lossy().to_string();
+                        match run_git_cmd(&repo_path, &["am", "--3way", &path_str]) {
+                            Ok(_) => {
+                                win.show_toast(&format!("Applied patch: {}", path.display()));
+                                win.trigger_background_refresh();
+                            }
+                            Err(e) => {
+                                // If git am fails, try git apply (for patches without commit metadata)
+                                match run_git_cmd(&repo_path, &["apply", "--3way", &path_str]) {
+                                    Ok(_) => {
+                                        win.show_toast(&format!("Applied patch (no commit): {}", path.display()));
+                                        win.trigger_background_refresh();
+                                    }
+                                    Err(e2) => {
+                                        win.show_error_dialog(
+                                            "Apply Patch Failed",
+                                            &format!("git am: {}\n\ngit apply: {}", e, e2),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn show_file_history(&self, path: &str) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
+        match repo.log_for_file(path, 200) {
+            Ok(commits) => {
+                drop(repo_ref);
+                let dialog = file_history_dialog::build_file_history_dialog(path, &commits);
+                dialog.present(Some(self));
+            }
+            Err(e) => {
+                self.show_toast(&format!("File history failed: {}", e));
+            }
+        }
+    }
+
     fn open_conflict_editor(&self, path: &str, chunks: &[gitpulsar_core::conflict::ConflictChunk]) {
         let repo_path = self.repo_path_string();
         let Some(rp) = repo_path else { return };
@@ -2806,13 +3030,14 @@ impl GitpulsarWindow {
                     // Update diff cache
                     *imp.cached_unstaged_diffs.borrow_mut() = result.unstaged_diffs;
                     *imp.cached_staged_diffs.borrow_mut() = result.staged_diffs;
-                    // Update sidebar status
+                    // Update sidebar status and active repo indicator
                     if let Some(ref path_str) = win.repo_path_string() {
                         let name = std::path::Path::new(path_str)
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
                         win.update_sidebar_status(&name, Some(&status));
+                        win.refresh_active_repo_indicator(path_str);
                     }
                 }
             }
@@ -3154,6 +3379,20 @@ impl GitpulsarWindow {
             });
             menu_box.append(&create_tag_btn);
 
+            // Export as Patch
+            let export_patch_btn = gtk::Button::builder()
+                .label("Export as Patch…")
+                .css_classes(["flat"])
+                .build();
+            let sha_clone = sha.clone();
+            let pp_ep = popover.clone();
+            let w_ep = win.clone();
+            export_patch_btn.connect_clicked(move |_| {
+                pp_ep.popdown();
+                w_ep.export_commit_patch(&sha_clone);
+            });
+            menu_box.append(&export_patch_btn);
+
             // Interactive Rebase (onto this commit)
             if idx > 0 {
                 let rebase_btn = gtk::Button::builder()
@@ -3190,6 +3429,137 @@ impl GitpulsarWindow {
         });
 
         self.imp().commit_list_box.add_controller(gesture);
+    }
+
+    fn setup_tag_context_menu(&self) {
+        let tags_list = self.imp().tags_list.borrow().clone();
+        let Some(tags_list) = tags_list else { return };
+
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3); // right-click
+
+        let win = self.clone();
+        let tl = tags_list.clone();
+        gesture.connect_released(move |_gesture, _, x, y| {
+            let Some(row) = tl.row_at_y(y as i32) else { return };
+            let tag_name = row.widget_name().to_string();
+            if tag_name.is_empty() { return; }
+
+            let popover = gtk::Popover::new();
+            popover.set_parent(&tl);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.set_has_arrow(true);
+
+            let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            menu_box.set_margin_top(4);
+            menu_box.set_margin_bottom(4);
+
+            // Push to remote
+            let push_btn = gtk::Button::builder()
+                .label("Push to remote")
+                .css_classes(["flat"])
+                .build();
+            let name = tag_name.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            push_btn.connect_clicked(move |_| {
+                pp.popdown();
+                w.push_tag(&name);
+            });
+            menu_box.append(&push_btn);
+
+            // Delete remote
+            let delete_remote_btn = gtk::Button::builder()
+                .label("Delete from remote")
+                .css_classes(["flat"])
+                .build();
+            let name = tag_name.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            delete_remote_btn.connect_clicked(move |_| {
+                pp.popdown();
+                w.delete_remote_tag(&name);
+            });
+            menu_box.append(&delete_remote_btn);
+
+            // Delete local
+            let delete_btn = gtk::Button::builder()
+                .label("Delete locally")
+                .css_classes(["flat"])
+                .build();
+            let name = tag_name.clone();
+            let pp = popover.clone();
+            let w = win.clone();
+            delete_btn.connect_clicked(move |_| {
+                pp.popdown();
+                w.delete_local_tag(&name);
+            });
+            menu_box.append(&delete_btn);
+
+            popover.set_child(Some(&menu_box));
+            popover.popup();
+        });
+
+        tags_list.add_controller(gesture);
+    }
+
+    fn push_tag(&self, name: &str) {
+        let name = name.to_string();
+        self.run_git_op("Push Tag", move |path| {
+            run_git_cmd(path, &["push", "origin", &format!("refs/tags/{}", name)])
+                .map(|_| format!("Pushed tag '{}'", name))
+        });
+    }
+
+    fn delete_remote_tag(&self, name: &str) {
+        let dialog = adw::AlertDialog::new(
+            Some("Delete Remote Tag?"),
+            Some(&format!("Delete tag '{}' from origin? This affects everyone using the remote.", name)),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete Remote");
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let name_owned = name.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "delete" {
+                let name = name_owned.clone();
+                win.run_git_op("Delete Remote Tag", move |path| {
+                    run_git_cmd(path, &["push", "origin", &format!(":refs/tags/{}", name)])
+                        .map(|_| format!("Deleted remote tag '{}'", name))
+                });
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    fn delete_local_tag(&self, name: &str) {
+        let dialog = adw::AlertDialog::new(
+            Some("Delete Tag?"),
+            Some(&format!("Delete local tag '{}'?", name)),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete");
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let name_owned = name.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "delete" {
+                let name = name_owned.clone();
+                win.run_git_op("Delete Tag", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    repo.delete_tag(&name)?;
+                    Ok(format!("Deleted tag '{}'", name))
+                });
+            }
+        });
+        dialog.present(Some(self));
     }
 
     fn setup_branch_context_menu(&self) {

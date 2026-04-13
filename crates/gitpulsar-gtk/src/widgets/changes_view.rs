@@ -355,6 +355,16 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     blame_btn.set_widget_name("blame-file");
     btn_box.append(&blame_btn);
 
+    // File history button
+    let history_btn = gtk::Button::builder()
+        .icon_name("document-open-recent-symbolic")
+        .css_classes(["flat", "circular"])
+        .tooltip_text("File History")
+        .valign(gtk::Align::Center)
+        .build();
+    history_btn.set_widget_name("history-file");
+    btn_box.append(&history_btn);
+
     header.append(&btn_box);
     outer_box.append(&header);
 

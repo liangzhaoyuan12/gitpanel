@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.7.0 (2026-04-13)
+
+### New features
+
+- **Clone repository** — clone from URL via hamburger menu, opens cloned repo automatically
+- **File history** — per-file commit history via new button in file row (document-open-recent icon)
+- **Tag remote operations** — right-click on tag: Push to remote, Delete from remote, Delete locally
+- **Patch workflow** — Export commit as `.patch` (commit context menu) and Apply Patch… from hamburger menu (`git am` with fallback to `git apply`)
+
+### Fixes
+
+- Repository dirty indicator now includes untracked files (was missing for new files like `.claude/`)
+- Active repo indicator refreshes immediately on status change instead of waiting for full workspace scan
+
+### Improvements
+
+- Repository indicators now color-coded by change type:
+  - Green dot — unpushed commits ahead of remote
+  - Yellow dot — uncommitted changes in tracked files
+  - Blue dot — only untracked files
+- Hover tooltips on each indicator explain its meaning
+- Unified dot glyph for all indicators (green ●N instead of ▲N)
+
 ## v0.6.0 (2026-04-09)
 
 ### Improvements

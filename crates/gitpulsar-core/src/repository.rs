@@ -121,6 +121,53 @@ impl GitRepo {
         Ok(commits)
     }
 
+    /// History of commits that touched a specific file path.
+    pub fn log_for_file(&self, file_path: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
+        let mut revwalk = self.repo.revwalk()?;
+        revwalk.push_head()?;
+        revwalk.set_sorting(git2::Sort::TIME)?;
+
+        let target = std::path::Path::new(file_path);
+        let mut commits = Vec::new();
+
+        for oid in revwalk {
+            if commits.len() >= max_count {
+                break;
+            }
+            let oid = oid?;
+            let commit = self.repo.find_commit(oid)?;
+
+            // Diff against each parent (or empty tree for root commit)
+            let tree = commit.tree()?;
+            let touches = if commit.parent_count() == 0 {
+                let diff = self.repo.diff_tree_to_tree(None, Some(&tree), None)?;
+                diff_touches_path(&diff, target)
+            } else {
+                let mut touched = false;
+                for i in 0..commit.parent_count() {
+                    let parent = commit.parent(i)?;
+                    let parent_tree = parent.tree()?;
+                    let diff = self.repo.diff_tree_to_tree(
+                        Some(&parent_tree),
+                        Some(&tree),
+                        None,
+                    )?;
+                    if diff_touches_path(&diff, target) {
+                        touched = true;
+                        break;
+                    }
+                }
+                touched
+            };
+
+            if touches {
+                commits.push(commit_to_info(&self.repo, &commit));
+            }
+        }
+
+        Ok(commits)
+    }
+
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
         let mut result = Vec::new();
         let head_ref = self.repo.head().ok();
@@ -183,13 +230,32 @@ impl GitRepo {
 
     /// Quick dirty check without parsing individual file statuses.
     pub fn is_dirty_quick(&self) -> bool {
+        let (tracked, untracked) = self.dirty_kinds();
+        tracked || untracked
+    }
+
+    /// Returns (has_tracked_changes, has_untracked_only).
+    /// Tracked = modified/staged/deleted files. Untracked = new files only.
+    pub fn dirty_kinds(&self) -> (bool, bool) {
         let mut opts = StatusOptions::new();
-        opts.include_untracked(false)
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(false)
             .include_ignored(false);
-        self.repo
-            .statuses(Some(&mut opts))
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
+        let statuses = match self.repo.statuses(Some(&mut opts)) {
+            Ok(s) => s,
+            Err(_) => return (false, false),
+        };
+        let mut tracked = false;
+        let mut untracked = false;
+        for entry in statuses.iter() {
+            let s = entry.status();
+            if s.is_wt_new() {
+                untracked = true;
+            } else if !s.is_empty() {
+                tracked = true;
+            }
+        }
+        (tracked, untracked)
     }
 
     pub fn inner(&self) -> &Repository {
@@ -212,6 +278,17 @@ fn signature_to_model(sig: &git2::Signature<'_>) -> Signature {
         name: sig.name().unwrap_or("").to_string(),
         email: sig.email().unwrap_or("").to_string(),
     }
+}
+
+fn diff_touches_path(diff: &git2::Diff<'_>, target: &std::path::Path) -> bool {
+    for delta in diff.deltas() {
+        let old_matches = delta.old_file().path().map(|p| p == target).unwrap_or(false);
+        let new_matches = delta.new_file().path().map(|p| p == target).unwrap_or(false);
+        if old_matches || new_matches {
+            return true;
+        }
+    }
+    false
 }
 
 fn commit_to_info(repo: &Repository, commit: &git2::Commit<'_>) -> CommitInfo {

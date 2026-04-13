@@ -41,19 +41,24 @@ pub fn create_repo_row(entry: &WorkspaceEntry) -> gtk::ListBoxRow {
     // Indicators for git repos
     if let Some(ref indicator) = entry.indicator {
         if indicator.is_dirty {
+            let (css_class, tooltip) = if indicator.has_tracked_changes {
+                ("warning", "Uncommitted changes")
+            } else {
+                ("accent", "Untracked files")
+            };
             let dirty = gtk::Label::builder()
                 .label("●")
-                .css_classes(["warning", "caption"])
+                .css_classes([css_class, "caption"])
                 .build();
-            dirty.set_tooltip_text(Some("Uncommitted changes"));
+            dirty.set_tooltip_text(Some(tooltip));
             top.append(&dirty);
         }
         if indicator.ahead > 0 {
             let ahead = gtk::Label::builder()
-                .label(&format!("▲{}", indicator.ahead))
+                .label(&format!("●{}", indicator.ahead))
                 .css_classes(["success", "caption"])
                 .build();
-            ahead.set_tooltip_text(Some("Unpushed commits"));
+            ahead.set_tooltip_text(Some(&format!("{} unpushed commit(s)", indicator.ahead)));
             top.append(&ahead);
         }
     }

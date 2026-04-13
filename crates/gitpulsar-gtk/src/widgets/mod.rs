@@ -11,3 +11,5 @@ pub mod rebase_editor;
 pub mod commit_templates;
 pub mod blame_view;
 pub mod conflict_editor;
+pub mod file_history_dialog;
+pub mod clone_dialog;

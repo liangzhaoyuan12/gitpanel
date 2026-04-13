@@ -7,6 +7,8 @@ use crate::repository::GitRepo;
 #[derive(Debug, Clone)]
 pub struct RepoIndicator {
     pub is_dirty: bool,
+    /// True if there are tracked changes (modified/staged/deleted). Untracked-only stays false.
+    pub has_tracked_changes: bool,
     pub ahead: usize,
     pub branch: Option<String>,
 }
@@ -124,10 +126,11 @@ fn compute_indicator(path: &Path) -> Option<RepoIndicator> {
     let repo = GitRepo::open(&path.to_string_lossy()).ok()?;
     let branch = repo.current_branch_name();
     let (ahead, _) = repo.ahead_behind().unwrap_or((0, 0));
-    let is_dirty = repo.is_dirty_quick();
+    let (tracked, untracked) = repo.dirty_kinds();
 
     Some(RepoIndicator {
-        is_dirty,
+        is_dirty: tracked || untracked,
+        has_tracked_changes: tracked,
         ahead,
         branch,
     })

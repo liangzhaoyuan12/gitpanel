@@ -64,6 +64,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.0" date="2026-04-13">
+      <description>
+        <p>New features: Clone repository from URL, per-file commit history, tag push/delete on remote, export/apply patches. Color-coded repo indicators (green/yellow/blue). Untracked files now counted in dirty check.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-04-09">
       <description>
         <p>Performance: skip background refresh when window is inactive, saving 10-15% CPU. Auto-refresh on window focus. Throttled workspace scanning. Adaptive AdwDialog API for mobile. Icon footprint fix.</p>
