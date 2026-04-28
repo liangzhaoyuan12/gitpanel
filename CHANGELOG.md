@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 (2026-04-15)
+
+### Fixes
+
+- Untracked indicator now uses explicit blue (#3584e4) instead of the `accent` CSS class. Fixes the bug where untracked dot rendered green for users whose GNOME accent color is set to green
+- Tracked-changes indicator switched to explicit yellow (#e5a50a) for the same reason
+
 ## v0.7.0 (2026-04-13)
 
 ### New features
