@@ -1,8 +1,17 @@
 # Gitpulsar
 
-A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
+**A fast, native Git client for GNOME.** Written in Rust with GTK4 and libadwaita — small binary, low memory, no telemetry, no cloud, no terminal required.
 
 ![Gitpulsar](data/screenshots/main.png)
+
+## Why Gitpulsar
+
+- **Native GNOME experience** — libadwaita widgets, dark/light themes, follows your accent color
+- **Multi-repository workspace** — open a folder, see every repo with live status indicators (modified, untracked, ahead of remote)
+- **Adaptive layout** — runs from 4K monitors down to 360 px phone screens (Phosh, postmarketOS)
+- **Lightweight** — Rust core with background polling that pauses when the window is not focused
+- **Privacy-first** — no telemetry, no account, no cloud sync; everything stays local
+- **Complete workflow** — staging, hunks, conflict editor, interactive rebase, blame, reflog, patches, remotes, submodules, worktrees, stashes, tags
 
 ## Features
 

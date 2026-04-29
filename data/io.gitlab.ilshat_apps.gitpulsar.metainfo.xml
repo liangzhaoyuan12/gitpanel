@@ -3,7 +3,29 @@
   <id>io.gitlab.ilshat_apps.gitpulsar</id>
 
   <name>Gitpulsar</name>
-  <summary>Browse and manage Git repositories</summary>
+  <summary>Fast native Git client for GNOME</summary>
+
+  <categories>
+    <category>Development</category>
+    <category>RevisionControl</category>
+    <category>GTK</category>
+  </categories>
+
+  <keywords>
+    <keyword>git</keyword>
+    <keyword>repository</keyword>
+    <keyword>vcs</keyword>
+    <keyword>version control</keyword>
+    <keyword>commit</keyword>
+    <keyword>branch</keyword>
+    <keyword>diff</keyword>
+    <keyword>merge</keyword>
+    <keyword>rebase</keyword>
+    <keyword>staging</keyword>
+    <keyword>blame</keyword>
+    <keyword>workspace</keyword>
+    <keyword>monorepo</keyword>
+  </keywords>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
@@ -15,28 +37,42 @@
 
   <description>
     <p>
-      Gitpulsar helps you work with Git repositories through a clean, visual
-      interface. Open a folder with multiple projects and switch between them
-      from the sidebar, or focus on a single repository.
+      Gitpulsar is a complete Git client built natively for GNOME. Written in Rust
+      with GTK4 and libadwaita, it stays fast and lightweight while giving you the
+      full Git workflow without ever leaving the keyboard or reaching for the terminal.
     </p>
     <p>
-      Stage and unstage files with drag-and-drop, review syntax-highlighted
-      diffs, and commit with conventional commit prefixes. Partial staging
-      lets you pick individual hunks or even specific lines within a file.
+      Unlike browser-wrapped Git apps, Gitpulsar is a single small binary that follows
+      your system theme, respects your accent color preferences, and feels like a
+      first-class GNOME application. It runs offline, sends nothing to the cloud, and
+      uses zero telemetry.
     </p>
-    <p>
-      The integrated branch graph shows your project topology at a glance.
-      Blame view annotates every line with its author and commit. When merge
-      conflicts arise, a three-panel editor helps you resolve them visually.
-    </p>
+    <p>Why choose Gitpulsar:</p>
     <ul>
-      <li>Multi-repository workspace with parallel scanning</li>
-      <li>Syntax-highlighted diffs with dark and light theme support</li>
-      <li>Drag-and-drop staging with hunk and line-level control</li>
-      <li>Undo and redo for staging operations and discards</li>
-      <li>Branch graph, blame view, and conflict resolution editor</li>
-      <li>Interactive rebase, submodules, and worktrees</li>
-      <li>Keyboard navigation and adaptive layout for all screen sizes</li>
+      <li>Native GNOME look and feel — libadwaita widgets, dark and light themes, dynamic colors</li>
+      <li>Multi-repository workspace — open a folder, see all repos with live status indicators (modified, untracked, ahead of remote)</li>
+      <li>Adaptive layout — works from a 4K monitor down to a 360 px phone screen (Phosh, postmarketOS)</li>
+      <li>Low CPU and memory — Rust core with smart background polling that pauses when the window isn't focused</li>
+      <li>No telemetry, no account, no cloud — your code stays on your machine</li>
+    </ul>
+    <p>What you can do:</p>
+    <ul>
+      <li>Browse history with a paginated commit log, search, and an integrated branch graph</li>
+      <li>Stage and unstage by file, by hunk, or by individual line — with drag and drop</li>
+      <li>Commit with conventional commit prefixes (feat, fix, docs…) and one-click Co-Authored-By trailers</li>
+      <li>Undo and redo staging operations and even file discards</li>
+      <li>Resolve merge conflicts in a three-panel visual editor</li>
+      <li>Run interactive rebase with reorder, squash, fixup, reword, edit, and drop actions</li>
+      <li>Annotate any file with blame to see who changed each line</li>
+      <li>View per-file commit history to debug regressions</li>
+      <li>Clone a repository from a URL with a built-in dialog</li>
+      <li>Manage remotes — add, rename, remove, and edit URLs</li>
+      <li>Push and delete tags on the remote, create lightweight or annotated tags</li>
+      <li>Export commits as patches and apply patches with git am or git apply</li>
+      <li>Browse the reflog to recover from accidental reset, rebase, or branch operations</li>
+      <li>Manage stashes, submodules, and worktrees from the sidebar</li>
+      <li>Edit .gitignore inside the app</li>
+      <li>Use the full keyboard — shortcuts for every common action and Tab-cycling across panels</li>
     </ul>
   </description>
 
@@ -64,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.1" date="2026-04-29">
+      <description>
+        <p>Improved app description and keywords for better discoverability on Flathub. New summary: "Fast native Git client for GNOME". The app itself is unchanged.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-04-29">
       <description>
         <p>New: Reflog browser, Remote management dialog, Co-Author trailer helper. Repo indicator colors now use a custom CSS provider so they are unaffected by the user's GNOME accent color.</p>

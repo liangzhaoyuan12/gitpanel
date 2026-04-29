@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.1 (2026-04-29)
+
+### Improvements
+
+- Rewrote Flathub description to highlight the strong points: native GNOME, Rust, multi-repo workspace, adaptive layout (down to 360 px), no telemetry, full Git workflow
+- New summary line: "Fast native Git client for GNOME"
+- Added `<categories>` and `<keywords>` to AppStream metainfo for better Flathub search and discovery
+- README intro rewritten with a "Why Gitpulsar" section
+
 ## v0.8.0 (2026-04-29)
 
 ### New features
