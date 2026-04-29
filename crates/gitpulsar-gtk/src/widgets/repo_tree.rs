@@ -41,25 +41,22 @@ pub fn create_repo_row(entry: &WorkspaceEntry) -> gtk::ListBoxRow {
     // Indicators for git repos
     if let Some(ref indicator) = entry.indicator {
         if indicator.is_dirty {
-            let dirty = gtk::Label::builder()
-                .css_classes(["caption"])
-                .use_markup(true)
-                .build();
-            if indicator.has_tracked_changes {
-                // Yellow via semantic css class (immune to user's accent color)
-                dirty.set_markup("<span color='#e5a50a'>●</span>");
-                dirty.set_tooltip_text(Some("Uncommitted changes"));
+            let (class, tooltip) = if indicator.has_tracked_changes {
+                ("gp-ind-yellow", "Uncommitted changes")
             } else {
-                // Explicit blue — not 'accent' class, which follows user's GNOME accent color
-                dirty.set_markup("<span color='#3584e4'>●</span>");
-                dirty.set_tooltip_text(Some("Untracked files"));
-            }
+                ("gp-ind-blue", "Untracked files")
+            };
+            let dirty = gtk::Label::builder()
+                .label("●")
+                .css_classes(["caption", class])
+                .build();
+            dirty.set_tooltip_text(Some(tooltip));
             top.append(&dirty);
         }
         if indicator.ahead > 0 {
             let ahead = gtk::Label::builder()
                 .label(&format!("●{}", indicator.ahead))
-                .css_classes(["success", "caption"])
+                .css_classes(["caption", "gp-ind-green"])
                 .build();
             ahead.set_tooltip_text(Some(&format!("{} unpushed commit(s)", indicator.ahead)));
             top.append(&ahead);

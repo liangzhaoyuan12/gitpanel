@@ -121,6 +121,76 @@ impl GitRepo {
         Ok(commits)
     }
 
+    /// Read the reflog for HEAD. Most recent first.
+    pub fn reflog(&self, max_count: usize) -> Result<Vec<crate::models::ReflogEntry>> {
+        let reflog = self.repo.reflog("HEAD").context("Failed to read reflog")?;
+        let mut entries = Vec::new();
+        for i in 0..reflog.len() {
+            if entries.len() >= max_count {
+                break;
+            }
+            let Some(entry) = reflog.get(i) else { continue };
+            let new_id = entry.id_new().to_string();
+            let short_new = new_id[..7.min(new_id.len())].to_string();
+            entries.push(crate::models::ReflogEntry {
+                old_id: entry.id_old().to_string(),
+                new_id,
+                short_new,
+                committer: signature_to_model(&entry.committer()),
+                time: entry.committer().when().seconds(),
+                message: entry.message().unwrap_or("").to_string(),
+            });
+        }
+        Ok(entries)
+    }
+
+    /// List configured remotes.
+    pub fn remotes(&self) -> Result<Vec<crate::models::RemoteInfo>> {
+        let names = self.repo.remotes().context("Failed to list remotes")?;
+        let mut result = Vec::new();
+        for name in names.iter().flatten() {
+            let url = self
+                .repo
+                .find_remote(name)
+                .ok()
+                .and_then(|r| r.url().map(|s| s.to_string()))
+                .unwrap_or_default();
+            result.push(crate::models::RemoteInfo {
+                name: name.to_string(),
+                url,
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
+        self.repo
+            .remote(name, url)
+            .context("Failed to add remote")?;
+        Ok(())
+    }
+
+    pub fn remove_remote(&self, name: &str) -> Result<()> {
+        self.repo
+            .remote_delete(name)
+            .context("Failed to remove remote")?;
+        Ok(())
+    }
+
+    pub fn rename_remote(&self, old: &str, new: &str) -> Result<()> {
+        self.repo
+            .remote_rename(old, new)
+            .context("Failed to rename remote")?;
+        Ok(())
+    }
+
+    pub fn set_remote_url(&self, name: &str, url: &str) -> Result<()> {
+        self.repo
+            .remote_set_url(name, url)
+            .context("Failed to set remote URL")?;
+        Ok(())
+    }
+
     /// History of commits that touched a specific file path.
     pub fn log_for_file(&self, file_path: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk()?;

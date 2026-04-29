@@ -25,6 +25,9 @@ A lightweight, GNOME-native Git GUI built with Rust, GTK4, and libadwaita.
 - **Submodules** — list, init, update submodules
 - **Worktrees** — list, add, remove git worktrees
 - **.gitignore editor** — edit .gitignore from the app menu
+- **Reflog browser** — recover from accidental reset/rebase via HEAD reflog
+- **Remote management** — add/remove/rename remotes and edit URLs via dialog
+- **Co-Author helper** — add `Co-Authored-By` trailer with a popover button
 - **File history** — per-file commit log via the history button on each file row
 - **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
 - **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)

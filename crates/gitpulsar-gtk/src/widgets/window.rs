@@ -86,6 +86,8 @@ use super::blame_view;
 use super::conflict_editor;
 use super::file_history_dialog;
 use super::clone_dialog;
+use super::reflog_dialog;
+use super::remotes_dialog;
 use super::gitignore_editor;
 use super::preferences_dialog;
 use super::rebase_editor;
@@ -997,6 +999,8 @@ impl GitpulsarWindow {
         }
 
         menu_model.append(Some("Clone Repository…"), Some("win.clone-repo"));
+        menu_model.append(Some("Manage Remotes…"), Some("win.remotes"));
+        menu_model.append(Some("Reflog"), Some("win.reflog"));
         menu_model.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
         menu_model.append(Some("Apply Patch…"), Some("win.apply-patch"));
         menu_model.append(Some("Preferences"), Some("win.preferences"));
@@ -1064,6 +1068,22 @@ impl GitpulsarWindow {
             window.show_apply_patch_dialog();
         });
         self.add_action(&apply_patch_action);
+
+        // Reflog action
+        let reflog_action = gio::SimpleAction::new("reflog", None);
+        let window = self.clone();
+        reflog_action.connect_activate(move |_, _| {
+            window.show_reflog_dialog();
+        });
+        self.add_action(&reflog_action);
+
+        // Remotes action
+        let remotes_action = gio::SimpleAction::new("remotes", None);
+        let window = self.clone();
+        remotes_action.connect_activate(move |_, _| {
+            window.show_remotes_dialog();
+        });
+        self.add_action(&remotes_action);
 
         // Force push action
         let force_push_action = gio::SimpleAction::new("force-push", None);
@@ -2797,6 +2817,69 @@ impl GitpulsarWindow {
             dialog.close();
         });
         dialog.present();
+    }
+
+    fn show_reflog_dialog(&self) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else {
+            self.show_toast("Open a repository first");
+            return;
+        };
+        match repo.reflog(500) {
+            Ok(entries) => {
+                drop(repo_ref);
+                let dialog = reflog_dialog::build_reflog_dialog(&entries);
+                dialog.present(Some(self));
+            }
+            Err(e) => self.show_error_dialog("Reflog Failed", &format!("{}", e)),
+        }
+    }
+
+    fn show_remotes_dialog(&self) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else {
+            self.show_toast("Open a repository first");
+            return;
+        };
+        let remotes = repo.remotes().unwrap_or_default();
+        drop(repo_ref);
+
+        let win = self.clone();
+        let dialog_holder: std::rc::Rc<std::cell::RefCell<Option<adw::Dialog>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let dh = dialog_holder.clone();
+        let dialog = remotes_dialog::build_remotes_dialog(&remotes, move |action| {
+            use remotes_dialog::RemoteAction;
+            let repo_ref = win.imp().repo.borrow();
+            let Some(ref repo) = *repo_ref else { return };
+            let result = match action {
+                RemoteAction::Add { name, url } => {
+                    repo.add_remote(&name, &url).map(|_| format!("Added remote '{}'", name))
+                }
+                RemoteAction::Remove { name } => {
+                    repo.remove_remote(&name).map(|_| format!("Removed remote '{}'", name))
+                }
+                RemoteAction::Rename { old, new } => repo
+                    .rename_remote(&old, &new)
+                    .map(|_| format!("Renamed '{}' → '{}'", old, new)),
+                RemoteAction::SetUrl { name, url } => repo
+                    .set_remote_url(&name, &url)
+                    .map(|_| format!("Updated URL for '{}'", name)),
+            };
+            drop(repo_ref);
+            match result {
+                Ok(msg) => {
+                    win.show_toast(&msg);
+                    if let Some(d) = dh.borrow_mut().take() {
+                        d.close();
+                    }
+                    win.show_remotes_dialog();
+                }
+                Err(e) => win.show_error_dialog("Remote Operation Failed", &format!("{}", e)),
+            }
+        });
+        *dialog_holder.borrow_mut() = Some(dialog.clone());
+        dialog.present(Some(self));
     }
 
     fn show_file_history(&self, path: &str) {

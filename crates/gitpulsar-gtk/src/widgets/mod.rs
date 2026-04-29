@@ -13,3 +13,5 @@ pub mod blame_view;
 pub mod conflict_editor;
 pub mod file_history_dialog;
 pub mod clone_dialog;
+pub mod reflog_dialog;
+pub mod remotes_dialog;

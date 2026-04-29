@@ -83,6 +83,114 @@ where
     menu_btn
 }
 
+/// Build a Co-Authored-By trailer popover button.
+/// `on_add` is called with (name, email) when the user submits.
+pub fn build_coauthor_button<F>(on_add: F) -> gtk::MenuButton
+where
+    F: Fn(&str, &str) + 'static,
+{
+    let menu_btn = gtk::MenuButton::builder()
+        .icon_name("system-users-symbolic")
+        .css_classes(["flat", "circular"])
+        .tooltip_text("Add Co-Author")
+        .valign(gtk::Align::Center)
+        .build();
+
+    let popover = gtk::Popover::new();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_width_request(280);
+
+    let title = gtk::Label::builder()
+        .label("Add Co-Author")
+        .css_classes(["heading"])
+        .xalign(0.0)
+        .build();
+    content.append(&title);
+
+    let name_entry = gtk::Entry::builder()
+        .placeholder_text("Full name")
+        .build();
+    content.append(&name_entry);
+
+    let email_entry = gtk::Entry::builder()
+        .placeholder_text("email@example.com")
+        .build();
+    content.append(&email_entry);
+
+    let add_btn = gtk::Button::builder()
+        .label("Add Trailer")
+        .css_classes(["suggested-action"])
+        .sensitive(false)
+        .build();
+    content.append(&add_btn);
+
+    // Enable add button only when both fields filled
+    let update = {
+        let name_entry = name_entry.clone();
+        let email_entry = email_entry.clone();
+        let add_btn = add_btn.clone();
+        move || {
+            add_btn.set_sensitive(
+                !name_entry.text().is_empty() && !email_entry.text().is_empty(),
+            );
+        }
+    };
+    {
+        let u = update.clone();
+        name_entry.connect_changed(move |_| u());
+    }
+    {
+        let u = update.clone();
+        email_entry.connect_changed(move |_| u());
+    }
+
+    let popover_ref = popover.clone();
+    add_btn.connect_clicked(move |_| {
+        let name = name_entry.text().trim().to_string();
+        let email = email_entry.text().trim().to_string();
+        if name.is_empty() || email.is_empty() {
+            return;
+        }
+        on_add(&name, &email);
+        name_entry.set_text("");
+        email_entry.set_text("");
+        popover_ref.popdown();
+    });
+
+    popover.set_child(Some(&content));
+    menu_btn.set_popover(Some(&popover));
+    menu_btn
+}
+
+/// Append a Co-Authored-By trailer to a commit message buffer.
+pub fn append_coauthor(buffer: &gtk::TextBuffer, name: &str, email: &str) {
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let trailer = format!("Co-Authored-By: {} <{}>", name, email);
+
+    if text.contains(&trailer) {
+        return; // already present
+    }
+
+    let mut end = buffer.end_iter();
+    let trimmed_end = text.trim_end();
+    let needs_blank_line = !trimmed_end.is_empty()
+        && !trimmed_end.ends_with("\n\n")
+        && !trimmed_end.lines().last().map(|l| l.starts_with("Co-Authored-By:")).unwrap_or(false);
+
+    let to_insert = if trimmed_end.is_empty() {
+        trailer
+    } else if needs_blank_line {
+        format!("\n\n{}", trailer)
+    } else {
+        format!("\n{}", trailer)
+    };
+    buffer.insert(&mut end, &to_insert);
+}
+
 /// Insert a conventional commit prefix into a TextBuffer.
 /// If an existing prefix is detected, replace it.
 pub fn insert_prefix(buffer: &gtk::TextBuffer, prefix: &str) {

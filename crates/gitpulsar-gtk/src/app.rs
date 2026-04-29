@@ -18,6 +18,22 @@ impl GitpulsarApp {
             // Set window icon
             gtk::Window::set_default_icon_name("io.gitlab.ilshat_apps.gitpulsar");
 
+            // Custom CSS for repo indicators — explicit colors that don't follow user accent
+            let css = "
+                label.gp-ind-yellow { color: #e5a50a; }
+                label.gp-ind-blue { color: #3584e4; }
+                label.gp-ind-green { color: #26a269; }
+            ";
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(css);
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+
             // Add icon search path for development builds
             let display = gtk::gdk::Display::default().unwrap();
             let icon_theme = gtk::IconTheme::for_display(&display);

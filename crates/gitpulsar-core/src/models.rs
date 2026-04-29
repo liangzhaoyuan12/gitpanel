@@ -160,3 +160,19 @@ pub struct BlameLine {
     pub time: i64,
     pub summary: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflogEntry {
+    pub old_id: String,
+    pub new_id: String,
+    pub short_new: String,
+    pub committer: Signature,
+    pub time: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub url: String,
+}

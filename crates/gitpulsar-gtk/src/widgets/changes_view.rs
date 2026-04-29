@@ -86,6 +86,13 @@ pub fn build_changes_view(
     });
     action_row.append(&template_btn);
 
+    // Co-Author trailer button
+    let commit_entry_for_coauthor = commit_entry.clone();
+    let coauthor_btn = super::commit_templates::build_coauthor_button(move |name, email| {
+        super::commit_templates::append_coauthor(&commit_entry_for_coauthor.buffer(), name, email);
+    });
+    action_row.append(&coauthor_btn);
+
     action_row.append(amend_check);
 
     commit_button.set_label("Commit");

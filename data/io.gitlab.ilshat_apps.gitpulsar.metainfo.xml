@@ -64,6 +64,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.0" date="2026-04-29">
+      <description>
+        <p>New: Reflog browser, Remote management dialog, Co-Author trailer helper. Repo indicator colors now use a custom CSS provider so they are unaffected by the user's GNOME accent color.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-04-15">
       <description>
         <p>Fix: repository indicator dots now use explicit colors (blue for untracked, yellow for tracked changes), so they stay correct regardless of the user's GNOME accent color.</p>

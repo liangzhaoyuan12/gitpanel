@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 (2026-04-29)
+
+### New features
+
+- **Reflog browser** — view recent HEAD movements (reset/rebase/checkout history) via "Reflog" in the hamburger menu. Acts as a safety net for recovering lost commits.
+- **Remote management** — add, remove, rename remotes and edit URLs in a dedicated dialog ("Manage Remotes…" in the hamburger menu).
+- **Co-Author helper** — new button next to the conventional-commit prefix picker. Opens a popover to add a `Co-Authored-By: Name <email>` trailer to the commit message.
+
+### Improvements
+
+- Repo indicators now use a custom CSS provider with explicit colors (yellow/blue/green) — fully immune to user's GNOME accent color preference.
+
 ## v0.7.1 (2026-04-15)
 
 ### Fixes
