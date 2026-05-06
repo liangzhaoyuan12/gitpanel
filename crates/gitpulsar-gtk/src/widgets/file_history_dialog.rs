@@ -4,11 +4,19 @@ use adw::glib;
 use gitpulsar_core::models::CommitInfo;
 
 /// Build a dialog showing the commit history for a single file.
-pub fn build_file_history_dialog(file_path: &str, commits: &[CommitInfo]) -> adw::Dialog {
+/// `on_restore` is called with a commit SHA when the user clicks "Restore from this commit".
+pub fn build_file_history_dialog<F>(
+    file_path: &str,
+    commits: &[CommitInfo],
+    on_restore: F,
+) -> adw::Dialog
+where
+    F: Fn(String) + 'static,
+{
     let dialog = adw::Dialog::builder()
         .title(&format!("History: {}", file_path))
-        .content_width(700)
-        .content_height(500)
+        .content_width(720)
+        .content_height(520)
         .build();
 
     let toolbar_view = adw::ToolbarView::new();
@@ -35,6 +43,8 @@ pub fn build_file_history_dialog(file_path: &str, commits: &[CommitInfo]) -> adw
         .margin_bottom(12)
         .build();
 
+    let on_restore = std::rc::Rc::new(on_restore);
+
     for commit in commits {
         let row = adw::ActionRow::builder()
             .title(glib::markup_escape_text(&commit.summary).as_str())
@@ -45,6 +55,20 @@ pub fn build_file_history_dialog(file_path: &str, commits: &[CommitInfo]) -> adw
                 commit.time.format("%Y-%m-%d %H:%M")
             ))
             .build();
+
+        let restore_btn = gtk::Button::builder()
+            .icon_name("edit-undo-symbolic")
+            .tooltip_text("Restore file from this commit")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .build();
+        let sha = commit.id.clone();
+        let on_restore = on_restore.clone();
+        restore_btn.connect_clicked(move |_| {
+            on_restore(sha.clone());
+        });
+        row.add_suffix(&restore_btn);
+
         list_box.append(&row);
     }
 

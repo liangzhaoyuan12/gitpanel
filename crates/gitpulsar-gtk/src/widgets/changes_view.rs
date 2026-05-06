@@ -474,20 +474,22 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
 
     // Setup diff tags (recreate on each render to handle theme changes)
     let tag_table = buffer.tag_table();
-    for name in &["addition", "deletion", "hunk-header", "lineno"] {
+    for name in &["addition", "deletion", "addition-emph", "deletion-emph", "hunk-header", "lineno"] {
         if let Some(tag) = tag_table.lookup(name) {
             tag_table.remove(&tag);
         }
     }
 
-    let (add_bg, add_fg, del_bg, del_fg, hunk_bg, hunk_fg, lineno_fg) = if is_dark {
-        ("#1a3a2a", "#a3d9a5", "#3a1a1a", "#d9a3a3", "#1a2a3a", "#6cb6ff", "#6e7681")
+    let (add_bg, add_fg, del_bg, del_fg, add_emph_bg, del_emph_bg, hunk_bg, hunk_fg, lineno_fg) = if is_dark {
+        ("#1a3a2a", "#a3d9a5", "#3a1a1a", "#d9a3a3", "#2d6a3f", "#6a2d2d", "#1a2a3a", "#6cb6ff", "#6e7681")
     } else {
-        ("#d4edda", "#155724", "#f8d7da", "#721c24", "#ddf4ff", "#0550ae", "#8b949e")
+        ("#d4edda", "#155724", "#f8d7da", "#721c24", "#a3e0b3", "#f5b5b5", "#ddf4ff", "#0550ae", "#8b949e")
     };
 
     tag_table.add(&gtk::TextTag::builder().name("addition").background(add_bg).foreground(add_fg).build());
     tag_table.add(&gtk::TextTag::builder().name("deletion").background(del_bg).foreground(del_fg).build());
+    tag_table.add(&gtk::TextTag::builder().name("addition-emph").background(add_emph_bg).build());
+    tag_table.add(&gtk::TextTag::builder().name("deletion-emph").background(del_emph_bg).build());
     tag_table.add(&gtk::TextTag::builder().name("hunk-header").background(hunk_bg).foreground(hunk_fg).build());
     tag_table.add(&gtk::TextTag::builder().name("lineno").foreground(lineno_fg).build());
 
@@ -502,12 +504,23 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     let mut line_count = 0;
     let mut global_line_idx = 0;
 
+    // Track each rendered diff line's content-area byte offset so we can run a
+    // second-pass word-level diff for adjacent deletion/addition pairs.
+    struct RenderedLine {
+        kind: DiffLineKind,
+        content_start: i32,
+        content: String,
+    }
+    let mut hunk_rendered: Vec<RenderedLine> = Vec::new();
+
     for hunk in &file.hunks {
         // Hunk header
         let start = iter.offset();
         buffer.insert(&mut iter, &format!("{}\n", hunk.header));
         let start_iter = buffer.iter_at_offset(start);
         buffer.apply_tag_by_name("hunk-header", &start_iter, &iter);
+
+        hunk_rendered.clear();
 
         for line in &hunk.lines {
             let prefix = match line.kind {
@@ -554,8 +567,63 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
                 }
             }
 
+            hunk_rendered.push(RenderedLine {
+                kind: line.kind,
+                content_start: line_start + prefix.len() as i32,
+                content: line.content.clone(),
+            });
+
             global_line_idx += 1;
             line_count += 1;
+        }
+
+        // Word-level diff pass: pair up runs of consecutive deletions then
+        // additions (only when the run sizes match), then highlight changed
+        // tokens within each paired line.
+        let mut i = 0;
+        while i < hunk_rendered.len() {
+            if !matches!(hunk_rendered[i].kind, DiffLineKind::Deletion) {
+                i += 1;
+                continue;
+            }
+            let del_start = i;
+            while i < hunk_rendered.len()
+                && matches!(hunk_rendered[i].kind, DiffLineKind::Deletion)
+            {
+                i += 1;
+            }
+            let del_end = i;
+            let add_start = i;
+            while i < hunk_rendered.len()
+                && matches!(hunk_rendered[i].kind, DiffLineKind::Addition)
+            {
+                i += 1;
+            }
+            let add_end = i;
+
+            let del_count = del_end - del_start;
+            let add_count = add_end - add_start;
+            if del_count == 0 || add_count == 0 || del_count != add_count {
+                continue;
+            }
+
+            for k in 0..del_count {
+                let del = &hunk_rendered[del_start + k];
+                let add = &hunk_rendered[add_start + k];
+                let Some(wd) = super::word_diff::diff_lines(&del.content, &add.content) else {
+                    continue;
+                };
+                for r in &wd.deleted {
+                    let s = buffer.iter_at_offset(del.content_start + r.start as i32);
+                    let e = buffer.iter_at_offset(del.content_start + r.end as i32);
+                    buffer.apply_tag_by_name("deletion-emph", &s, &e);
+                }
+                for r in &wd.inserted {
+                    let s = buffer.iter_at_offset(add.content_start + r.start as i32);
+                    let e = buffer.iter_at_offset(add.content_start + r.end as i32);
+                    buffer.apply_tag_by_name("addition-emph", &s, &e);
+                }
+            }
         }
     }
 

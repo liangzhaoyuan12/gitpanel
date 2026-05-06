@@ -114,6 +114,26 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Restore a single file from the given commit into the working tree (and index).
+    /// Equivalent to `git checkout <commit> -- <path>`.
+    pub fn checkout_file_from_commit(&self, commit_id: &str, file_path: &str) -> Result<()> {
+        let repo = self.inner();
+        let oid = git2::Oid::from_str(commit_id).context("Invalid commit SHA")?;
+        let commit = repo.find_commit(oid).context("Commit not found")?;
+        let tree = commit.tree()?;
+
+        let path = std::path::Path::new(file_path);
+        let mut builder = git2::build::CheckoutBuilder::new();
+        builder.path(path);
+        builder.force();
+        // Update index too so the change appears as staged (matches git CLI behavior)
+        builder.update_index(true);
+
+        repo.checkout_tree(tree.as_object(), Some(&mut builder))
+            .context("Failed to restore file from commit")?;
+        Ok(())
+    }
+
     /// Create a new branch from HEAD.
     pub fn create_branch(&self, name: &str, checkout: bool) -> Result<String> {
         let repo = self.inner();

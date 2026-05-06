@@ -37,6 +37,9 @@
 - **Reflog browser** — recover from accidental reset/rebase via HEAD reflog
 - **Remote management** — add/remove/rename remotes and edit URLs via dialog
 - **Co-Author helper** — add `Co-Authored-By` trailer with a popover button
+- **Branch compare** — diff between any two refs from a dialog
+- **Restore file from commit** — bring back a single file from history
+- **Word-level diff** — intra-line emphasis on what actually changed
 - **File history** — per-file commit log via the history button on each file row
 - **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
 - **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)

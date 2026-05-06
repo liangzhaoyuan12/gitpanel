@@ -88,6 +88,7 @@ use super::file_history_dialog;
 use super::clone_dialog;
 use super::reflog_dialog;
 use super::remotes_dialog;
+use super::branch_compare_dialog;
 use super::gitignore_editor;
 use super::preferences_dialog;
 use super::rebase_editor;
@@ -1000,6 +1001,7 @@ impl GitpulsarWindow {
 
         menu_model.append(Some("Clone Repository…"), Some("win.clone-repo"));
         menu_model.append(Some("Manage Remotes…"), Some("win.remotes"));
+        menu_model.append(Some("Compare Branches…"), Some("win.branch-compare"));
         menu_model.append(Some("Reflog"), Some("win.reflog"));
         menu_model.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
         menu_model.append(Some("Apply Patch…"), Some("win.apply-patch"));
@@ -1084,6 +1086,14 @@ impl GitpulsarWindow {
             window.show_remotes_dialog();
         });
         self.add_action(&remotes_action);
+
+        // Branch compare action
+        let compare_action = gio::SimpleAction::new("branch-compare", None);
+        let window = self.clone();
+        compare_action.connect_activate(move |_, _| {
+            window.show_branch_compare_dialog();
+        });
+        self.add_action(&compare_action);
 
         // Force push action
         let force_push_action = gio::SimpleAction::new("force-push", None);
@@ -2888,13 +2898,107 @@ impl GitpulsarWindow {
         match repo.log_for_file(path, 200) {
             Ok(commits) => {
                 drop(repo_ref);
-                let dialog = file_history_dialog::build_file_history_dialog(path, &commits);
+                let win = self.clone();
+                let path_owned = path.to_string();
+                let dialog = file_history_dialog::build_file_history_dialog(
+                    path,
+                    &commits,
+                    move |sha| {
+                        win.confirm_restore_file_from_commit(&path_owned, &sha);
+                    },
+                );
                 dialog.present(Some(self));
             }
             Err(e) => {
                 self.show_toast(&format!("File history failed: {}", e));
             }
         }
+    }
+
+    fn confirm_restore_file_from_commit(&self, path: &str, sha: &str) {
+        let short = &sha[..7.min(sha.len())];
+        let dialog = adw::AlertDialog::new(
+            Some("Restore File?"),
+            Some(&format!(
+                "Restore '{}' from commit {}? Current changes to this file in the working tree will be overwritten.",
+                path, short
+            )),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("restore", "Restore");
+        dialog.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let path_owned = path.to_string();
+        let sha_owned = sha.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "restore" {
+                let path = path_owned.clone();
+                let sha = sha_owned.clone();
+                let short = sha[..7.min(sha.len())].to_string();
+                let p = path.clone();
+                win.run_git_op("Restore File", move |repo_path| {
+                    let repo = GitRepo::open(repo_path)?;
+                    repo.checkout_file_from_commit(&sha, &p)?;
+                    Ok(format!("Restored '{}' from {}", path, short))
+                });
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    fn show_branch_compare_dialog(&self) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else {
+            self.show_toast("Open a repository first");
+            return;
+        };
+        let branches = repo.branches().unwrap_or_default();
+        let head_branch = repo.current_branch_name();
+        drop(repo_ref);
+
+        if branches.len() < 2 {
+            self.show_toast("Need at least two refs to compare");
+            return;
+        }
+
+        let initial_target = head_branch.as_deref();
+        let initial_base = branches
+            .iter()
+            .find(|b| b.is_remote && b.name.ends_with("/main"))
+            .or_else(|| branches.iter().find(|b| b.is_remote && b.name.ends_with("/master")))
+            .or_else(|| branches.iter().find(|b| b.name != head_branch.clone().unwrap_or_default()))
+            .map(|b| b.name.as_str());
+
+        let win = self.clone();
+        let refs_holder: std::rc::Rc<std::cell::RefCell<Option<branch_compare_dialog::BranchCompareRefs>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let rh = refs_holder.clone();
+        let (dialog, refs) = branch_compare_dialog::build_branch_compare_dialog(
+            &branches,
+            initial_base,
+            initial_target,
+            move |base, target| {
+                let repo_ref = win.imp().repo.borrow();
+                let Some(ref repo) = *repo_ref else { return };
+                let result = repo.diff_refs(&base, &target);
+                drop(repo_ref);
+                match result {
+                    Ok(files) => {
+                        if let Some(ref refs) = *rh.borrow() {
+                            refs.set_results(&files);
+                        }
+                    }
+                    Err(e) => {
+                        win.show_error_dialog("Compare Failed", &format!("{}", e));
+                    }
+                }
+            },
+        );
+        *refs_holder.borrow_mut() = Some(refs);
+        dialog.present(Some(self));
     }
 
     fn open_conflict_editor(&self, path: &str, chunks: &[gitpulsar_core::conflict::ConflictChunk]) {

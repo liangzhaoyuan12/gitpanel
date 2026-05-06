@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.0 (2026-05-05)
+
+### New features
+
+- **Branch compare** — diff between any two refs (branches, tags, commits) via "Compare Branches…" in the hamburger menu. Shows the file list with line counts.
+- **Restore file from commit** — restore button next to each entry in the file history dialog. Confirms before overwriting working tree.
+- **Word-level diff** — when a deletion immediately precedes a matching-count addition, only the changed tokens get emphasized within the line, like GitHub's intra-line highlighting. Computed lazily per hunk; falls back to plain line highlighting when lines share too few tokens.
+
+### Performance
+
+- Word-level diff uses a custom in-process LCS over tokenized lines, capped at 256 tokens per side to keep render time below a millisecond per pair. No new dependencies.
+
 ## v0.8.1 (2026-04-29)
 
 ### Improvements

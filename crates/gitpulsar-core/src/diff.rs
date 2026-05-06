@@ -59,6 +59,29 @@ impl GitRepo {
     }
 
     /// Diff for a specific commit (commit vs its first parent)
+    /// Diff between two refs (branches, tags, or commit SHAs).
+    /// Returns the changes that go from `base` to `target`.
+    pub fn diff_refs(&self, base: &str, target: &str) -> Result<Vec<DiffFile>> {
+        let repo = self.inner();
+        let base_obj = repo
+            .revparse_single(base)?
+            .peel_to_commit()?;
+        let target_obj = repo
+            .revparse_single(target)?
+            .peel_to_commit()?;
+
+        let base_tree = base_obj.tree()?;
+        let target_tree = target_obj.tree()?;
+
+        let diff = repo.diff_tree_to_tree(
+            Some(&base_tree),
+            Some(&target_tree),
+            Some(DiffOptions::new().patience(true)),
+        )?;
+
+        parse_diff(&diff)
+    }
+
     pub fn diff_commit(&self, commit_id: &str) -> Result<Vec<DiffFile>> {
         let repo = self.inner();
         let oid = Oid::from_str(commit_id)?;

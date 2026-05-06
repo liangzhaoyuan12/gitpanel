@@ -15,3 +15,5 @@ pub mod file_history_dialog;
 pub mod clone_dialog;
 pub mod reflog_dialog;
 pub mod remotes_dialog;
+pub mod branch_compare_dialog;
+pub mod word_diff;
