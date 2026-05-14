@@ -100,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.10.0" date="2026-05-14">
+      <description>
+        <p>Fixes per-file Stage/Unstage/Discard/Blame/History buttons that did nothing in the changes view. Empty commits are now rejected by default (tick "Allow empty" to override). Staged files show a green checkmark next to the filename and section headers carry live file counts so the Staged list is obvious. New features: export commit as archive (tar.gz/tar/zip), export branch graph as PNG, and bisect UI with Good/Bad/Skip/Reset controls.</p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-05-05">
       <description>
         <p>New: Branch compare dialog, Restore file from a past commit (in file history), and word-level diff highlighting within modified lines.</p>

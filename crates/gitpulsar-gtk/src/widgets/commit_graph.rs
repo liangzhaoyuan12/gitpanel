@@ -220,6 +220,48 @@ fn lane_x(lane: usize) -> f64 {
     PADDING + lane as f64 * LANE_WIDTH + LANE_WIDTH / 2.0
 }
 
+/// Render the full graph (with commit labels) to a PNG file.
+/// `commits` is used for labels; `rows` must be the matching graph rows.
+pub fn export_to_png(
+    rows: &[GraphRow],
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rows.is_empty() {
+        return Err("No commits to export".into());
+    }
+    let max_lanes = rows.iter().map(|r| r.num_active_lanes).max().unwrap_or(1).max(1);
+    let graph_width = (max_lanes as f64 * LANE_WIDTH + PADDING * 2.0).ceil();
+    let label_width = 600.0;
+    let total_width = (graph_width + label_width).ceil() as i32;
+    let total_height = (rows.len() as f64 * ROW_HEIGHT).ceil() as i32;
+
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, total_width, total_height)?;
+    let cr = cairo::Context::new(&surface)?;
+
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.paint()?;
+
+    for (i, row) in rows.iter().enumerate() {
+        let y = i as f64 * ROW_HEIGHT;
+        cr.save()?;
+        cr.translate(0.0, y);
+        draw_graph_row(&cr, row, ROW_HEIGHT, rows, i);
+        cr.restore()?;
+
+        cr.set_source_rgb(0.1, 0.1, 0.1);
+        cr.select_font_face("Monospace", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(graph_width + 8.0, y + ROW_HEIGHT / 2.0 + 4.0);
+        let line = format!("{}  {}", row.short_id, row.summary);
+        let truncated: String = line.chars().take(120).collect();
+        cr.show_text(&truncated)?;
+    }
+
+    let mut file = std::fs::File::create(path)?;
+    surface.write_to_png(&mut file)?;
+    Ok(())
+}
+
 fn color_for_lane(lane: usize, lane_colors: &[usize]) -> (f64, f64, f64) {
     let idx = lane_colors.get(lane).copied().unwrap_or(0);
     PALETTE[idx % PALETTE.len()]

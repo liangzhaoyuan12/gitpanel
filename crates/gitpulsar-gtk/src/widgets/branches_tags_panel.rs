@@ -74,7 +74,7 @@ pub struct BranchesTagsRefs {
 
 pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    panel.set_width_request(200);
+    // No explicit width_request — let AdwOverlaySplitView's min_sidebar_width drive sizing.
 
     // Search
     let search_entry = gtk::SearchEntry::builder()
@@ -103,10 +103,21 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     scrolled.set_child(Some(&inner));
     panel.append(&scrolled);
 
-    // Create branch button
+    // Create branch button — icon + label, ellipsize if narrow
+    let cb_inner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    cb_inner.set_halign(gtk::Align::Center);
+    let cb_icon = gtk::Image::from_icon_name("list-add-symbolic");
+    cb_inner.append(&cb_icon);
+    let cb_label = gtk::Label::builder()
+        .label("New branch")
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    cb_inner.append(&cb_label);
+
     let create_branch_btn = gtk::Button::builder()
-        .label("Create Branch…")
-        .css_classes(["suggested-action"])
+        .child(&cb_inner)
+        .css_classes(["suggested-action", "pill"])
+        .tooltip_text("Create branch from HEAD")
         .margin_start(8)
         .margin_end(8)
         .margin_top(4)

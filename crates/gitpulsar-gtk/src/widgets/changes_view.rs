@@ -1,13 +1,17 @@
+use std::rc::Rc;
+
 use adw::prelude::*;
 
 use gitpulsar_core::models::{DiffFile, DiffLineKind, FileStatusKind, RepoStatus};
 
 use super::syntax;
 
+/// Per-row button callback: `(file_path, button_name)`.
+pub type RowButtonCallback = Rc<dyn Fn(&str, &str)>;
+
 /// Refs returned to window.rs for connecting signals.
 pub struct ChangesViewRefs {
-    pub unstaged_list_box: gtk::ListBox,
-    pub staged_list_box: gtk::ListBox,
+    pub list_box: gtk::ListBox,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
 }
@@ -19,6 +23,7 @@ pub fn build_changes_view(
     commit_entry: &gtk::TextView,
     commit_button: &gtk::Button,
     amend_check: &gtk::CheckButton,
+    allow_empty_check: &gtk::CheckButton,
 ) -> (gtk::Box, ChangesViewRefs) {
     let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
     container.set_vexpand(true);
@@ -95,6 +100,9 @@ pub fn build_changes_view(
 
     action_row.append(amend_check);
 
+    allow_empty_check.set_tooltip_text(Some("Allow commit when no files are staged"));
+    action_row.append(allow_empty_check);
+
     commit_button.set_label("Commit");
     commit_button.add_css_class("suggested-action");
     commit_button.add_css_class("pill");
@@ -105,73 +113,33 @@ pub fn build_changes_view(
 
     container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    // === Scrollable area with two file lists ===
+    // === Scrollable area with single unified file list ===
     let lists_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    // Unstaged section
-    let unstaged_header = gtk::Label::builder()
-        .label("Unstaged Changes")
-        .css_classes(["caption", "dim-label"])
+    let header = gtk::Label::builder()
+        .label("Changes")
+        .css_classes(["heading"])
         .xalign(0.0)
         .margin_start(8)
         .margin_top(6)
         .margin_bottom(2)
         .build();
-    lists_box.append(&unstaged_header);
+    header.set_widget_name("changes-header");
+    lists_box.append(&header);
 
-    let unstaged_list_box = gtk::ListBox::builder()
+    let list_box = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["navigation-sidebar"])
         .build();
-    let unstaged_placeholder = gtk::Label::builder()
-        .label("No unstaged changes")
+    let placeholder = gtk::Label::builder()
+        .label("No changes")
         .css_classes(["dim-label"])
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    unstaged_list_box.set_placeholder(Some(&unstaged_placeholder));
+    list_box.set_placeholder(Some(&placeholder));
 
-    // DnD: drop target on unstaged list (accepts staged files to unstage)
-    let drop_unstaged = gtk::DropTarget::builder()
-        .actions(gtk::gdk::DragAction::MOVE)
-        .build();
-    drop_unstaged.set_types(&[gtk::glib::Type::STRING]);
-    unstaged_list_box.add_controller(drop_unstaged.clone());
-
-    lists_box.append(&unstaged_list_box);
-    lists_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-    // Staged section
-    let staged_header = gtk::Label::builder()
-        .label("Staged Changes")
-        .css_classes(["caption", "dim-label"])
-        .xalign(0.0)
-        .margin_start(8)
-        .margin_top(6)
-        .margin_bottom(2)
-        .build();
-    lists_box.append(&staged_header);
-
-    let staged_list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
-    let staged_placeholder = gtk::Label::builder()
-        .label("No staged changes")
-        .css_classes(["dim-label"])
-        .margin_top(12)
-        .margin_bottom(12)
-        .build();
-    staged_list_box.set_placeholder(Some(&staged_placeholder));
-
-    // DnD: drop target on staged list (accepts unstaged files to stage)
-    let drop_staged = gtk::DropTarget::builder()
-        .actions(gtk::gdk::DragAction::MOVE)
-        .build();
-    drop_staged.set_types(&[gtk::glib::Type::STRING]);
-    staged_list_box.add_controller(drop_staged.clone());
-
-    lists_box.append(&staged_list_box);
+    lists_box.append(&list_box);
 
     let file_scrolled = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -181,8 +149,7 @@ pub fn build_changes_view(
     container.append(&file_scrolled);
 
     let refs = ChangesViewRefs {
-        unstaged_list_box,
-        staged_list_box,
+        list_box,
         stage_all_btn,
         unstage_all_btn,
     };
@@ -228,42 +195,79 @@ pub fn collect_changed_files(status: &RepoStatus) -> Vec<ChangedFileEntry> {
     files
 }
 
-/// Populate both file lists (unstaged and staged) from the collected files.
-pub fn populate_file_lists(
-    unstaged_list: &gtk::ListBox,
-    staged_list: &gtk::ListBox,
-    files: &[ChangedFileEntry],
-) {
-    while let Some(child) = unstaged_list.first_child() {
-        unstaged_list.remove(&child);
-    }
-    while let Some(child) = staged_list.first_child() {
-        staged_list.remove(&child);
-    }
-
-    for file in files {
-        let row = create_file_accordion_row(file);
-        // Add DnD source to each row
-        let path = file.path.clone();
-        let drag_source = gtk::DragSource::builder()
-            .actions(gtk::gdk::DragAction::MOVE)
-            .build();
-        drag_source.connect_prepare(move |_, _, _| {
-            Some(gtk::gdk::ContentProvider::for_value(&gtk::glib::Value::from(&path)))
-        });
-        row.add_controller(drag_source);
-
-        if file.is_staged {
-            staged_list.append(&row);
-        } else {
-            unstaged_list.append(&row);
+/// Wire `connect_clicked` for all hunk-action buttons in `hunk_box` (stage/unstage hunks
+/// and stage-selected-lines). Must be called after `populate_hunk_actions`.
+/// Callback signature: `(button_name)`.
+pub fn wire_hunk_button_signals<F>(hunk_box: &gtk::Box, callback: F)
+where
+    F: Fn(&str) + 'static + Clone,
+{
+    walk_buttons(hunk_box.upcast_ref(), &mut |btn| {
+        let name = btn.widget_name().to_string();
+        if name.starts_with("stage-hunk-")
+            || name.starts_with("unstage-hunk-")
+            || name == "stage-selected-lines"
+            || name == "unstage-selected-lines"
+        {
+            let cb = callback.clone();
+            btn.connect_clicked(move |b| cb(&b.widget_name()));
         }
+    });
+}
+
+fn walk_buttons(parent: &gtk::Widget, cb: &mut dyn FnMut(&gtk::Button)) {
+    let mut child = parent.first_child();
+    while let Some(c) = child {
+        if let Ok(btn) = c.clone().downcast::<gtk::Button>() {
+            cb(&btn);
+        } else {
+            walk_buttons(&c, cb);
+        }
+        child = c.next_sibling();
     }
+}
+
+/// Populate the unified file list. Staged files come first, then unstaged.
+/// `on_button` is invoked when a per-row button (stage/unstage/discard/blame/history) fires.
+pub fn populate_file_lists(
+    list_box: &gtk::ListBox,
+    files: &[ChangedFileEntry],
+    on_button: RowButtonCallback,
+) {
+    while let Some(child) = list_box.first_child() {
+        list_box.remove(&child);
+    }
+
+    let unstaged_count = files.iter().filter(|f| !f.is_staged).count();
+    let staged_count = files.iter().filter(|f| f.is_staged).count();
+    let label = if staged_count == 0 && unstaged_count == 0 {
+        "Changes".to_string()
+    } else {
+        format!("Changes — {} staged / {} unstaged", staged_count, unstaged_count)
+    };
+    update_header_label(list_box, "changes-header", &label);
+
+    // Sort staged first, then unstaged, preserving original order within each group.
+    let mut ordered: Vec<&ChangedFileEntry> = files.iter().filter(|f| f.is_staged).collect();
+    ordered.extend(files.iter().filter(|f| !f.is_staged));
+
+    for file in ordered {
+        let row = create_file_accordion_row(file, &on_button);
+        list_box.append(&row);
+    }
+}
+
+fn wire_btn(btn: &gtk::Button, path: &str, name: &str, on_button: &RowButtonCallback) {
+    btn.set_widget_name(name);
+    let cb = on_button.clone();
+    let p = path.to_string();
+    let n = name.to_string();
+    btn.connect_clicked(move |_| cb(&p, &n));
 }
 
 /// Create a file accordion row: compact header (badge + path + stage/unstage/discard buttons),
 /// expandable diff section below.
-fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
+fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallback) -> gtk::ListBoxRow {
     let outer_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     // === Header row ===
@@ -281,35 +285,36 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     expand_icon.set_widget_name("expand-icon");
     header.append(&expand_icon);
 
-    // Status icon
-    let (icon_name, icon_css, tooltip) = match file.status {
-        FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
-        FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
-        FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
-        FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
-        FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
+    // Status icon — green check when staged, otherwise status-based glyph
+    let (icon_name, icon_css, tooltip): (&str, &str, String) = if file.is_staged {
+        let kind = match file.status {
+            FileStatusKind::New => "Added",
+            FileStatusKind::Modified => "Modified",
+            FileStatusKind::Deleted => "Deleted",
+            FileStatusKind::Renamed => "Renamed",
+            FileStatusKind::Typechange => "Typechange",
+        };
+        ("object-select-symbolic", "success", format!("Staged ({})", kind))
+    } else {
+        let (n, c, t) = match file.status {
+            FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
+            FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
+            FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
+            FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
+            FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
+        };
+        (n, c, t.to_string())
     };
 
     let status_icon = gtk::Image::builder()
         .icon_name(icon_name)
         .css_classes([icon_css])
         .pixel_size(14)
-        .tooltip_text(tooltip)
+        .tooltip_text(&tooltip)
         .build();
     header.append(&status_icon);
 
-    // Staged indicator
-    if file.is_staged {
-        let staged_icon = gtk::Image::builder()
-            .icon_name("object-select-symbolic")
-            .css_classes(["success"])
-            .pixel_size(12)
-            .tooltip_text("Staged")
-            .build();
-        header.append(&staged_icon);
-    }
-
-    // File path
+    // File path — bold via Pango attribute when staged so it stands out in the unified list
     let path_label = gtk::Label::builder()
         .label(&file.path)
         .xalign(0.0)
@@ -317,6 +322,12 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
         .ellipsize(gtk::pango::EllipsizeMode::Start)
         .css_classes(["caption"])
         .build();
+    if file.is_staged {
+        let attrs = gtk::pango::AttrList::new();
+        attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+        path_label.set_attributes(Some(&attrs));
+        path_label.add_css_class("success");
+    }
     header.append(&path_label);
 
     // Action buttons (shown on hover)
@@ -330,7 +341,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
             .tooltip_text("Unstage")
             .valign(gtk::Align::Center)
             .build();
-        unstage_btn.set_widget_name("unstage-file");
+        wire_btn(&unstage_btn, &file.path, "unstage-file", on_button);
         btn_box.append(&unstage_btn);
     } else {
         let stage_btn = gtk::Button::builder()
@@ -339,7 +350,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
             .tooltip_text("Stage")
             .valign(gtk::Align::Center)
             .build();
-        stage_btn.set_widget_name("stage-file");
+        wire_btn(&stage_btn, &file.path, "stage-file", on_button);
         btn_box.append(&stage_btn);
 
         let discard_btn = gtk::Button::builder()
@@ -348,7 +359,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
             .tooltip_text("Discard")
             .valign(gtk::Align::Center)
             .build();
-        discard_btn.set_widget_name("discard-file");
+        wire_btn(&discard_btn, &file.path, "discard-file", on_button);
         btn_box.append(&discard_btn);
     }
 
@@ -359,7 +370,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
         .tooltip_text("Blame")
         .valign(gtk::Align::Center)
         .build();
-    blame_btn.set_widget_name("blame-file");
+    wire_btn(&blame_btn, &file.path, "blame-file", on_button);
     btn_box.append(&blame_btn);
 
     // File history button
@@ -369,7 +380,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
         .tooltip_text("File History")
         .valign(gtk::Align::Center)
         .build();
-    history_btn.set_widget_name("history-file");
+    wire_btn(&history_btn, &file.path, "history-file", on_button);
     btn_box.append(&history_btn);
 
     header.append(&btn_box);
@@ -393,21 +404,7 @@ fn create_file_accordion_row(file: &ChangedFileEntry) -> gtk::ListBoxRow {
     hunk_actions_box.set_widget_name("hunk-actions-box");
     diff_box.append(&hunk_actions_box);
 
-    let diff_text = gtk::TextView::builder()
-        .editable(false)
-        .monospace(true)
-        .left_margin(4)
-        .right_margin(4)
-        .top_margin(4)
-        .bottom_margin(4)
-        .cursor_visible(false)
-        .wrap_mode(gtk::WrapMode::None)
-        .build();
-    diff_text.set_widget_name("diff-textview");
-    diff_text.add_css_class("card");
-
-    // Will be sized dynamically when diff is loaded
-    diff_box.append(&diff_text);
+    // TextView for the diff is created lazily on first expand (see get_diff_textview).
     diff_revealer.set_child(Some(&diff_box));
     outer_box.append(&diff_revealer);
 
@@ -458,11 +455,33 @@ pub fn toggle_file_diff(row: &gtk::ListBoxRow) -> bool {
     false
 }
 
-/// Get the diff TextView from a file row for rendering diff content.
+/// Get (or lazily build) the diff TextView for a file row.
 pub fn get_diff_textview(row: &gtk::ListBoxRow) -> Option<gtk::TextView> {
     let outer_box = row.child()?.downcast::<gtk::Box>().ok()?;
-    find_child_by_name(&outer_box, "diff-textview")
-        .and_then(|w| w.downcast::<gtk::TextView>().ok())
+    if let Some(existing) = find_child_by_name(&outer_box, "diff-textview") {
+        return existing.downcast::<gtk::TextView>().ok();
+    }
+
+    // Lazy build: find the diff Box inside the Revealer and append a TextView.
+    let revealer = find_child_by_name(&outer_box, "diff-box")?
+        .downcast::<gtk::Revealer>()
+        .ok()?;
+    let diff_box = revealer.child()?.downcast::<gtk::Box>().ok()?;
+
+    let diff_text = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .left_margin(4)
+        .right_margin(4)
+        .top_margin(4)
+        .bottom_margin(4)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::None)
+        .build();
+    diff_text.set_widget_name("diff-textview");
+    diff_text.add_css_class("card");
+    diff_box.append(&diff_text);
+    Some(diff_text)
 }
 
 /// Render a single file's diff into the accordion's textview using tags.
@@ -557,7 +576,6 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
                                 .foreground(&color)
                                 .foreground_set(true)
                                 .build();
-                            tag.set_priority(tag_table.size() - 1);
                             tag_table.add(&tag);
                         }
                         let s = buffer.iter_at_offset(content_offset + span.start as i32);
@@ -822,10 +840,18 @@ pub fn collect_selected_lines(selector: &gtk::Box) -> Vec<usize> {
     indices
 }
 
-/// Get the file path from a changes row.
-pub fn get_row_file_path(row: &gtk::ListBoxRow) -> Option<String> {
-    let name = row.widget_name().to_string();
-    if name.is_empty() { None } else { Some(name) }
+fn update_header_label(list_box: &gtk::ListBox, header_name: &str, full_label: &str) {
+    let Some(parent) = list_box.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else { return };
+    let mut child = parent.first_child();
+    while let Some(c) = child {
+        if c.widget_name() == header_name {
+            if let Ok(label) = c.downcast::<gtk::Label>() {
+                label.set_label(full_label);
+            }
+            return;
+        }
+        child = c.next_sibling();
+    }
 }
 
 fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {

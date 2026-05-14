@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.10.0 (2026-05-14)
+
+### Bug fixes
+
+- **Per-file Stage/Unstage/Discard/Blame/History buttons now work.** They used to be wired via a `GestureClick` on the parent `ListBox`, but GTK4 `Button` widgets claim the click sequence so the listbox controller never fired. Buttons are now wired with direct `connect_clicked` after each populate.
+- **Refuse empty commits by default.** Committing with nothing staged was silently allowed and could leave the repository in a confusing state (and made the subsequent Reset flow unstable). The commit bar now has an "Allow empty" checkbox that the user must explicitly tick.
+
+### New features
+
+- **Export commit as Archive** — right-click any commit → "Export as Archive…". Writes a `tar.gz`, `tar`, or `zip` snapshot via `git archive` (format inferred from chosen file extension).
+- **Export branch graph as PNG** — "Export Graph as PNG…" in the hamburger menu. Renders the full graph to a cairo `ImageSurface` with commit short SHA and summary alongside each row.
+- **Bisect UI** — "Start Bisect…" in the hamburger menu lets you pick a bad and a good ref. While bisecting, the top banner shows the current commit and Good / Bad / Skip / Reset buttons. Drives `git bisect` under the hood.
+
+### UX
+
+- **Unified changes list.** Replaced the top/bottom split (Unstaged / Staged) with a single list sorted staged-first, so you don't have to scroll past hundreds of files to reach the staged section.
+- File row status icon (left of the filename) now switches to a green checkmark whenever the file is staged, so you can spot staged entries at a glance.
+- Staged file paths render in bold (Pango weight) so they don't blend with the unstaged rows above them.
+- Section header: `Changes — N staged / M unstaged` with live counts.
+- Right sidebar header gets the "Branches & Tags" title and the "New branch" button is now icon + ellipsizable label so it survives narrow widths.
+- New `Compact` breakpoint at `<1080sp`: when the window is narrower than ~1080 px the right sidebar collapses to an overlay instead of stealing horizontal space.
+- `GP_WIDTH` / `GP_HEIGHT` env vars override the default 1200×800 window size (useful for screenshotting at a specific resolution, e.g. `GP_WIDTH=1000 GP_HEIGHT=700 gitpulsar-gtk`).
+- `Ctrl+Q` now quits the app.
+- Removed the ▲/▼ ahead/behind counters from the bottom bar — the repo sidebar dots already convey that.
+
+### Performance
+
+- Removed the `GestureClick` controllers on the changes list; per-row buttons now use plain signal handlers, avoiding redundant pick/walk work on every click.
+- Per-row `connect_clicked` is wired at row build time — eliminates a post-populate walk that hit `rows × buttons` widget traversals on large repos.
+- `TextView` for each file row is built lazily on first expand instead of eagerly for every row.
+- Background refresh now uses a cheap `status(false)` probe to detect change and only escalates to the full recursive scan when the probe hash actually differs. Cuts steady-state cost in repos with hundreds of untracked files.
+
+### Fixes (internal)
+
+- Silenced `gtk_text_tag_set_priority` GLib criticals in the diff viewer — syntax-highlight tags were calling `set_priority` before being added to the tag table.
+
 ## v0.9.0 (2026-05-05)
 
 ### New features

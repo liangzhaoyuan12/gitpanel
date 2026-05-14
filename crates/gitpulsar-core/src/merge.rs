@@ -125,4 +125,9 @@ impl GitRepo {
         git_dir.join("rebase-merge").exists()
             || git_dir.join("rebase-apply").exists()
     }
+
+    /// Check if a bisect is in progress.
+    pub fn is_bisecting(&self) -> bool {
+        self.inner().path().join("BISECT_START").exists()
+    }
 }

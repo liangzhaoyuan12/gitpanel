@@ -2,7 +2,8 @@
 
 **A fast, native Git client for GNOME.** Written in Rust with GTK4 and libadwaita — small binary, low memory, no telemetry, no cloud, no terminal required.
 
-![Gitpulsar](data/screenshots/main.png)
+![Gitpulsar — light theme](data/screenshots/light.png)
+![Gitpulsar — dark theme](data/screenshots/dark.png)
 
 ## Why Gitpulsar
 
@@ -20,7 +21,7 @@
 - **Commit history** — searchable list with expandable details, paginated loading
 - **Commit detail** — prominent message display, file list with configurable limit, collapsible technical details
 - **Branch graph** — visual branch topology in a separate window
-- **Staging area** — split unstaged/staged lists with drag-and-drop, per-file and per-hunk stage/unstage/discard
+- **Staging area** — unified list with staged files pinned to the top (bold) and a green check next to staged entries; per-file and per-hunk stage/unstage/discard
 - **Partial staging** — stage/unstage individual hunks within a file
 - **Syntax highlighting** — language-aware diff coloring with dark/light theme support
 - **Undo/redo** — undo staging operations and file discards (Ctrl+Z / Ctrl+Shift+Z)
@@ -40,10 +41,13 @@
 - **Branch compare** — diff between any two refs from a dialog
 - **Restore file from commit** — bring back a single file from history
 - **Word-level diff** — intra-line emphasis on what actually changed
+- **Bisect** — interactive `git bisect` driven from a banner (Good / Bad / Skip / Reset)
+- **Archive export** — `git archive` any commit to `tar.gz`, `tar`, or `zip`
+- **Branch graph export** — save the commit graph as a PNG image
 - **File history** — per-file commit log via the history button on each file row
 - **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
 - **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)
-- **Adaptive layout** — 3-tier responsive design: desktop, tablet (<860sp), mobile (<500sp). Minimum 360px width
+- **Adaptive layout** — 4-tier responsive design: desktop, compact (<1080sp, right sidebar overlays), tablet (<860sp), mobile (<500sp). Minimum 360px width
 - **Auto-refresh** — configurable polling with hash-based skip
 - **Preferences** — date format, refresh interval, commit files limit
 
@@ -70,12 +74,12 @@ Each repository in the sidebar shows colored dots to the right of its name (hove
 
 ### Working with changes
 
-1. Switch to the **Changes** tab (Ctrl+2) to see unstaged and staged files in separate lists.
+1. Switch to the **Changes** tab (Ctrl+2) — staged files appear at the top (bold, green check), unstaged below.
 2. Click a file to expand its inline diff with syntax highlighting.
-3. Use the **+** button to stage a file, or **drag-and-drop** files between the Unstaged and Staged lists.
+3. Use the **+** button to stage, **−** to unstage, **🗑** to discard.
 4. For multi-hunk files, use **Stage Hunk** buttons to stage individual hunks.
 5. Use **Stage All** / **Unstage All** buttons or Ctrl+Shift+S / Ctrl+Shift+U.
-6. Type a commit message and press **Commit** (Ctrl+Enter).
+6. Type a commit message and press **Commit** (Ctrl+Enter). Empty commits are rejected unless you tick **Allow empty**.
 7. Mistakes? **Ctrl+Z** undoes staging operations, even file discards.
 
 ### Browsing history
@@ -152,6 +156,14 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 | Ctrl+F | Focus search |
 | Ctrl+Alt+S | Stash save |
 | Ctrl+Alt+P | Stash pop |
+| Ctrl+Q | Quit |
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `GP_WIDTH` | Initial window width in pixels (default 1200) |
+| `GP_HEIGHT` | Initial window height in pixels (default 800) |
 
 ## Requirements
 

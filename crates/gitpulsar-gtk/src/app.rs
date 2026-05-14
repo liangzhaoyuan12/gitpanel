@@ -74,6 +74,12 @@ impl GitpulsarApp {
         app.set_accels_for_action("win.redo", &["<Control><Shift>z"]);
         app.set_accels_for_action("win.stash-save", &["<Control><Alt>s"]);
         app.set_accels_for_action("win.stash-pop", &["<Control><Alt>p"]);
+        app.set_accels_for_action("app.quit", &["<Control>q"]);
+
+        let quit = gio::SimpleAction::new("quit", None);
+        let app_for_quit = app.clone();
+        quit.connect_activate(move |_, _| app_for_quit.quit());
+        app.add_action(&quit);
 
         Self { app }
     }
