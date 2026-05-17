@@ -47,7 +47,7 @@
 - **File history** — per-file commit log via the history button on each file row
 - **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
 - **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)
-- **Adaptive layout** — 4-tier responsive design: desktop, compact (<1080sp, right sidebar overlays), tablet (<860sp), mobile (<500sp). Minimum 360px width
+- **Adaptive layout** — 4-tier responsive design backed by `AdwOverlaySplitView` so sidebars overlay content with an edge-swipe gesture on phone widths, plus an `AdwViewSwitcherBar` that surfaces on narrow widths. Breakpoints at 1080 sp / 860 sp / 600 sp / 500 sp. Minimum 360 px width.
 - **Auto-refresh** — configurable polling with hash-based skip
 - **Preferences** — date format, refresh interval, commit files limit
 
@@ -169,7 +169,7 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 
 - Rust 1.70+
 - GTK 4.12+
-- libadwaita 1.4+
+- libadwaita 1.5+
 - git (for remote operations)
 
 ### Fedora

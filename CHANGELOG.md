@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.0.0 (2026-05-17)
+
+First stable release. Focus is performance on huge repositories and a properly adaptive UI down to 360 px phone widths.
+
+### Performance
+
+- **Virtualized changes list.** The Changes tab now uses `GtkListView` + `SignalListItemFactory` backed by a `GioListStore` of `ChangedFileObject` GObjects. Per-row widgets are realized only for items in the viewport. On a 940-file `git status`, initial render drops from a multi-second freeze to instantaneous.
+- **Diff cache cap.** Cached unstaged/staged diffs are capped at ~5 MB total each. Trailing entries that push the cache over the limit are dropped so memory stays bounded on huge repos.
+- **Adaptive background refresh.** Default refresh interval bumped from 15 s to 30 s. The workspace scan throttles from every 4 ticks to every 16 once the workspace hash has been stable for 3 consecutive scans (idle backoff).
+- **Single hover controller.** The per-row `EventControllerMotion` is replaced with one ListView-level controller that toggles the row-actions box under the pointer.
+
+### Mobile / adaptive layout
+
+- **Sidebars overlay on collapse.** Both the repo-sidebar split and the branches-sidebar split continue to use `AdwOverlaySplitView` (the GNOME HIG sidebar pattern for utility panes). On collapse the sidebars are hidden by default — content takes the full width — and a built-in edge-swipe gesture brings each side back. Tap the corresponding toggle button in the header to pin/unpin.
+- **Native compact view switcher.** Custom `ToggleButton` row replaced with `AdwViewSwitcherBar` at the bottom on narrow widths — fewer signal connections, automatic sync with the view stack.
+- **Adaptive file dialogs.** All four `gtk::FileChooserDialog` uses (open workspace, save patch, save archive, apply patch, save graph PNG) migrated to `gtk::FileDialog` — modern adaptive sheets on mobile.
+- **Conflict / bisect banner wraps.** Banner action buttons (Good / Bad / Skip / Reset, Continue / Abort) live in a `FlowBox` and wrap onto a second row on narrow widths.
+- **Touch targets.** Per-row stage / unstage / discard / blame / history buttons bumped to 36×36 px. On mobile, file rows clamp to a 48 px minimum height.
+- **Bottom bar collapses.** Stash hidden at <600 sp. Fetch / pull / push hidden at <500 sp — all four remain reachable through a new "Remote" submenu in the hamburger.
+- **Commit action row collapses.** Conventional-commit template and co-author trailer buttons hidden at <600 sp. Amend and allow-empty checkboxes hidden at <500 sp.
+
+### Other
+
+- `gtk4` feature bumped to `v4_10` (needed for `gtk::FileDialog`).
+- Pre-existing clippy lints cleaned up so `cargo clippy -- -D warnings` is green.
+
 ## v0.10.0 (2026-05-14)
 
 ### Bug fixes

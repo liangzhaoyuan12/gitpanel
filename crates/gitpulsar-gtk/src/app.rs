@@ -26,6 +26,16 @@ impl GitpulsarApp {
                 /* Touch-friendly row heights once mobile breakpoint applies. */
                 .gp-mobile .gp-file-row { min-height: 48px; }
                 .gp-mobile listview.navigation-sidebar > row { min-height: 48px; }
+                /* Below 600 sp the AdwViewSwitcherBar drops to icon-only and
+                 * the bar gets a tighter vertical footprint — the default
+                 * narrow-mode AdwViewSwitcher is too tall once the labels are
+                 * gone. */
+                .gp-narrow viewswitcherbar button label,
+                .gp-mobile viewswitcherbar button label { font-size: 0; min-height: 0; padding: 0; margin: 0; }
+                .gp-narrow viewswitcherbar button,
+                .gp-mobile viewswitcherbar button { min-width: 48px; min-height: 28px; padding: 2px 8px; }
+                .gp-narrow viewswitcherbar > revealer > box,
+                .gp-mobile viewswitcherbar > revealer > box { min-height: 32px; padding: 0; }
             ";
             let provider = gtk::CssProvider::new();
             provider.load_from_data(css);

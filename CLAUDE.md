@@ -59,15 +59,15 @@ Two-crate workspace:
 - **Async diff on expand**: `diff_commit` runs in background thread with spinner, not blocking UI.
 - **Remote operations**: git2 for local ops, shelled-out `git` CLI (`run_git_cmd`) for remote ops (push/pull/fetch) due to SSH reliability. 30-second timeout.
 - **Widget builders**: Functions return `(gtk::Box, SomeRefs)` tuples — the widget and a struct of handles for later updates.
-- **Layout**: Outer AdwOverlaySplitView (repo sidebar | main) → inner split (commit list | changes/graph view).
-- **Changes view**: Split into unstaged/staged ListBoxes with drag-and-drop between them.
+- **Layout**: Outer `AdwOverlaySplitView` (repo sidebar | main) → inner `AdwOverlaySplitView` (content | right sidebar at PackType::End). OverlaySplitView is the GNOME HIG pick for utility-pane sidebars — on collapse the sidebar slides over content with a built-in edge-swipe gesture, while content stays full-width. Breakpoint setters keep `show-sidebar` off on collapse so the sidebar is opened only by toggle button or swipe.
+- **Changes view**: Single unified `gtk::ListView` + `SignalListItemFactory` backed by a `gio::ListStore` of `ChangedFileObject` (custom GObject wrapping path/status/is_staged/expanded). Only viewport rows are realized. `populate_file_lists` splices the store. Per-row click handlers wired once in the factory's setup callback; they walk up to the `gp-file-row`-marked outer Box to read the current item's path.
 - **Undo/redo**: `UndoStack` in `undo.rs` tracks staging ops and discards (with saved file content for restore).
 - **Syntax highlighting**: `syntect` crate in `syntax.rs`, lazy-loaded SyntaxSet/ThemeSet, theme-aware (dark/light via `adw::StyleManager`).
 - **Config**: JSON at `~/.config/io.gitlab.ilshat_apps/config.json` — date format, refresh interval, commit files limit, recent workspaces.
 - **CLI open**: App uses `HANDLES_OPEN` flag — accepts repo path as CLI argument (`gitpulsar-gtk /path/to/repo`).
 - **Branch graph**: `commit_graph.rs` renders via cairo, not standard GTK widgets — separate drawing model.
 - **Hunk staging**: Builds partial unified-diff patches and applies via `git2::Repository::apply` to index.
-- **Adaptive layout**: 3-tier `AdwBreakpoint` system — tablet (<860sp), narrow (<600sp), mobile (<500sp). Uses `sp` units for Large Text scaling. Min window 360x294.
+- **Adaptive layout**: 4-tier `AdwBreakpoint` system — compact (<1080sp, inner split collapsed), tablet (<860sp), narrow (<600sp), mobile (<500sp). Uses `sp` units for Large Text scaling. Min window 360x294. Each breakpoint also toggles a CSS class on the window (`gp-compact` / `gp-collapsed` / `gp-mobile`) so split-toggle handlers know which mode applies and CSS rules can lift row heights to 48 px on mobile.
 
 ## CI
 

@@ -100,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.0" date="2026-05-17">
+      <description>
+        <p>First stable release. The Changes tab now uses GtkListView with virtualized rows — huge repositories no longer freeze the UI when entering Changes. Mobile and adaptive support is comprehensive: NavigationSplitView migration gives proper back-button navigation on phones, the bottom bar collapses into the menu at narrow widths, file dialogs are adaptive sheets, and per-row touch targets are 36×36 px on a 48 px minimum row height. Other: capped diff cache, adaptive background-refresh throttling, native ViewSwitcherBar, conflict/bisect banner buttons that wrap on narrow widths.</p>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-05-14">
       <description>
         <p>Fixes per-file Stage/Unstage/Discard/Blame/History buttons that did nothing in the changes view. Empty commits are now rejected by default (tick "Allow empty" to override). Staged files show a green checkmark next to the filename and section headers carry live file counts so the Staged list is obvious. New features: export commit as archive (tar.gz/tar/zip), export branch graph as PNG, and bisect UI with Good/Bad/Skip/Reset controls.</p>

@@ -466,6 +466,41 @@ impl GitpulsarWindow {
             .build();
         content_header.pack_end(&search_toggle);
 
+        // Compact "Sync" menu button shown only on narrow/mobile widths — pops
+        // up Fetch/Pull/Push in a vertical menu so the three operations stay
+        // one tap away when the bottom-bar buttons are collapsed.
+        let sync_popover = gtk::Popover::new();
+        let sync_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        sync_box.set_margin_top(6);
+        sync_box.set_margin_bottom(6);
+        sync_box.set_margin_start(6);
+        sync_box.set_margin_end(6);
+        for (label, action, icon) in [
+            ("Fetch", "win.fetch", "view-refresh-symbolic"),
+            ("Pull", "win.pull", "go-down-symbolic"),
+            ("Push", "win.push", "go-up-symbolic"),
+        ] {
+            let row = gtk::Button::builder()
+                .css_classes(["flat"])
+                .build();
+            let hb = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            hb.append(&gtk::Image::from_icon_name(icon));
+            hb.append(&gtk::Label::builder().label(label).xalign(0.0).hexpand(true).build());
+            row.set_child(Some(&hb));
+            row.set_action_name(Some(action));
+            let sp = sync_popover.clone();
+            row.connect_clicked(move |_| sp.popdown());
+            sync_box.append(&row);
+        }
+        sync_popover.set_child(Some(&sync_box));
+        let sync_btn = gtk::MenuButton::builder()
+            .icon_name("vertical-arrows-none-symbolic")
+            .tooltip_text("Sync (Fetch / Pull / Push)")
+            .popover(&sync_popover)
+            .visible(false)
+            .build();
+        content_header.pack_end(&sync_btn);
+
         // Content header right: branch graph button
         // Graph tab accessible via Ctrl+3 or ViewSwitcher
 
@@ -766,11 +801,11 @@ impl GitpulsarWindow {
         view_switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
 
         // Native libadwaita compact switcher (icon + label, syncs with view_stack
-        // automatically). Replaces the previous custom ToggleButton row.
+        // automatically). `reveal` is the animated show/hide property — toggling
+        // `visible` alone is not enough.
         let compact_switcher = adw::ViewSwitcherBar::builder()
             .stack(&imp.view_stack)
             .reveal(false)
-            .visible(false)
             .build();
 
         // Trigger graph-tab population whenever the user switches to "graph".
@@ -823,12 +858,26 @@ impl GitpulsarWindow {
             .build();
         right_header.set_title_widget(Some(&right_title));
 
+        // Sidebar-close button — shown only on collapse so the user can dismiss
+        // the overlay without hitting the window-close X by accident.
+        let right_close_btn = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .tooltip_text("Close panel")
+            .visible(false)
+            .build();
+        right_header.pack_start(&right_close_btn);
+        // The click handler is wired below once `inner_split` exists.
+
         let right_toolbar = adw::ToolbarView::new();
         right_toolbar.add_top_bar(&right_header);
         right_toolbar.set_top_bar_style(adw::ToolbarStyle::Flat);
         right_toolbar.set_content(Some(&branches_panel));
 
         // Inner split: center | right sidebar (full height each)
+        // Inner split: content | right sidebar (branches/tags). OverlaySplitView
+        // is the GNOME HIG choice for a utility pane that should overlay the
+        // content on phone widths (and supports an edge-swipe gesture out of
+        // the box) — see libadwaita Adaptive Layouts docs.
         let inner_split = adw::OverlaySplitView::new();
         inner_split.set_sidebar_position(gtk::PackType::End);
         inner_split.set_sidebar(Some(&right_toolbar));
@@ -841,7 +890,9 @@ impl GitpulsarWindow {
         // Content header: no window buttons by default (right_header has end buttons)
         content_header.set_show_end_title_buttons(false);
 
-        // Outer split: left sidebar (full height) | inner
+        // Outer split: repo sidebar | content. Plain OverlaySplitView too —
+        // on collapse the sidebar slides over content with a built-in edge
+        // swipe gesture, matching the GNOME HIG mobile sidebar pattern.
         let outer_split = adw::OverlaySplitView::new();
         outer_split.set_sidebar_position(gtk::PackType::Start);
         outer_split.set_sidebar(Some(&sidebar_toolbar));
@@ -852,7 +903,9 @@ impl GitpulsarWindow {
         outer_split.set_max_sidebar_width(220.0);
         outer_split.set_vexpand(true);
 
-        // Toggle repo tree (left) sidebar
+        // Toggle repo tree (left) sidebar — simply show/hide. OverlaySplitView
+        // handles overlay vs side-by-side internally based on the `collapsed`
+        // breakpoint setter.
         let os = outer_split.clone();
         toggle_repo_tree.connect_toggled(move |btn| {
             os.set_show_sidebar(btn.is_active());
@@ -864,11 +917,15 @@ impl GitpulsarWindow {
             }
         });
 
-        // Toggle right sidebar (branches/tags)
+        // Toggle right sidebar (branches/tags). Same simple show/hide as the
+        // outer split — OverlaySplitView decides overlay vs inline by itself.
         let is = inner_split.clone();
         toggle_right_panel.connect_toggled(move |btn| {
             is.set_show_sidebar(btn.is_active());
         });
+        // Now that inner_split exists, wire the right-sidebar close button.
+        let is_close = inner_split.clone();
+        right_close_btn.connect_clicked(move |_| is_close.set_show_sidebar(false));
         let trp = toggle_right_panel.clone();
         inner_split.connect_show_sidebar_notify(move |split| {
             if trp.is_active() != split.shows_sidebar() {
@@ -901,6 +958,16 @@ impl GitpulsarWindow {
             adw::LengthUnit::Sp,
         ));
         bp_compact.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        // Hide the overlay sidebar on collapse — content takes the full width.
+        bp_compact.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
+        // Right sidebar gets a close-panel button on collapse. Window-close X
+        // on right_header stays visible — keeps the standard "tap the X in the
+        // top-right to close the app" gesture working.
+        bp_compact.add_setter(&right_close_btn, "visible", Some(&true.to_value()));
+        let win = self.clone();
+        bp_compact.connect_apply(move |_| win.add_css_class("gp-compact"));
+        let win = self.clone();
+        bp_compact.connect_unapply(move |_| win.remove_css_class("gp-compact"));
         self.add_breakpoint(bp_compact);
 
         // Tablet (<860sp): collapse repo sidebar
@@ -910,8 +977,14 @@ impl GitpulsarWindow {
             adw::LengthUnit::Sp,
         ));
         bp_tablet.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_tablet.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_tablet.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        bp_tablet.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
         bp_tablet.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
+        let win = self.clone();
+        bp_tablet.connect_apply(move |_| win.add_css_class("gp-collapsed"));
+        let win = self.clone();
+        bp_tablet.connect_unapply(move |_| win.remove_css_class("gp-collapsed"));
         self.add_breakpoint(bp_tablet);
 
         // Narrow (<600sp): collapse inner split, compact switcher, hide branch
@@ -921,13 +994,25 @@ impl GitpulsarWindow {
             adw::LengthUnit::Sp,
         ));
         bp_narrow.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_narrow.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        bp_narrow.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
         bp_narrow.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
+        bp_narrow.add_setter(&compact_switcher, "reveal", Some(&true.to_value()));
+        let win = self.clone();
+        bp_narrow.connect_apply(move |_| win.add_css_class("gp-narrow"));
+        let win = self.clone();
+        bp_narrow.connect_unapply(move |_| win.remove_css_class("gp-narrow"));
         bp_narrow.add_setter(&stash_btn, "visible", Some(&false.to_value()));
+        // Move fetch/pull/push from the bottom bar into a single "Sync"
+        // header MenuButton so the bottom bar isn't crowded on narrow widths.
+        bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&sync_btn, "visible", Some(&true.to_value()));
         // Hide commit-extras buttons on narrow — keep the row from overflowing.
         bp_narrow.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&changes_refs.coauthor_btn, "visible", Some(&false.to_value()));
@@ -940,23 +1025,29 @@ impl GitpulsarWindow {
             adw::LengthUnit::Sp,
         ));
         bp_mobile.add_setter(&outer_split, "collapsed", Some(&true.to_value()));
+        bp_mobile.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_mobile.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
+        bp_mobile.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
         bp_mobile.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         bp_mobile.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&branch_content, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&content_title, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&view_switcher, "visible", Some(&false.to_value()));
-        bp_mobile.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
-        // Hide non-essential header items to fit on 360px screens
+        bp_mobile.add_setter(&compact_switcher, "reveal", Some(&true.to_value()));
+        // Hide non-essential header items to fit on 360px screens. Open-folder
+        // is kept because it's the primary entry point on a phone where the
+        // repo list is hidden behind the sidebar overlay.
         bp_mobile.add_setter(&search_toggle, "visible", Some(&false.to_value()));
-        bp_mobile.add_setter(&open_button, "visible", Some(&false.to_value()));
         // Remove title widget to free header space for sidebar toggles + close button
         bp_mobile.add_setter(&content_header, "show-title", Some(&false.to_value()));
-        // Hide all remote-op buttons in bottom bar — exposed via hamburger menu / keyboard
+        // Hide all remote-op buttons in bottom bar — already exposed via the
+        // Sync header MenuButton (added on bp_narrow above) plus the hamburger
+        // Remote submenu.
         bp_mobile.add_setter(&stash_btn, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&sync_btn, "visible", Some(&true.to_value()));
         // Commit extras: template/coauthor + amend/allow_empty checkboxes hidden on mobile.
         // Amend reachable via "Amend" hamburger menu item; allow-empty rarely needed on mobile.
         bp_mobile.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
@@ -1324,6 +1415,13 @@ impl GitpulsarWindow {
                 tracing::info!("Selected repo: {}", path);
                 self.load_repo_data(&repo);
                 *self.imp().repo.borrow_mut() = Some(repo);
+                // On narrow widths the sidebar is shown as an overlay — hide
+                // it after a repo is picked so the user lands on the content.
+                if let Some(ref split) = *self.imp().outer_split.borrow() {
+                    if split.is_collapsed() {
+                        split.set_show_sidebar(false);
+                    }
+                }
             }
             Err(e) => {
                 tracing::error!("Failed to open repository: {}", e);
