@@ -48,10 +48,9 @@ fn tokenize(s: &str) -> Vec<(usize, &str)> {
 }
 
 fn utf8_char_len(first_byte: u8) -> usize {
-    if first_byte < 0x80 {
+    // ASCII or invalid continuation byte → advance 1 (the invalid case prevents an infinite loop).
+    if first_byte < 0xC0 {
         1
-    } else if first_byte < 0xC0 {
-        1 // invalid continuation byte; advance one to avoid infinite loop
     } else if first_byte < 0xE0 {
         2
     } else if first_byte < 0xF0 {

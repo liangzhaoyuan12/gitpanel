@@ -300,7 +300,7 @@ pub fn populate_branches(local_list: &gtk::ListBox, remote_list: &gtk::ListBox, 
 
         if !branch.is_remote && (branch.ahead > 0 || branch.behind > 0) {
             let indicator = gtk::Label::builder()
-                .label(&format!("▲{} ▼{}", branch.ahead, branch.behind))
+                .label(format!("▲{} ▼{}", branch.ahead, branch.behind))
                 .css_classes(["caption", "dim-label"])
                 .build();
             row_box.append(&indicator);
@@ -385,7 +385,7 @@ where
         row_box.set_margin_bottom(4);
 
         let label = gtk::Label::builder()
-            .label(&format!("{}: {}", entry.index, entry.message))
+            .label(format!("{}: {}", entry.index, entry.message))
             .xalign(0.0)
             .hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)

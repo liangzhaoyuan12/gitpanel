@@ -87,6 +87,44 @@ pub struct DiffStats {
     pub deletions: usize,
 }
 
+impl DiffFile {
+    /// Estimated memory footprint of this diff in bytes (line content + struct overhead).
+    pub fn estimated_bytes(&self) -> usize {
+        let mut total = self.path.len() + std::mem::size_of::<DiffFile>();
+        for h in &self.hunks {
+            total += h.header.len() + std::mem::size_of::<DiffHunk>();
+            for l in &h.lines {
+                total += l.content.len() + std::mem::size_of::<DiffLine>();
+            }
+        }
+        total
+    }
+}
+
+/// Truncate a diff cache so its total estimated size stays under `max_bytes`.
+/// Entries are kept in original order; trailing entries that push the cache
+/// over the cap are dropped. Per-file diffs larger than the cap are kept
+/// alone so that file's diff is still cached.
+pub fn cap_diff_cache(diffs: &mut Vec<DiffFile>, max_bytes: usize) {
+    if max_bytes == 0 {
+        return;
+    }
+    let mut acc: usize = 0;
+    let mut keep: usize = 0;
+    for f in diffs.iter() {
+        let size = f.estimated_bytes();
+        let next = acc.saturating_add(size);
+        if keep > 0 && next > max_bytes {
+            break;
+        }
+        acc = next;
+        keep += 1;
+    }
+    if keep < diffs.len() {
+        diffs.truncate(keep);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StashEntry {
     pub index: usize,

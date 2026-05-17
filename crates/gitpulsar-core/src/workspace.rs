@@ -79,7 +79,7 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let num_threads = git_paths.len().min(8);
         let chunks: Vec<Vec<(usize, PathBuf)>> = {
-            let chunk_size = (git_paths.len() + num_threads - 1) / num_threads;
+            let chunk_size = git_paths.len().div_ceil(num_threads);
             git_paths.chunks(chunk_size).map(|c| c.to_vec()).collect()
         };
 

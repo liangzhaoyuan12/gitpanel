@@ -41,7 +41,7 @@ pub fn build_reflog_dialog(entries: &[ReflogEntry]) -> adw::Dialog {
             .unwrap_or_default();
         let row = adw::ActionRow::builder()
             .title(glib::markup_escape_text(&entry.message).as_str())
-            .subtitle(&format!("{} · {} · {}", entry.short_new, entry.committer.name, date))
+            .subtitle(format!("{} · {} · {}", entry.short_new, entry.committer.name, date))
             .build();
         list_box.append(&row);
     }

@@ -6,7 +6,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use gitpulsar_core::models::{CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
+use gitpulsar_core::models::{cap_diff_cache, CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
+
+/// Upper bound on per-cache diff memory (~5 MB) before trailing entries are dropped.
+const DIFF_CACHE_MAX_BYTES: usize = 5 * 1024 * 1024;
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
@@ -137,6 +140,8 @@ mod imp {
         pub refresh_in_progress: Cell<bool>,
         /// Tick counter for throttling workspace scans.
         pub refresh_tick: Cell<u32>,
+        /// Consecutive ticks where workspace hash was unchanged (controls scan throttle).
+        pub workspace_idle_streak: Cell<u32>,
         /// Cached ahead/behind to skip redundant UI updates.
         pub last_ahead: Cell<usize>,
         pub last_behind: Cell<usize>,
@@ -206,6 +211,7 @@ mod imp {
                 last_commits_hash: Cell::new(0),
                 refresh_in_progress: Cell::new(false),
                 refresh_tick: Cell::new(0),
+                workspace_idle_streak: Cell::new(0),
                 last_ahead: Cell::new(0),
                 last_behind: Cell::new(0),
                 cached_unstaged_diffs: RefCell::new(Vec::new()),
@@ -590,7 +596,7 @@ impl GitpulsarWindow {
                 if let Some(ref repo) = *repo_ref {
                     if let Ok(msg) = repo.head_commit_message() {
                         let buffer = win.imp().commit_entry.buffer();
-                        buffer.set_text(&msg.trim());
+                        buffer.set_text(msg.trim());
                     }
                 }
             }
@@ -761,8 +767,8 @@ impl GitpulsarWindow {
         imp.view_stack.connect_visible_child_name_notify(move |stack| {
             if let Some(name) = stack.visible_child_name() {
                 match name.as_str() {
-                    "commits" => { if !ct.is_active() { ct.set_active(true); } }
-                    "changes" => { if !cht.is_active() { cht.set_active(true); } }
+                    "commits" if !ct.is_active() => { ct.set_active(true); }
+                    "changes" if !cht.is_active() => { cht.set_active(true); }
                     "graph" => {
                         if !gt.is_active() { gt.set_active(true); }
                         win_for_graph.populate_graph_tab();
@@ -918,6 +924,10 @@ impl GitpulsarWindow {
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&compact_switcher, "visible", Some(&true.to_value()));
+        bp_narrow.add_setter(&stash_btn, "visible", Some(&false.to_value()));
+        // Hide commit-extras buttons on narrow — keep the row from overflowing.
+        bp_narrow.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&changes_refs.coauthor_btn, "visible", Some(&false.to_value()));
         self.add_breakpoint(bp_narrow);
 
         // Mobile (<500sp): hide content title, remote buttons move to icons only
@@ -939,8 +949,17 @@ impl GitpulsarWindow {
         bp_mobile.add_setter(&open_button, "visible", Some(&false.to_value()));
         // Remove title widget to free header space for sidebar toggles + close button
         bp_mobile.add_setter(&content_header, "show-title", Some(&false.to_value()));
-        // Hide stash button label area in bottom bar
+        // Hide all remote-op buttons in bottom bar — exposed via hamburger menu / keyboard
         bp_mobile.add_setter(&stash_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
+        // Commit extras: template/coauthor + amend/allow_empty checkboxes hidden on mobile.
+        // Amend reachable via "Amend" hamburger menu item; allow-empty rarely needed on mobile.
+        bp_mobile.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&changes_refs.coauthor_btn, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&imp.amend_check, "visible", Some(&false.to_value()));
+        bp_mobile.add_setter(&imp.allow_empty_check, "visible", Some(&false.to_value()));
         self.add_breakpoint(bp_mobile);
     }
 
@@ -966,6 +985,15 @@ impl GitpulsarWindow {
             menu_model.append_submenu(Some("Recent"), &recent_submenu);
         }
 
+        // Remote operations — also reachable via Ctrl+Shift+{F,L,P} and bottom bar.
+        // Listed here so they remain accessible on mobile where the bottom bar collapses.
+        let remote_submenu = gio::Menu::new();
+        remote_submenu.append(Some("Fetch"), Some("win.fetch"));
+        remote_submenu.append(Some("Pull"), Some("win.pull"));
+        remote_submenu.append(Some("Push"), Some("win.push"));
+        remote_submenu.append(Some("Stash"), Some("win.stash-save"));
+        menu_model.append_submenu(Some("Remote"), &remote_submenu);
+
         menu_model.append(Some("Clone Repository…"), Some("win.clone-repo"));
         menu_model.append(Some("Manage Remotes…"), Some("win.remotes"));
         menu_model.append(Some("Compare Branches…"), Some("win.branch-compare"));
@@ -984,28 +1012,18 @@ impl GitpulsarWindow {
         let action = gio::SimpleAction::new("open-repo", None);
         let window = self.clone();
         action.connect_activate(move |_, _| {
-            let dialog = gtk::FileChooserDialog::new(
-                Some("Open Workspace / Repository"),
-                Some(&window),
-                gtk::FileChooserAction::SelectFolder,
-                &[
-                    ("Cancel", gtk::ResponseType::Cancel),
-                    ("Open", gtk::ResponseType::Accept),
-                ],
-            );
-            dialog.set_modal(true);
+            let dialog = gtk::FileDialog::builder()
+                .title("Open Workspace / Repository")
+                .modal(true)
+                .build();
             let win = window.clone();
-            dialog.connect_response(move |dialog, response| {
-                if response == gtk::ResponseType::Accept {
-                    if let Some(folder) = dialog.file() {
-                        if let Some(path) = folder.path() {
-                            win.open_workspace(&path);
-                        }
+            dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
+                if let Ok(folder) = result {
+                    if let Some(path) = folder.path() {
+                        win.open_workspace(&path);
                     }
                 }
-                dialog.close();
             });
-            dialog.present();
         });
         self.add_action(&action);
 
@@ -1404,9 +1422,13 @@ impl GitpulsarWindow {
                     win.refresh_changes_list(status);
                 }
 
-                // Cache diffs
-                *imp.cached_unstaged_diffs.borrow_mut() = data.unstaged_diffs;
-                *imp.cached_staged_diffs.borrow_mut() = data.staged_diffs;
+                // Cache diffs (cap total bytes to avoid runaway memory on huge repos)
+                let mut unstaged = data.unstaged_diffs;
+                cap_diff_cache(&mut unstaged, DIFF_CACHE_MAX_BYTES);
+                *imp.cached_unstaged_diffs.borrow_mut() = unstaged;
+                let mut staged = data.staged_diffs;
+                cap_diff_cache(&mut staged, DIFF_CACHE_MAX_BYTES);
+                *imp.cached_staged_diffs.borrow_mut() = staged;
 
                 // Populate branches & tags in right sidebar
                 win.populate_branches_tags_data(&data.branches, &data.tags);
@@ -1922,6 +1944,7 @@ impl GitpulsarWindow {
         }
         // Reset workspace hash so throttled scan doesn't immediately override
         imp.last_workspace_hash.set(0);
+        imp.workspace_idle_streak.set(0);
     }
 
     fn update_sidebar_status(&self, repo_name: &str, status: Option<&RepoStatus>) {
@@ -1957,11 +1980,13 @@ impl GitpulsarWindow {
     fn refresh_staging(&self) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
-            // Update diff cache
-            if let Ok(diffs) = repo.diff_unstaged() {
+            // Update diff cache (capped to keep memory bounded on huge repos)
+            if let Ok(mut diffs) = repo.diff_unstaged() {
+                cap_diff_cache(&mut diffs, DIFF_CACHE_MAX_BYTES);
                 *self.imp().cached_unstaged_diffs.borrow_mut() = diffs;
             }
-            if let Ok(diffs) = repo.diff_staged() {
+            if let Ok(mut diffs) = repo.diff_staged() {
+                cap_diff_cache(&mut diffs, DIFF_CACHE_MAX_BYTES);
                 *self.imp().cached_staged_diffs.borrow_mut() = diffs;
             }
             if let Ok(status) = repo.status(true) {
@@ -2200,19 +2225,22 @@ impl GitpulsarWindow {
             return;
         }
 
-        let banner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // Banner: vertical so action buttons wrap onto a second row on narrow widths
+        // instead of overflowing the horizontal box.
+        let banner = gtk::Box::new(gtk::Orientation::Vertical, 4);
         banner.add_css_class("card");
         banner.set_margin_start(8);
         banner.set_margin_end(8);
         banner.set_margin_top(4);
         banner.set_margin_bottom(4);
 
+        let message_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon_name = if is_bisecting { "edit-find-symbolic" } else { "pull-request-merged-symbolic" };
         let icon = gtk::Image::builder()
             .icon_name(icon_name)
             .css_classes(["warning"])
             .build();
-        banner.append(&icon);
+        message_row.append(&icon);
 
         let bisect_status = if is_bisecting {
             self.bisect_status_line()
@@ -2240,7 +2268,18 @@ impl GitpulsarWindow {
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
-        banner.append(&label);
+        message_row.append(&label);
+        banner.append(&message_row);
+
+        // FlowBox lets buttons wrap onto multiple lines on narrow screens.
+        let buttons = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .row_spacing(4)
+            .column_spacing(4)
+            .min_children_per_line(1)
+            .max_children_per_line(4)
+            .halign(gtk::Align::End)
+            .build();
 
         if is_bisecting {
             let good_btn = gtk::Button::builder()
@@ -2254,7 +2293,7 @@ impl GitpulsarWindow {
                         .map(|out| if out.trim().is_empty() { "Marked good".to_string() } else { out.trim().to_string() })
                 });
             });
-            banner.append(&good_btn);
+            buttons.append(&good_btn);
 
             let bad_btn = gtk::Button::builder()
                 .label("Bad")
@@ -2267,7 +2306,7 @@ impl GitpulsarWindow {
                         .map(|out| if out.trim().is_empty() { "Marked bad".to_string() } else { out.trim().to_string() })
                 });
             });
-            banner.append(&bad_btn);
+            buttons.append(&bad_btn);
 
             let skip_btn = gtk::Button::builder()
                 .label("Skip")
@@ -2280,7 +2319,7 @@ impl GitpulsarWindow {
                         .map(|out| if out.trim().is_empty() { "Skipped".to_string() } else { out.trim().to_string() })
                 });
             });
-            banner.append(&skip_btn);
+            buttons.append(&skip_btn);
 
             let reset_btn = gtk::Button::builder()
                 .label("Reset")
@@ -2293,7 +2332,7 @@ impl GitpulsarWindow {
                         .map(|_| "Bisect ended".to_string())
                 });
             });
-            banner.append(&reset_btn);
+            buttons.append(&reset_btn);
         } else if is_merging || is_rebasing {
             let continue_btn = gtk::Button::builder()
                 .label("Continue")
@@ -2314,7 +2353,7 @@ impl GitpulsarWindow {
                     });
                 }
             });
-            banner.append(&continue_btn);
+            buttons.append(&continue_btn);
 
             let abort_btn = gtk::Button::builder()
                 .label("Abort")
@@ -2337,9 +2376,10 @@ impl GitpulsarWindow {
                     });
                 }
             });
-            banner.append(&abort_btn);
+            buttons.append(&abort_btn);
         }
 
+        banner.append(&buttons);
         banner_box.append(&banner);
     }
 
@@ -2763,41 +2803,29 @@ impl GitpulsarWindow {
         let sha = sha.to_string();
         let default_name = format!("{}.patch", &sha[..7.min(sha.len())]);
 
-        let dialog = gtk::FileChooserDialog::new(
-            Some("Save patch as"),
-            Some(self),
-            gtk::FileChooserAction::Save,
-            &[
-                ("Cancel", gtk::ResponseType::Cancel),
-                ("Save", gtk::ResponseType::Accept),
-            ],
-        );
-        dialog.set_modal(true);
-        dialog.set_current_name(&default_name);
+        let dialog = gtk::FileDialog::builder()
+            .title("Save patch as")
+            .modal(true)
+            .initial_name(&default_name)
+            .build();
 
         let win = self.clone();
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(file) = dialog.file() {
-                    if let Some(path) = file.path() {
-                        match run_git_cmd(&repo_path, &["format-patch", "-1", "--stdout", &sha]) {
-                            Ok(content) => {
-                                if let Err(e) = std::fs::write(&path, content) {
-                                    win.show_error_dialog("Export Failed", &format!("Failed to write patch: {}", e));
-                                } else {
-                                    win.show_toast(&format!("Patch saved: {}", path.display()));
-                                }
-                            }
-                            Err(e) => {
-                                win.show_error_dialog("Export Failed", &format!("{}", e));
-                            }
-                        }
+        dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(path) = file.path() else { return };
+            match run_git_cmd(&repo_path, &["format-patch", "-1", "--stdout", &sha]) {
+                Ok(content) => {
+                    if let Err(e) = std::fs::write(&path, content) {
+                        win.show_error_dialog("Export Failed", &format!("Failed to write patch: {}", e));
+                    } else {
+                        win.show_toast(&format!("Patch saved: {}", path.display()));
                     }
                 }
+                Err(e) => {
+                    win.show_error_dialog("Export Failed", &format!("{}", e));
+                }
             }
-            dialog.close();
         });
-        dialog.present();
     }
 
     fn export_commit_archive(&self, sha: &str) {
@@ -2806,46 +2834,34 @@ impl GitpulsarWindow {
         let short = sha[..7.min(sha.len())].to_string();
         let default_name = format!("archive-{}.tar.gz", short);
 
-        let dialog = gtk::FileChooserDialog::new(
-            Some("Export archive"),
-            Some(self),
-            gtk::FileChooserAction::Save,
-            &[
-                ("Cancel", gtk::ResponseType::Cancel),
-                ("Save", gtk::ResponseType::Accept),
-            ],
-        );
-        dialog.set_modal(true);
-        dialog.set_current_name(&default_name);
+        let dialog = gtk::FileDialog::builder()
+            .title("Export archive")
+            .modal(true)
+            .initial_name(&default_name)
+            .build();
 
         let win = self.clone();
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(file) = dialog.file() {
-                    if let Some(path) = file.path() {
-                        let path_str = path.to_string_lossy().to_string();
-                        let format = match path.extension().and_then(|e| e.to_str()) {
-                            Some("zip") => "zip",
-                            Some("tar") => "tar",
-                            _ => "tar.gz",
-                        };
-                        match run_git_cmd(
-                            &repo_path,
-                            &["archive", &format!("--format={}", format), &format!("--output={}", path_str), &sha],
-                        ) {
-                            Ok(_) => {
-                                win.show_toast(&format!("Archive saved: {}", path.display()));
-                            }
-                            Err(e) => {
-                                win.show_error_dialog("Export Archive Failed", &format!("{}", e));
-                            }
-                        }
-                    }
+        dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(path) = file.path() else { return };
+            let path_str = path.to_string_lossy().to_string();
+            let format = match path.extension().and_then(|e| e.to_str()) {
+                Some("zip") => "zip",
+                Some("tar") => "tar",
+                _ => "tar.gz",
+            };
+            match run_git_cmd(
+                &repo_path,
+                &["archive", &format!("--format={}", format), &format!("--output={}", path_str), &sha],
+            ) {
+                Ok(_) => {
+                    win.show_toast(&format!("Archive saved: {}", path.display()));
+                }
+                Err(e) => {
+                    win.show_error_dialog("Export Archive Failed", &format!("{}", e));
                 }
             }
-            dialog.close();
         });
-        dialog.present();
     }
 
     fn bisect_status_line(&self) -> String {
@@ -2948,34 +2964,22 @@ impl GitpulsarWindow {
             return;
         }
 
-        let dialog = gtk::FileChooserDialog::new(
-            Some("Export graph as PNG"),
-            Some(self),
-            gtk::FileChooserAction::Save,
-            &[
-                ("Cancel", gtk::ResponseType::Cancel),
-                ("Save", gtk::ResponseType::Accept),
-            ],
-        );
-        dialog.set_modal(true);
-        dialog.set_current_name("branch-graph.png");
+        let dialog = gtk::FileDialog::builder()
+            .title("Export graph as PNG")
+            .modal(true)
+            .initial_name("branch-graph.png")
+            .build();
 
         let win = self.clone();
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(file) = dialog.file() {
-                    if let Some(path) = file.path() {
-                        let rows = super::commit_graph::compute_graph(&commits);
-                        match super::commit_graph::export_to_png(&rows, &path) {
-                            Ok(()) => win.show_toast(&format!("Graph saved: {}", path.display())),
-                            Err(e) => win.show_error_dialog("Export Failed", &format!("{}", e)),
-                        }
-                    }
-                }
+        dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(path) = file.path() else { return };
+            let rows = super::commit_graph::compute_graph(&commits);
+            match super::commit_graph::export_to_png(&rows, &path) {
+                Ok(()) => win.show_toast(&format!("Graph saved: {}", path.display())),
+                Err(e) => win.show_error_dialog("Export Failed", &format!("{}", e)),
             }
-            dialog.close();
         });
-        dialog.present();
     }
 
     fn show_apply_patch_dialog(&self) {
@@ -2984,50 +2988,38 @@ impl GitpulsarWindow {
             return;
         };
 
-        let dialog = gtk::FileChooserDialog::new(
-            Some("Select patch file to apply"),
-            Some(self),
-            gtk::FileChooserAction::Open,
-            &[
-                ("Cancel", gtk::ResponseType::Cancel),
-                ("Apply", gtk::ResponseType::Accept),
-            ],
-        );
-        dialog.set_modal(true);
+        let dialog = gtk::FileDialog::builder()
+            .title("Select patch file to apply")
+            .modal(true)
+            .build();
 
         let win = self.clone();
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(file) = dialog.file() {
-                    if let Some(path) = file.path() {
-                        let path_str = path.to_string_lossy().to_string();
-                        match run_git_cmd(&repo_path, &["am", "--3way", &path_str]) {
-                            Ok(_) => {
-                                win.show_toast(&format!("Applied patch: {}", path.display()));
-                                win.trigger_background_refresh();
-                            }
-                            Err(e) => {
-                                // If git am fails, try git apply (for patches without commit metadata)
-                                match run_git_cmd(&repo_path, &["apply", "--3way", &path_str]) {
-                                    Ok(_) => {
-                                        win.show_toast(&format!("Applied patch (no commit): {}", path.display()));
-                                        win.trigger_background_refresh();
-                                    }
-                                    Err(e2) => {
-                                        win.show_error_dialog(
-                                            "Apply Patch Failed",
-                                            &format!("git am: {}\n\ngit apply: {}", e, e2),
-                                        );
-                                    }
-                                }
-                            }
+        dialog.open(Some(self), gio::Cancellable::NONE, move |result| {
+            let Ok(file) = result else { return };
+            let Some(path) = file.path() else { return };
+            let path_str = path.to_string_lossy().to_string();
+            match run_git_cmd(&repo_path, &["am", "--3way", &path_str]) {
+                Ok(_) => {
+                    win.show_toast(&format!("Applied patch: {}", path.display()));
+                    win.trigger_background_refresh();
+                }
+                Err(e) => {
+                    // If git am fails, try git apply (for patches without commit metadata)
+                    match run_git_cmd(&repo_path, &["apply", "--3way", &path_str]) {
+                        Ok(_) => {
+                            win.show_toast(&format!("Applied patch (no commit): {}", path.display()));
+                            win.trigger_background_refresh();
+                        }
+                        Err(e2) => {
+                            win.show_error_dialog(
+                                "Apply Patch Failed",
+                                &format!("git am: {}\n\ngit apply: {}", e, e2),
+                            );
                         }
                     }
                 }
             }
-            dialog.close();
         });
-        dialog.present();
     }
 
     fn show_reflog_dialog(&self) {
@@ -3347,10 +3339,13 @@ impl GitpulsarWindow {
         };
 
         let prev_status_hash = imp.last_status_hash.get();
-        // Throttle workspace scans: only every 4th tick (~60s at 15s interval)
+        // Throttle workspace scans: every 4th tick (~2 min at default 30s interval).
+        // After several consecutive unchanged scans, fall back to every 16th tick.
         let tick = imp.refresh_tick.get();
         imp.refresh_tick.set(tick.wrapping_add(1));
-        let scan_workspace = tick % 4 == 0;
+        let idle = imp.workspace_idle_streak.get();
+        let modulus: u32 = if idle >= 3 { 16 } else { 4 };
+        let scan_workspace = tick.is_multiple_of(modulus);
         let (tx, rx) = async_channel::bounded::<BackgroundRefreshResult>(1);
 
         std::thread::spawn(move || {
@@ -3368,7 +3363,7 @@ impl GitpulsarWindow {
                     if let Ok(repo) = GitRepo::open(p) {
                         // Fast change detect: status(false) collapses untracked dirs.
                         let probe = repo.status(false).ok();
-                        let probe_hash = probe.as_ref().map(|s| hash_status(s)).unwrap_or(0);
+                        let probe_hash = probe.as_ref().map(hash_status).unwrap_or(0);
                         let (a, b) = repo.ahead_behind().unwrap_or((0, 0));
                         if probe_hash == prev_status_hash {
                             // No change — skip recursive scan and diff recompute.
@@ -3417,9 +3412,13 @@ impl GitpulsarWindow {
                 if result.status_hash != imp.last_status_hash.get() {
                     imp.last_status_hash.set(result.status_hash);
                     win.refresh_changes_list(&status);
-                    // Update diff cache
-                    *imp.cached_unstaged_diffs.borrow_mut() = result.unstaged_diffs;
-                    *imp.cached_staged_diffs.borrow_mut() = result.staged_diffs;
+                    // Update diff cache (cap before assignment)
+                    let mut unstaged = result.unstaged_diffs;
+                    cap_diff_cache(&mut unstaged, DIFF_CACHE_MAX_BYTES);
+                    *imp.cached_unstaged_diffs.borrow_mut() = unstaged;
+                    let mut staged = result.staged_diffs;
+                    cap_diff_cache(&mut staged, DIFF_CACHE_MAX_BYTES);
+                    *imp.cached_staged_diffs.borrow_mut() = staged;
                     // Update sidebar status and active repo indicator
                     if let Some(ref path_str) = win.repo_path_string() {
                         let name = std::path::Path::new(path_str)
@@ -3443,6 +3442,7 @@ impl GitpulsarWindow {
             if let Some(new_entries) = result.workspace_entries {
                 if result.workspace_hash != imp.last_workspace_hash.get() {
                     imp.last_workspace_hash.set(result.workspace_hash);
+                    imp.workspace_idle_streak.set(0);
                     let selected_idx =
                         imp.repo_list_box.selected_row().map(|r| r.index());
                     repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
@@ -3452,6 +3452,9 @@ impl GitpulsarWindow {
                             imp.repo_list_box.select_row(Some(&row));
                         }
                     }
+                } else {
+                    imp.workspace_idle_streak
+                        .set(imp.workspace_idle_streak.get().saturating_add(1));
                 }
             }
         });
@@ -3515,7 +3518,7 @@ impl GitpulsarWindow {
 
                         for entry in &entries {
                             let row = adw::ActionRow::builder()
-                                .title(&format!("stash@{{{}}}", entry.index))
+                                .title(format!("stash@{{{}}}", entry.index))
                                 .subtitle(&entry.message)
                                 .build();
 
@@ -3623,7 +3626,7 @@ impl GitpulsarWindow {
 
             // Copy SHA
             let copy_sha_btn = gtk::Button::builder()
-                .label(&format!("Copy SHA ({})", short_sha))
+                .label(format!("Copy SHA ({})", short_sha))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -4249,7 +4252,7 @@ impl GitpulsarWindow {
                 let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
                 for row in &rows {
                     let label = gtk::Label::builder()
-                        .label(&format!("{} {}", row.short_id, row.summary))
+                        .label(format!("{} {}", row.short_id, row.summary))
                         .xalign(0.0)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .css_classes(["caption"])

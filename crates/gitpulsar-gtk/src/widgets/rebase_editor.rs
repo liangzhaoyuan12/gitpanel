@@ -32,7 +32,7 @@ where
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let info_label = gtk::Label::builder()
-        .label(&format!("Rebasing {} commits onto {}", entries.len(), onto))
+        .label(format!("Rebasing {} commits onto {}", entries.len(), onto))
         .css_classes(["caption", "dim-label"])
         .margin_start(12)
         .margin_top(8)

@@ -8,7 +8,7 @@ where
     F: Fn(String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title(&format!("Blame: {}", file_path))
+        .title(format!("Blame: {}", file_path))
         .content_width(800)
         .content_height(600)
         .build();
@@ -57,7 +57,7 @@ fn render_blame(buffer: &gtk::TextBuffer, lines: &[BlameLine]) {
             color_idx += 1;
         }
 
-        let bg_tag = if color_idx % 2 == 0 { "blame-even" } else { "blame-odd" };
+        let bg_tag = if color_idx.is_multiple_of(2) { "blame-even" } else { "blame-odd" };
         let line_start = iter.offset();
 
         // Blame info: sha author date

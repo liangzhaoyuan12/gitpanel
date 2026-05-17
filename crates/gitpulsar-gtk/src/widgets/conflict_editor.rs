@@ -14,7 +14,7 @@ where
     F: Fn(String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title(&format!("Resolve: {}", file_path))
+        .title(format!("Resolve: {}", file_path))
         .content_width(900)
         .content_height(600)
         .build();
@@ -63,7 +63,7 @@ where
 
     let conflict_count = chunks.iter().filter(|c| c.is_conflict).count();
     let info = gtk::Label::builder()
-        .label(&format!("{} conflict(s)", conflict_count))
+        .label(format!("{} conflict(s)", conflict_count))
         .css_classes(["caption", "dim-label"])
         .hexpand(true)
         .xalign(0.0)

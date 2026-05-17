@@ -143,7 +143,7 @@ impl BranchCompareRefs {
         for file in files {
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&file.path).as_str())
-                .subtitle(&format!(
+                .subtitle(format!(
                     "+{} −{}",
                     file.stats.insertions, file.stats.deletions
                 ))

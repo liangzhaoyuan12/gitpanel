@@ -26,7 +26,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             date_format: DateFormat::European,
-            refresh_interval_secs: 15,
+            refresh_interval_secs: 30,
             commit_files_limit: default_commit_files_limit(),
             sidebar_items_limit: default_sidebar_items_limit(),
             recent_workspaces: Vec::new(),

@@ -249,7 +249,7 @@ pub fn create_commit_row(
         .css_classes(["caption", "dim-label"])
         .build());
     author_row.append(&gtk::Label::builder()
-        .label(&format!("{} <{}>", commit.author.name, commit.author.email))
+        .label(format!("{} <{}>", commit.author.name, commit.author.email))
         .css_classes(["caption"])
         .selectable(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -265,7 +265,7 @@ pub fn create_commit_row(
         .css_classes(["caption", "dim-label"])
         .build());
     date_row.append(&gtk::Label::builder()
-        .label(&date_format.format_datetime(&commit.time))
+        .label(date_format.format_datetime(&commit.time))
         .css_classes(["caption"])
         .xalign(0.0)
         .build());
@@ -371,7 +371,7 @@ pub fn populate_commit_files(files_box: &gtk::Box, files: &[DiffFile], limit: u3
     files_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let header = gtk::Label::builder()
-        .label(&format!("Files ({})", files.len()))
+        .label(format!("Files ({})", files.len()))
         .css_classes(["caption", "dim-label"])
         .xalign(0.0)
         .margin_top(2)
@@ -497,7 +497,7 @@ fn build_file_row(file: &DiffFile) -> gtk::Box {
 
     // Cap height
     let line_count = file.hunks.iter().map(|h| h.lines.len() + 1).sum::<usize>();
-    let visible_lines = line_count.min(25).max(3);
+    let visible_lines = line_count.clamp(3, 25);
     diff_tv.set_height_request(visible_lines as i32 * 18);
 
     diff_box.append(&diff_tv);

@@ -55,7 +55,7 @@ pub fn create_repo_row(entry: &WorkspaceEntry) -> gtk::ListBoxRow {
         }
         if indicator.ahead > 0 {
             let ahead = gtk::Label::builder()
-                .label(&format!("●{}", indicator.ahead))
+                .label(format!("●{}", indicator.ahead))
                 .css_classes(["caption", "gp-ind-green"])
                 .build();
             ahead.set_tooltip_text(Some(&format!("{} unpushed commit(s)", indicator.ahead)));

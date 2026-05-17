@@ -14,7 +14,7 @@ where
     F: Fn(String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title(&format!("History: {}", file_path))
+        .title(format!("History: {}", file_path))
         .content_width(720)
         .content_height(520)
         .build();
@@ -48,7 +48,7 @@ where
     for commit in commits {
         let row = adw::ActionRow::builder()
             .title(glib::markup_escape_text(&commit.summary).as_str())
-            .subtitle(&format!(
+            .subtitle(format!(
                 "{} · {} · {}",
                 commit.short_id,
                 commit.author.name,

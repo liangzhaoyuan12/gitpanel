@@ -14,6 +14,10 @@ pub struct ChangesViewRefs {
     pub list_box: gtk::ListBox,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
+    /// Optional extras (commit-prefix template + co-author trailer).
+    /// Hidden on narrow widths to make room for the commit button.
+    pub template_btn: gtk::MenuButton,
+    pub coauthor_btn: gtk::MenuButton,
 }
 
 /// Build the changes tab content.
@@ -138,6 +142,7 @@ pub fn build_changes_view(
         .margin_bottom(12)
         .build();
     list_box.set_placeholder(Some(&placeholder));
+    attach_row_hover_controller(&list_box);
 
     lists_box.append(&list_box);
 
@@ -152,6 +157,8 @@ pub fn build_changes_view(
         list_box,
         stage_all_btn,
         unstage_all_btn,
+        template_btn,
+        coauthor_btn,
     };
 
     (container, refs)
@@ -330,8 +337,9 @@ fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallb
     }
     header.append(&path_label);
 
-    // Action buttons (shown on hover)
+    // Action buttons (shown on hover via single ListBox-level controller)
     let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    btn_box.set_widget_name("row-actions");
     btn_box.set_visible(false);
 
     if file.is_staged {
@@ -412,19 +420,59 @@ fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallb
     row.set_child(Some(&outer_box));
     row.set_widget_name(&file.path);
 
-    // Hover to show buttons
-    let bb = btn_box.clone();
-    let hover = gtk::EventControllerMotion::new();
-    hover.connect_enter(move |_, _, _| {
-        bb.set_visible(true);
-    });
-    let bb2 = btn_box;
-    hover.connect_leave(move |_| {
-        bb2.set_visible(false);
-    });
-    row.add_controller(hover);
+    // Hover reveal is handled by a single EventControllerMotion installed on
+    // the parent ListBox in build_changes_view — see `attach_row_hover_controller`.
 
     row
+}
+
+/// Install a single ListBox-level pointer-motion controller that toggles the
+/// currently-hovered row's action box. Replaces a per-row controller per file
+/// (cheaper on huge repos: O(1) controllers vs O(N)).
+fn attach_row_hover_controller(list_box: &gtk::ListBox) {
+    use std::cell::RefCell;
+    let visible: Rc<RefCell<Option<gtk::Box>>> = Rc::new(RefCell::new(None));
+
+    let hover = gtk::EventControllerMotion::new();
+
+    let lb = list_box.clone();
+    let visible_motion = visible.clone();
+    hover.connect_motion(move |_, x, y| {
+        let row = lb.row_at_y(y as i32);
+        let _ = x;
+        let new_box: Option<gtk::Box> = row.and_then(|r| {
+            r.child()
+                .and_then(|c| c.downcast::<gtk::Box>().ok())
+                .and_then(|outer| find_child_by_name(&outer, "row-actions"))
+                .and_then(|w| w.downcast::<gtk::Box>().ok())
+        });
+
+        let mut current = visible_motion.borrow_mut();
+        let same = match (current.as_ref(), new_box.as_ref()) {
+            (Some(a), Some(b)) => a.eq(b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        if let Some(prev) = current.take() {
+            prev.set_visible(false);
+        }
+        if let Some(ref nb) = new_box {
+            nb.set_visible(true);
+        }
+        *current = new_box;
+    });
+
+    let visible_leave = visible.clone();
+    hover.connect_leave(move |_| {
+        if let Some(prev) = visible_leave.borrow_mut().take() {
+            prev.set_visible(false);
+        }
+    });
+
+    list_box.add_controller(hover);
 }
 
 /// Toggle the diff section of a file row and return whether it's now expanded.
@@ -646,8 +694,8 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     }
 
     // Set height based on content (cap at ~25 lines)
-    let visible_lines = line_count.min(25).max(3);
-    textview.set_height_request(visible_lines as i32 * 18);
+    let visible_lines = line_count.clamp(3, 25);
+    textview.set_height_request(visible_lines * 18);
 }
 
 /// Get the hunk-actions-box from a file row.
@@ -801,7 +849,7 @@ pub fn build_line_selector(hunk: &gitpulsar_core::models::DiffHunk, hunk_index: 
         };
 
         let content = gtk::Label::builder()
-            .label(&format!("{}{}", prefix, line.content.trim_end()))
+            .label(format!("{}{}", prefix, line.content.trim_end()))
             .css_classes(["caption", "monospace", css])
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
