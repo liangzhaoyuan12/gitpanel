@@ -67,7 +67,9 @@ Two-crate workspace:
 - **CLI open**: App uses `HANDLES_OPEN` flag — accepts repo path as CLI argument (`gitpulsar-gtk /path/to/repo`).
 - **Branch graph**: `commit_graph.rs` renders via cairo, not standard GTK widgets — separate drawing model.
 - **Hunk staging**: Builds partial unified-diff patches and applies via `git2::Repository::apply` to index.
-- **Adaptive layout**: 4-tier `AdwBreakpoint` system — compact (<1080sp, inner split collapsed), tablet (<860sp), narrow (<600sp), mobile (<500sp). Uses `sp` units for Large Text scaling. Min window 360x294. Each breakpoint also toggles a CSS class on the window (`gp-compact` / `gp-collapsed` / `gp-mobile`) so split-toggle handlers know which mode applies and CSS rules can lift row heights to 48 px on mobile.
+- **Adaptive layout**: 4-tier `AdwBreakpoint` system — compact (<1080sp, inner split collapsed), tablet (<860sp), narrow (<600sp), mobile (<500sp). Uses `sp` units for Large Text scaling. Min window 360x294. Each breakpoint also toggles a CSS class on the window (`gp-compact` / `gp-collapsed` / `gp-narrow` / `gp-mobile`) — CSS rules use these to lift row heights to 48 px on mobile and collapse `AdwViewSwitcherBar` labels to icon-only at <600 sp (the bar's `reveal` property, not `visible`, is the animated show/hide knob).
+- **Mobile remote ops**: on `<600sp` the bottom-bar fetch/pull/push buttons hide and a "Sync" `gtk::MenuButton` in the content header (icon `vertical-arrows-none-symbolic` from the GNOME Icon Library, shipped under `data/icons/hicolor/scalable/actions/`) pops up the three operations.
+- **Right sidebar overlay UX**: when the inner split collapses, the right header gains a "Close panel" button at the start so users dismiss the overlay instead of closing the window via the X — the window-close X stays visible too.
 
 ## CI
 

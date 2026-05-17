@@ -18,12 +18,16 @@ First stable release. Focus is performance on huge repositories and a properly a
 - **Adaptive file dialogs.** All four `gtk::FileChooserDialog` uses (open workspace, save patch, save archive, apply patch, save graph PNG) migrated to `gtk::FileDialog` — modern adaptive sheets on mobile.
 - **Conflict / bisect banner wraps.** Banner action buttons (Good / Bad / Skip / Reset, Continue / Abort) live in a `FlowBox` and wrap onto a second row on narrow widths.
 - **Touch targets.** Per-row stage / unstage / discard / blame / history buttons bumped to 36×36 px. On mobile, file rows clamp to a 48 px minimum height.
-- **Bottom bar collapses.** Stash hidden at <600 sp. Fetch / pull / push hidden at <500 sp — all four remain reachable through a new "Remote" submenu in the hamburger.
+- **Bottom bar collapses.** Stash hidden at <600 sp. Fetch / pull / push moved to a new "Sync" `MenuButton` in the header (icon: `vertical-arrows-none-symbolic`) that pops up the three operations on tap — also reachable through the hamburger "Remote" submenu.
+- **Right sidebar close button.** A dedicated "Close panel" button at the start of the right header bar appears on collapse so users don't reach for the window-close X by accident.
+- **ViewSwitcherBar polish.** Switching the bar's `reveal` (not just `visible`) so it actually animates in on narrow widths. On <600 sp the bar drops to icon-only via a CSS rule (`.gp-narrow viewswitcherbar button label { font-size: 0 }`) with a tightened vertical footprint.
 - **Commit action row collapses.** Conventional-commit template and co-author trailer buttons hidden at <600 sp. Amend and allow-empty checkboxes hidden at <500 sp.
 
 ### Other
 
 - `gtk4` feature bumped to `v4_10` (needed for `gtk::FileDialog`).
+- New `bp_narrow` `AdwBreakpoint` tier at <600 sp; each tier now also toggles a CSS class on the window (`gp-compact` / `gp-collapsed` / `gp-narrow` / `gp-mobile`) so CSS-driven rules and toggle handlers can react.
+- `vertical-arrows-none-symbolic.svg` shipped under `data/icons/hicolor/scalable/actions/` (sourced from the GNOME Icon Library — not part of the standard Adwaita icon theme).
 - Pre-existing clippy lints cleaned up so `cargo clippy -- -D warnings` is green.
 
 ## v0.10.0 (2026-05-14)
