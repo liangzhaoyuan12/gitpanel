@@ -23,6 +23,9 @@ impl GitpulsarApp {
                 label.gp-ind-yellow { color: #e5a50a; }
                 label.gp-ind-blue { color: #3584e4; }
                 label.gp-ind-green { color: #26a269; }
+                /* Touch-friendly row heights once mobile breakpoint applies. */
+                .gp-mobile .gp-file-row { min-height: 48px; }
+                .gp-mobile listview.navigation-sidebar > row { min-height: 48px; }
             ";
             let provider = gtk::CssProvider::new();
             provider.load_from_data(css);

@@ -84,6 +84,7 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 }
 
 use super::branches_tags_panel;
+use super::changed_file_object;
 use super::changes_view;
 use super::commit_list;
 use super::blame_view;
@@ -120,6 +121,37 @@ fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> 
         let msg = if stderr.trim().is_empty() { stdout } else { stderr };
         anyhow::bail!("{}", msg.trim());
     }
+}
+
+/// Walk the realized children of a ListView and return the outer Box whose
+/// widget_name matches `path`. Used after activation to find the row that
+/// represents the activated file (ListView recycles rows, so we can't capture
+/// a `&ListBoxRow` like the old ListBox-based API did).
+fn find_row_outer_for_path(list_view: &gtk::ListView, path: &str) -> Option<gtk::Box> {
+    let mut child = list_view.first_child();
+    while let Some(c) = child {
+        if let Some(outer) = walk_for_outer(&c, path) {
+            return Some(outer);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+fn walk_for_outer(widget: &gtk::Widget, path: &str) -> Option<gtk::Box> {
+    if let Ok(b) = widget.clone().downcast::<gtk::Box>() {
+        if b.has_css_class("gp-file-row") && b.widget_name() == path {
+            return Some(b);
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if let Some(found) = walk_for_outer(&c, path) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 mod imp {
@@ -177,7 +209,8 @@ mod imp {
         pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
         pub tags_list: RefCell<Option<gtk::ListBox>>,
         // Changes view file list (set during setup_ui)
-        pub changed_file_list: RefCell<Option<gtk::ListBox>>,
+        pub changed_file_list: RefCell<Option<gtk::ListView>>,
+        pub changed_file_store: RefCell<Option<gio::ListStore>>,
         // Stashes list in right sidebar (set during setup_ui)
         pub stashes_list: RefCell<Option<gtk::ListBox>>,
         pub submodules_list: RefCell<Option<gtk::ListBox>>,
@@ -258,6 +291,7 @@ mod imp {
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
                 changed_file_list: RefCell::new(None),
+                changed_file_store: RefCell::new(None),
                 stashes_list: RefCell::new(None),
                 submodules_list: RefCell::new(None),
                 worktrees_list: RefCell::new(None),
@@ -614,17 +648,29 @@ impl GitpulsarWindow {
             win.on_unstage_all();
         });
 
-        // Connect file row activation — toggle diff accordion
+        // Row activation: ListView fires connect_activate(idx) on double-click /
+        // Enter. Look up the bound row widget and toggle its diff revealer.
         let win = self.clone();
-        changes_refs.list_box.connect_row_activated(move |_, row| {
-            win.on_changes_file_activated(row);
+        let list_view_for_activate = changes_refs.list_view.clone();
+        let store_for_activate = changes_refs.store.clone();
+        changes_refs.list_view.connect_activate(move |_, position| {
+            let Some(item) = store_for_activate.item(position) else { return };
+            let Some(obj) = item.downcast_ref::<changed_file_object::ChangedFileObject>().cloned() else { return };
+            win.on_changes_file_activated(&list_view_for_activate, &obj);
         });
 
-        // Per-row stage/unstage/discard/blame/history button signals are wired after
-        // each populate_file_lists call (see refresh_changes_list).
+        // Per-row button signals are wired by the factory's setup callback (see
+        // build_row_factory). The window-level callback is stored on the ListView
+        // so the buttons can fire it with the currently-bound row's path.
+        let win_for_btn = self.clone();
+        let cb: changes_view::RowButtonCallback = std::rc::Rc::new(move |path: &str, name: &str| {
+            win_for_btn.dispatch_row_button(path, name);
+        });
+        changes_view::set_row_button_callback(&changes_refs.list_view, cb);
 
-        // Store changes file list ref
-        *imp.changed_file_list.borrow_mut() = Some(changes_refs.list_box.clone());
+        // Store changes file list refs
+        *imp.changed_file_list.borrow_mut() = Some(changes_refs.list_view.clone());
+        *imp.changed_file_store.borrow_mut() = Some(changes_refs.store.clone());
 
         // --- Graph page ---
         let graph_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -719,62 +765,19 @@ impl GitpulsarWindow {
         view_switcher.set_stack(Some(&imp.view_stack));
         view_switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
 
-        let compact_switcher = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        compact_switcher.set_halign(gtk::Align::Center);
-        compact_switcher.set_visible(false);
-
-        let commits_toggle = gtk::ToggleButton::builder()
-            .icon_name("commit-symbolic")
-            .tooltip_text("Commits")
-            .active(true)
-            .css_classes(["flat"])
+        // Native libadwaita compact switcher (icon + label, syncs with view_stack
+        // automatically). Replaces the previous custom ToggleButton row.
+        let compact_switcher = adw::ViewSwitcherBar::builder()
+            .stack(&imp.view_stack)
+            .reveal(false)
+            .visible(false)
             .build();
-        let changes_toggle = gtk::ToggleButton::builder()
-            .icon_name("document-edit-symbolic")
-            .tooltip_text("Changes")
-            .css_classes(["flat"])
-            .build();
-        let graph_toggle = gtk::ToggleButton::builder()
-            .icon_name("branch-fork-symbolic")
-            .tooltip_text("Graph")
-            .css_classes(["flat"])
-            .build();
-        changes_toggle.set_group(Some(&commits_toggle));
-        graph_toggle.set_group(Some(&commits_toggle));
-        compact_switcher.append(&commits_toggle);
-        compact_switcher.append(&changes_toggle);
-        compact_switcher.append(&graph_toggle);
 
-        // Sync compact toggles → view_stack
-        let vs = imp.view_stack.clone();
-        commits_toggle.connect_toggled(move |btn| {
-            if btn.is_active() { vs.set_visible_child_name("commits"); }
-        });
-        let vs = imp.view_stack.clone();
-        changes_toggle.connect_toggled(move |btn| {
-            if btn.is_active() { vs.set_visible_child_name("changes"); }
-        });
-        let vs = imp.view_stack.clone();
-        graph_toggle.connect_toggled(move |btn| {
-            if btn.is_active() { vs.set_visible_child_name("graph"); }
-        });
-
-        // Sync view_stack → compact toggles
-        let ct = commits_toggle.clone();
-        let cht = changes_toggle.clone();
-        let gt = graph_toggle.clone();
+        // Trigger graph-tab population whenever the user switches to "graph".
         let win_for_graph = self.clone();
         imp.view_stack.connect_visible_child_name_notify(move |stack| {
-            if let Some(name) = stack.visible_child_name() {
-                match name.as_str() {
-                    "commits" if !ct.is_active() => { ct.set_active(true); }
-                    "changes" if !cht.is_active() => { cht.set_active(true); }
-                    "graph" => {
-                        if !gt.is_active() { gt.set_active(true); }
-                        win_for_graph.populate_graph_tab();
-                    }
-                    _ => {}
-                }
+            if stack.visible_child_name().as_deref() == Some("graph") {
+                win_for_graph.populate_graph_tab();
             }
         });
 
@@ -960,6 +963,16 @@ impl GitpulsarWindow {
         bp_mobile.add_setter(&changes_refs.coauthor_btn, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&imp.amend_check, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&imp.allow_empty_check, "visible", Some(&false.to_value()));
+        // Toggle a `gp-mobile` class on the window so CSS-driven touch-target
+        // rules (min-height: 48px on rows) only apply on phone widths.
+        let win = self.clone();
+        bp_mobile.connect_apply(move |_| {
+            win.add_css_class("gp-mobile");
+        });
+        let win = self.clone();
+        bp_mobile.connect_unapply(move |_| {
+            win.remove_css_class("gp-mobile");
+        });
         self.add_breakpoint(bp_mobile);
     }
 
@@ -1820,59 +1833,49 @@ impl GitpulsarWindow {
     }
 
     fn stage_selected_lines(&self, path: &str, is_unstage: bool) {
-        // Find the hunk_actions_box for this file
         let imp = self.imp();
-        let lists = [imp.changed_file_list.borrow().clone()];
+        let Some(list_view) = imp.changed_file_list.borrow().clone() else { return };
+        let Some(outer) = find_row_outer_for_path(&list_view, path) else { return };
+        let Some(hunk_box) = changes_view::get_hunk_actions_box(&outer) else {
+            self.refresh_staging();
+            return;
+        };
 
-        for list_opt in &lists {
-            let Some(ref list) = list_opt else { continue };
-            let mut row_widget = list.first_child();
-            while let Some(ref rw) = row_widget {
-                if let Ok(row) = rw.clone().downcast::<gtk::ListBoxRow>() {
-                    if row.widget_name() == path {
-                        if let Some(hunk_box) = changes_view::get_hunk_actions_box(&row) {
-                            // Find line-selectors-box inside hunk_box
-                            let mut child = hunk_box.first_child();
-                            while let Some(c) = child {
-                                if c.widget_name() == "line-selectors-box" {
-                                    if let Ok(selectors_box) = c.downcast::<gtk::Box>() {
-                                        // Iterate over each hunk selector
-                                        let mut selector_child = selectors_box.first_child();
-                                        let mut hunk_idx = 0;
-                                        while let Some(sc) = selector_child {
-                                            if let Ok(selector) = sc.clone().downcast::<gtk::Box>() {
-                                                let indices = changes_view::collect_selected_lines(&selector);
-                                                if !indices.is_empty() {
-                                                    let repo_ref = self.imp().repo.borrow();
-                                                    if let Some(ref repo) = *repo_ref {
-                                                        let result = if is_unstage {
-                                                            repo.unstage_lines(path, hunk_idx, &indices)
-                                                        } else {
-                                                            repo.stage_lines(path, hunk_idx, &indices)
-                                                        };
-                                                        if let Err(e) = result {
-                                                            tracing::error!("Failed to stage lines: {}", e);
-                                                            self.show_toast(&format!("Failed: {}", e));
-                                                        }
-                                                    }
-                                                }
-                                                hunk_idx += 1;
-                                            }
-                                            selector_child = sc.next_sibling();
-                                        }
+        // Find line-selectors-box inside hunk_box
+        let mut child = hunk_box.first_child();
+        while let Some(c) = child {
+            if c.widget_name() == "line-selectors-box" {
+                if let Ok(selectors_box) = c.downcast::<gtk::Box>() {
+                    // Iterate over each hunk selector
+                    let mut selector_child = selectors_box.first_child();
+                    let mut hunk_idx = 0;
+                    while let Some(sc) = selector_child {
+                        if let Ok(selector) = sc.clone().downcast::<gtk::Box>() {
+                            let indices = changes_view::collect_selected_lines(&selector);
+                            if !indices.is_empty() {
+                                let repo_ref = self.imp().repo.borrow();
+                                if let Some(ref repo) = *repo_ref {
+                                    let result = if is_unstage {
+                                        repo.unstage_lines(path, hunk_idx, &indices)
+                                    } else {
+                                        repo.stage_lines(path, hunk_idx, &indices)
+                                    };
+                                    if let Err(e) = result {
+                                        tracing::error!("Failed to stage lines: {}", e);
+                                        self.show_toast(&format!("Failed: {}", e));
                                     }
-                                    break;
                                 }
-                                child = c.next_sibling();
                             }
+                            hunk_idx += 1;
                         }
-                        self.refresh_staging();
-                        return;
+                        selector_child = sc.next_sibling();
                     }
                 }
-                row_widget = rw.next_sibling();
+                break;
             }
+            child = c.next_sibling();
         }
+        self.refresh_staging();
     }
 
     fn on_undo(&self) {
@@ -2003,14 +2006,11 @@ impl GitpulsarWindow {
     /// Populate the changes view file list from a RepoStatus.
     fn refresh_changes_list(&self, status: &RepoStatus) {
         let imp = self.imp();
-        let list = imp.changed_file_list.borrow().clone();
-        if let Some(ref lb) = list {
+        let store = imp.changed_file_store.borrow().clone();
+        let list_view = imp.changed_file_list.borrow().clone();
+        if let (Some(store), Some(list_view)) = (store, list_view) {
             let files = changes_view::collect_changed_files(status);
-            let win = self.clone();
-            let cb: changes_view::RowButtonCallback = std::rc::Rc::new(move |path: &str, name: &str| {
-                win.dispatch_row_button(path, name);
-            });
-            changes_view::populate_file_lists(lb, &files, cb);
+            changes_view::populate_file_lists(&store, &files, &list_view);
         }
     }
 
@@ -2026,11 +2026,15 @@ impl GitpulsarWindow {
         }
     }
 
-    /// Handle click on a file in the changes accordion — toggle inline diff.
-    fn on_changes_file_activated(&self, row: &gtk::ListBoxRow) {
-        let file_path = row.widget_name().to_string();
+    /// Handle activate on a file row — toggle inline diff.
+    ///
+    /// ListView gives us the bound `ChangedFileObject` rather than a row widget
+    /// (rows are recycled). We look up the row widget by walking the ListView
+    /// children to find one whose outer-Box widget_name equals the file path.
+    fn on_changes_file_activated(&self, list_view: &gtk::ListView, obj: &changed_file_object::ChangedFileObject) {
+        let file_path = obj.path();
 
-        // Check if this is a conflicted file — open conflict editor instead
+        // Conflicted files open the conflict editor instead of an inline diff.
         {
             let repo_ref = self.imp().repo.borrow();
             if let Some(ref repo) = *repo_ref {
@@ -2047,13 +2051,11 @@ impl GitpulsarWindow {
             }
         }
 
-        let expanded = changes_view::toggle_file_diff(row);
+        let Some(outer) = find_row_outer_for_path(list_view, &file_path) else { return };
+        let expanded = changes_view::toggle_file_diff(&outer);
+        obj.set_expanded(expanded);
 
         if expanded {
-            if file_path.is_empty() {
-                return;
-            }
-
             let repo_ref = self.imp().repo.borrow();
             let Some(ref repo) = *repo_ref else { return };
 
@@ -2067,11 +2069,11 @@ impl GitpulsarWindow {
             let diff_file = self.get_file_diff(repo, &file_path);
 
             if let Some(ref file) = diff_file {
-                if let Some(tv) = changes_view::get_diff_textview(row) {
+                if let Some(tv) = changes_view::get_diff_textview(&outer) {
                     changes_view::render_file_diff(&tv, file);
                 }
                 // Populate hunk action buttons
-                if let Some(hunk_box) = changes_view::get_hunk_actions_box(row) {
+                if let Some(hunk_box) = changes_view::get_hunk_actions_box(&outer) {
                     changes_view::populate_hunk_actions(&hunk_box, &file.hunks, is_staged);
                     let win = self.clone();
                     let fp = file_path.clone();
@@ -2661,14 +2663,15 @@ impl GitpulsarWindow {
         let changed = imp.changed_file_list.borrow().clone();
         let branches = imp.branches_local_list.borrow().clone();
 
-        let mut panels: Vec<&gtk::ListBox> = Vec::new();
+        // Use gtk::Widget so we can mix a ListView (changes) and ListBox (commits, branches)
+        let mut panels: Vec<gtk::Widget> = Vec::new();
         if is_commits {
-            panels.push(&imp.commit_list_box);
-        } else if let Some(ref lb) = changed {
-            panels.push(lb);
+            panels.push(imp.commit_list_box.clone().upcast());
+        } else if let Some(lv) = changed {
+            panels.push(lv.upcast());
         }
-        if let Some(ref bl) = branches {
-            panels.push(bl);
+        if let Some(bl) = branches {
+            panels.push(bl.upcast());
         }
 
         if panels.is_empty() {

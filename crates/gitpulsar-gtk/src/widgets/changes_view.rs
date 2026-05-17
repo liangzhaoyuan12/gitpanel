@@ -1,17 +1,25 @@
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::{gio, glib};
 
 use gitpulsar_core::models::{DiffFile, DiffLineKind, FileStatusKind, RepoStatus};
 
+use super::changed_file_object::ChangedFileObject;
 use super::syntax;
 
 /// Per-row button callback: `(file_path, button_name)`.
 pub type RowButtonCallback = Rc<dyn Fn(&str, &str)>;
 
+/// CSS class marker applied to each row's outer Box so the button click
+/// handlers (which are wired once during factory setup) can walk up the widget
+/// tree to find the currently-bound row and read its file path.
+const ROW_OUTER_CSS: &str = "gp-file-row";
+
 /// Refs returned to window.rs for connecting signals.
 pub struct ChangesViewRefs {
-    pub list_box: gtk::ListBox,
+    pub list_view: gtk::ListView,
+    pub store: gio::ListStore,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
     /// Optional extras (commit-prefix template + co-author trailer).
@@ -131,20 +139,42 @@ pub fn build_changes_view(
     header.set_widget_name("changes-header");
     lists_box.append(&header);
 
-    let list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["navigation-sidebar"])
-        .build();
+    // Virtualized list: only viewport rows are realized. Custom GObject model
+    // holds per-entry state (path/status/staged + expanded flag) so it survives
+    // factory recycling.
+    let store = gio::ListStore::new::<ChangedFileObject>();
+
+    // Empty-state label shown when the store has no items.
     let placeholder = gtk::Label::builder()
         .label("No changes")
         .css_classes(["dim-label"])
         .margin_top(12)
         .margin_bottom(12)
+        .visible(false)
         .build();
-    list_box.set_placeholder(Some(&placeholder));
-    attach_row_hover_controller(&list_box);
+    placeholder.set_widget_name("changes-placeholder");
+    {
+        let placeholder = placeholder.clone();
+        store.connect_items_changed(move |s, _, _, _| {
+            placeholder.set_visible(s.n_items() == 0);
+        });
+    }
+    placeholder.set_visible(true);
+    lists_box.append(&placeholder);
 
-    lists_box.append(&list_box);
+    let selection = gtk::NoSelection::new(Some(store.clone()));
+    let factory = build_row_factory();
+    let list_view = gtk::ListView::builder()
+        .model(&selection)
+        .factory(&factory)
+        // Single click activates a row (toggles its diff revealer), matching
+        // the previous ListBox behaviour.
+        .single_click_activate(true)
+        .css_classes(["navigation-sidebar"])
+        .build();
+
+    attach_row_hover_controller(&list_view);
+    lists_box.append(&list_view);
 
     let file_scrolled = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -154,7 +184,8 @@ pub fn build_changes_view(
     container.append(&file_scrolled);
 
     let refs = ChangesViewRefs {
-        list_box,
+        list_view,
+        store,
         stage_all_btn,
         unstage_all_btn,
         template_btn,
@@ -234,17 +265,17 @@ fn walk_buttons(parent: &gtk::Widget, cb: &mut dyn FnMut(&gtk::Button)) {
     }
 }
 
-/// Populate the unified file list. Staged files come first, then unstaged.
-/// `on_button` is invoked when a per-row button (stage/unstage/discard/blame/history) fires.
+/// Replace the contents of the file-row store with the given entries. Performs
+/// a single `splice` so only viewport items are realized; preserves nothing
+/// from the previous state.
+///
+/// The factory wires its own per-row click handlers, so `on_button` is stored
+/// on the factory via [`set_row_button_callback`] and not consumed here.
 pub fn populate_file_lists(
-    list_box: &gtk::ListBox,
+    store: &gio::ListStore,
     files: &[ChangedFileEntry],
-    on_button: RowButtonCallback,
+    list_view: &gtk::ListView,
 ) {
-    while let Some(child) = list_box.first_child() {
-        list_box.remove(&child);
-    }
-
     let unstaged_count = files.iter().filter(|f| !f.is_staged).count();
     let staged_count = files.iter().filter(|f| f.is_staged).count();
     let label = if staged_count == 0 && unstaged_count == 0 {
@@ -252,30 +283,125 @@ pub fn populate_file_lists(
     } else {
         format!("Changes — {} staged / {} unstaged", staged_count, unstaged_count)
     };
-    update_header_label(list_box, "changes-header", &label);
+    update_header_label(list_view, "changes-header", &label);
 
     // Sort staged first, then unstaged, preserving original order within each group.
     let mut ordered: Vec<&ChangedFileEntry> = files.iter().filter(|f| f.is_staged).collect();
     ordered.extend(files.iter().filter(|f| !f.is_staged));
 
-    for file in ordered {
-        let row = create_file_accordion_row(file, &on_button);
-        list_box.append(&row);
+    let objects: Vec<glib::Object> = ordered
+        .into_iter()
+        .map(|f| ChangedFileObject::new(f.path.clone(), f.status, f.is_staged).upcast())
+        .collect();
+    store.splice(0, store.n_items(), &objects);
+}
+
+/// Attach the row-button callback to the ListView so the factory's setup
+/// closure (registered on the buttons once) can fire it with the bound path.
+pub fn set_row_button_callback(list_view: &gtk::ListView, on_button: RowButtonCallback) {
+    unsafe {
+        list_view.set_data::<RowButtonCallback>(ROW_CB_KEY, on_button);
     }
 }
 
-fn wire_btn(btn: &gtk::Button, path: &str, name: &str, on_button: &RowButtonCallback) {
-    btn.set_widget_name(name);
-    let cb = on_button.clone();
-    let p = path.to_string();
-    let n = name.to_string();
-    btn.connect_clicked(move |_| cb(&p, &n));
+const ROW_CB_KEY: &str = "gp-row-button-cb";
+
+fn list_view_for_widget(widget: &gtk::Widget) -> Option<gtk::ListView> {
+    let mut cur = widget.parent();
+    while let Some(w) = cur {
+        if let Ok(lv) = w.clone().downcast::<gtk::ListView>() {
+            return Some(lv);
+        }
+        cur = w.parent();
+    }
+    None
 }
 
-/// Create a file accordion row: compact header (badge + path + stage/unstage/discard buttons),
-/// expandable diff section below.
-fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallback) -> gtk::ListBoxRow {
+/// Walk up from a button to find the row outer Box (marked with `ROW_OUTER_CSS`).
+fn outer_box_from_button(btn: &gtk::Button) -> Option<gtk::Box> {
+    let mut cur = btn.parent();
+    while let Some(w) = cur {
+        if let Ok(b) = w.clone().downcast::<gtk::Box>() {
+            if b.has_css_class(ROW_OUTER_CSS) {
+                return Some(b);
+            }
+        }
+        cur = w.parent();
+    }
+    None
+}
+
+fn invoke_row_button(btn: &gtk::Button, action: &str) {
+    let Some(outer) = outer_box_from_button(btn) else { return };
+    let path = outer.widget_name().to_string();
+    if path.is_empty() {
+        return;
+    }
+    let Some(list_view) = list_view_for_widget(outer.upcast_ref()) else { return };
+    let cb = unsafe { list_view.data::<RowButtonCallback>(ROW_CB_KEY) };
+    if let Some(ptr) = cb {
+        let cb_ref: &RowButtonCallback = unsafe { ptr.as_ref() };
+        cb_ref(&path, action);
+    }
+}
+
+/// Build the factory that creates a row template once and re-binds it to each
+/// `ChangedFileObject` as it scrolls into view.
+fn build_row_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+
+    factory.connect_setup(|_, list_item| {
+        let item = list_item.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let outer = build_row_template();
+        item.set_child(Some(&outer));
+        item.set_activatable(true);
+        // Bind expand state both ways via property: ListItem activation flips
+        // a Cell on the outer Box that toggle_file_diff_outer reads.
+    });
+
+    factory.connect_bind(|_, list_item| {
+        let item = list_item.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let outer = item
+            .child()
+            .and_then(|c| c.downcast::<gtk::Box>().ok())
+            .expect("row Box");
+        let obj = item
+            .item()
+            .and_then(|o| o.downcast::<ChangedFileObject>().ok())
+            .expect("ChangedFileObject");
+        bind_row_widgets(&outer, &obj);
+    });
+
+    factory.connect_unbind(|_, list_item| {
+        let item = list_item.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        if let Some(outer) = item.child().and_then(|c| c.downcast::<gtk::Box>().ok()) {
+            // Collapse the diff revealer + clear lazy state so a recycled row
+            // doesn't show stale content for the next item it's bound to.
+            if let Some(rev) = find_child_by_name(&outer, "diff-box").and_then(|w| w.downcast::<gtk::Revealer>().ok()) {
+                rev.set_reveal_child(false);
+                if let Some(child) = rev.child().and_then(|c| c.downcast::<gtk::Box>().ok()) {
+                    if let Some(tv) = find_child_by_name(&child, "diff-textview") {
+                        child.remove(&tv);
+                    }
+                    if let Some(ha) = find_child_by_name(&child, "hunk-actions-box").and_then(|w| w.downcast::<gtk::Box>().ok()) {
+                        while let Some(c) = ha.first_child() {
+                            ha.remove(&c);
+                        }
+                    }
+                }
+            }
+            outer.set_widget_name("");
+        }
+    });
+
+    factory
+}
+
+/// Build an empty row widget tree without binding any file data. Called once
+/// per recycled row by the factory's setup closure.
+fn build_row_template() -> gtk::Box {
     let outer_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    outer_box.add_css_class(ROW_OUTER_CSS);
 
     // === Header row ===
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -284,7 +410,6 @@ fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallb
     header.set_margin_top(4);
     header.set_margin_bottom(4);
 
-    // Expand icon
     let expand_icon = gtk::Image::builder()
         .icon_name("pan-end-symbolic")
         .css_classes(["dim-label"])
@@ -292,109 +417,72 @@ fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallb
     expand_icon.set_widget_name("expand-icon");
     header.append(&expand_icon);
 
-    // Status icon — green check when staged, otherwise status-based glyph
-    let (icon_name, icon_css, tooltip): (&str, &str, String) = if file.is_staged {
-        let kind = match file.status {
-            FileStatusKind::New => "Added",
-            FileStatusKind::Modified => "Modified",
-            FileStatusKind::Deleted => "Deleted",
-            FileStatusKind::Renamed => "Renamed",
-            FileStatusKind::Typechange => "Typechange",
-        };
-        ("object-select-symbolic", "success", format!("Staged ({})", kind))
-    } else {
-        let (n, c, t) = match file.status {
-            FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
-            FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
-            FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
-            FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
-            FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
-        };
-        (n, c, t.to_string())
-    };
-
     let status_icon = gtk::Image::builder()
-        .icon_name(icon_name)
-        .css_classes([icon_css])
+        .icon_name("text-x-generic-symbolic")
         .pixel_size(14)
-        .tooltip_text(&tooltip)
         .build();
+    status_icon.set_widget_name("status-icon");
     header.append(&status_icon);
 
-    // File path — bold via Pango attribute when staged so it stands out in the unified list
     let path_label = gtk::Label::builder()
-        .label(&file.path)
         .xalign(0.0)
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::Start)
         .css_classes(["caption"])
         .build();
-    if file.is_staged {
-        let attrs = gtk::pango::AttrList::new();
-        attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
-        path_label.set_attributes(Some(&attrs));
-        path_label.add_css_class("success");
-    }
+    path_label.set_widget_name("path-label");
     header.append(&path_label);
 
-    // Action buttons (shown on hover via single ListBox-level controller)
+    // Action buttons (shown on hover via ListView-level controller)
     let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     btn_box.set_widget_name("row-actions");
     btn_box.set_visible(false);
 
-    if file.is_staged {
-        let unstage_btn = gtk::Button::builder()
-            .icon_name("list-remove-symbolic")
-            .css_classes(["flat", "circular"])
-            .tooltip_text("Unstage")
-            .valign(gtk::Align::Center)
-            .build();
-        wire_btn(&unstage_btn, &file.path, "unstage-file", on_button);
-        btn_box.append(&unstage_btn);
-    } else {
-        let stage_btn = gtk::Button::builder()
-            .icon_name("list-add-symbolic")
-            .css_classes(["flat", "circular"])
-            .tooltip_text("Stage")
-            .valign(gtk::Align::Center)
-            .build();
-        wire_btn(&stage_btn, &file.path, "stage-file", on_button);
-        btn_box.append(&stage_btn);
+    let action_btn = gtk::Button::builder()
+        .icon_name("list-add-symbolic")
+        .css_classes(["flat", "circular"])
+        .valign(gtk::Align::Center)
+        .width_request(36)
+        .height_request(36)
+        .build();
+    action_btn.set_widget_name("action-btn");
+    action_btn.connect_clicked(|b| invoke_row_button(b, &b.widget_name()));
+    btn_box.append(&action_btn);
 
-        let discard_btn = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .css_classes(["flat", "circular"])
-            .tooltip_text("Discard")
-            .valign(gtk::Align::Center)
-            .build();
-        wire_btn(&discard_btn, &file.path, "discard-file", on_button);
-        btn_box.append(&discard_btn);
-    }
+    let discard_btn = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .css_classes(["flat", "circular"])
+        .tooltip_text("Discard")
+        .valign(gtk::Align::Center)
+        .build();
+    discard_btn.set_widget_name("discard-file");
+    discard_btn.connect_clicked(|b| invoke_row_button(b, "discard-file"));
+    btn_box.append(&discard_btn);
 
-    // Blame button (always available)
     let blame_btn = gtk::Button::builder()
         .icon_name("view-list-symbolic")
         .css_classes(["flat", "circular"])
         .tooltip_text("Blame")
         .valign(gtk::Align::Center)
         .build();
-    wire_btn(&blame_btn, &file.path, "blame-file", on_button);
+    blame_btn.set_widget_name("blame-file");
+    blame_btn.connect_clicked(|b| invoke_row_button(b, "blame-file"));
     btn_box.append(&blame_btn);
 
-    // File history button
     let history_btn = gtk::Button::builder()
         .icon_name("document-open-recent-symbolic")
         .css_classes(["flat", "circular"])
         .tooltip_text("File History")
         .valign(gtk::Align::Center)
         .build();
-    wire_btn(&history_btn, &file.path, "history-file", on_button);
+    history_btn.set_widget_name("history-file");
+    history_btn.connect_clicked(|b| invoke_row_button(b, "history-file"));
     btn_box.append(&history_btn);
 
     header.append(&btn_box);
     outer_box.append(&header);
 
-    // === Diff section (hidden by default, with animation) ===
+    // Diff revealer (collapsed by default)
     let diff_revealer = gtk::Revealer::builder()
         .reveal_child(false)
         .transition_type(gtk::RevealerTransitionType::SlideDown)
@@ -407,44 +495,130 @@ fn create_file_accordion_row(file: &ChangedFileEntry, on_button: &RowButtonCallb
     diff_box.set_margin_end(8);
     diff_box.set_margin_bottom(4);
 
-    // Hunk action buttons container (populated when diff is loaded)
     let hunk_actions_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     hunk_actions_box.set_widget_name("hunk-actions-box");
     diff_box.append(&hunk_actions_box);
 
-    // TextView for the diff is created lazily on first expand (see get_diff_textview).
     diff_revealer.set_child(Some(&diff_box));
     outer_box.append(&diff_revealer);
 
-    let row = gtk::ListBoxRow::new();
-    row.set_child(Some(&outer_box));
-    row.set_widget_name(&file.path);
-
-    // Hover reveal is handled by a single EventControllerMotion installed on
-    // the parent ListBox in build_changes_view — see `attach_row_hover_controller`.
-
-    row
+    outer_box
 }
 
-/// Install a single ListBox-level pointer-motion controller that toggles the
-/// currently-hovered row's action box. Replaces a per-row controller per file
-/// (cheaper on huge repos: O(1) controllers vs O(N)).
-fn attach_row_hover_controller(list_box: &gtk::ListBox) {
+/// Apply the data from `obj` onto the per-row widgets created by `build_row_template`.
+fn bind_row_widgets(outer: &gtk::Box, obj: &ChangedFileObject) {
+    outer.set_widget_name(&obj.path());
+
+    let path_label = find_child_by_name(outer, "path-label")
+        .and_then(|w| w.downcast::<gtk::Label>().ok());
+    let status_icon = find_child_by_name(outer, "status-icon")
+        .and_then(|w| w.downcast::<gtk::Image>().ok());
+    let action_btn = find_child_by_name(outer, "action-btn")
+        .and_then(|w| w.downcast::<gtk::Button>().ok());
+    let discard_btn = find_child_by_name(outer, "discard-file")
+        .and_then(|w| w.downcast::<gtk::Button>().ok());
+    let expand_icon = find_child_by_name(outer, "expand-icon")
+        .and_then(|w| w.downcast::<gtk::Image>().ok());
+    let revealer = find_child_by_name(outer, "diff-box")
+        .and_then(|w| w.downcast::<gtk::Revealer>().ok());
+
+    let is_staged = obj.is_staged();
+    let status = obj.status();
+    let path = obj.path();
+
+    // Status icon — green check when staged, otherwise per-status glyph
+    if let Some(icon) = status_icon {
+        let (name, css, tooltip) = if is_staged {
+            let kind = match status {
+                FileStatusKind::New => "Added",
+                FileStatusKind::Modified => "Modified",
+                FileStatusKind::Deleted => "Deleted",
+                FileStatusKind::Renamed => "Renamed",
+                FileStatusKind::Typechange => "Typechange",
+            };
+            ("object-select-symbolic", "success", format!("Staged ({})", kind))
+        } else {
+            let (n, c, t) = match status {
+                FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
+                FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
+                FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
+                FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
+                FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
+            };
+            (n, c, t.to_string())
+        };
+        icon.set_icon_name(Some(name));
+        icon.set_css_classes(&[css]);
+        icon.set_tooltip_text(Some(&tooltip));
+    }
+
+    if let Some(label) = path_label {
+        label.set_label(&path);
+        let attrs = gtk::pango::AttrList::new();
+        if is_staged {
+            attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+            label.add_css_class("success");
+        } else {
+            label.remove_css_class("success");
+        }
+        label.set_attributes(Some(&attrs));
+    }
+
+    if let Some(btn) = action_btn {
+        if is_staged {
+            btn.set_icon_name("list-remove-symbolic");
+            btn.set_tooltip_text(Some("Unstage"));
+            btn.set_widget_name("unstage-file");
+        } else {
+            btn.set_icon_name("list-add-symbolic");
+            btn.set_tooltip_text(Some("Stage"));
+            btn.set_widget_name("stage-file");
+        }
+    }
+
+    if let Some(btn) = discard_btn {
+        btn.set_visible(!is_staged);
+    }
+
+    if let Some(rev) = revealer {
+        rev.set_reveal_child(obj.expanded());
+    }
+    if let Some(icon) = expand_icon {
+        icon.set_icon_name(Some(if obj.expanded() {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        }));
+    }
+}
+
+/// Install a single ListView-level pointer-motion controller that reveals the
+/// row-action buttons under the cursor. One controller for the whole list
+/// instead of one per row.
+fn attach_row_hover_controller(list_view: &gtk::ListView) {
     use std::cell::RefCell;
     let visible: Rc<RefCell<Option<gtk::Box>>> = Rc::new(RefCell::new(None));
 
     let hover = gtk::EventControllerMotion::new();
-
-    let lb = list_box.clone();
+    let lv = list_view.clone();
     let visible_motion = visible.clone();
+
     hover.connect_motion(move |_, x, y| {
-        let row = lb.row_at_y(y as i32);
-        let _ = x;
-        let new_box: Option<gtk::Box> = row.and_then(|r| {
-            r.child()
-                .and_then(|c| c.downcast::<gtk::Box>().ok())
-                .and_then(|outer| find_child_by_name(&outer, "row-actions"))
-                .and_then(|w| w.downcast::<gtk::Box>().ok())
+        // `pick` returns the deepest widget under the pointer; walk up to the
+        // row's outer Box (marked with ROW_OUTER_CSS), then locate "row-actions".
+        let picked = lv.pick(x, y, gtk::PickFlags::DEFAULT);
+        let new_box = picked.and_then(|w| {
+            let mut cur: Option<gtk::Widget> = Some(w);
+            while let Some(c) = cur {
+                if let Ok(b) = c.clone().downcast::<gtk::Box>() {
+                    if b.has_css_class(ROW_OUTER_CSS) {
+                        return find_child_by_name(&b, "row-actions")
+                            .and_then(|w| w.downcast::<gtk::Box>().ok());
+                    }
+                }
+                cur = c.parent();
+            }
+            None
         });
 
         let mut current = visible_motion.borrow_mut();
@@ -472,17 +646,15 @@ fn attach_row_hover_controller(list_box: &gtk::ListBox) {
         }
     });
 
-    list_box.add_controller(hover);
+    list_view.add_controller(hover);
 }
 
 /// Toggle the diff section of a file row and return whether it's now expanded.
-pub fn toggle_file_diff(row: &gtk::ListBoxRow) -> bool {
-    let Some(outer_box) = row.child().and_then(|c| c.downcast::<gtk::Box>().ok()) else {
-        return false;
-    };
-
-    let diff_box = find_child_by_name(&outer_box, "diff-box");
-    let expand_icon = find_child_by_name(&outer_box, "expand-icon");
+/// Takes the row's outer Box directly (works for both ListView and any caller
+/// that holds a row Box reference).
+pub fn toggle_file_diff(outer_box: &gtk::Box) -> bool {
+    let diff_box = find_child_by_name(outer_box, "diff-box");
+    let expand_icon = find_child_by_name(outer_box, "expand-icon");
 
     if let Some(diff) = diff_box {
         if let Ok(revealer) = diff.downcast::<gtk::Revealer>() {
@@ -503,15 +675,14 @@ pub fn toggle_file_diff(row: &gtk::ListBoxRow) -> bool {
     false
 }
 
-/// Get (or lazily build) the diff TextView for a file row.
-pub fn get_diff_textview(row: &gtk::ListBoxRow) -> Option<gtk::TextView> {
-    let outer_box = row.child()?.downcast::<gtk::Box>().ok()?;
-    if let Some(existing) = find_child_by_name(&outer_box, "diff-textview") {
+/// Get (or lazily build) the diff TextView for a file row's outer Box.
+pub fn get_diff_textview(outer_box: &gtk::Box) -> Option<gtk::TextView> {
+    if let Some(existing) = find_child_by_name(outer_box, "diff-textview") {
         return existing.downcast::<gtk::TextView>().ok();
     }
 
     // Lazy build: find the diff Box inside the Revealer and append a TextView.
-    let revealer = find_child_by_name(&outer_box, "diff-box")?
+    let revealer = find_child_by_name(outer_box, "diff-box")?
         .downcast::<gtk::Revealer>()
         .ok()?;
     let diff_box = revealer.child()?.downcast::<gtk::Box>().ok()?;
@@ -698,10 +869,9 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     textview.set_height_request(visible_lines * 18);
 }
 
-/// Get the hunk-actions-box from a file row.
-pub fn get_hunk_actions_box(row: &gtk::ListBoxRow) -> Option<gtk::Box> {
-    let outer_box = row.child()?.downcast::<gtk::Box>().ok()?;
-    find_child_by_name(&outer_box, "hunk-actions-box")
+/// Get the hunk-actions-box from a file row's outer Box.
+pub fn get_hunk_actions_box(outer_box: &gtk::Box) -> Option<gtk::Box> {
+    find_child_by_name(outer_box, "hunk-actions-box")
         .and_then(|w| w.downcast::<gtk::Box>().ok())
 }
 
@@ -888,8 +1058,8 @@ pub fn collect_selected_lines(selector: &gtk::Box) -> Vec<usize> {
     indices
 }
 
-fn update_header_label(list_box: &gtk::ListBox, header_name: &str, full_label: &str) {
-    let Some(parent) = list_box.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else { return };
+fn update_header_label<W: IsA<gtk::Widget>>(widget: &W, header_name: &str, full_label: &str) {
+    let Some(parent) = widget.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else { return };
     let mut child = parent.first_child();
     while let Some(c) = child {
         if c.widget_name() == header_name {

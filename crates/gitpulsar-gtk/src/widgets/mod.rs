@@ -1,4 +1,5 @@
 pub mod window;
+pub mod changed_file_object;
 pub mod commit_list;
 pub mod commit_graph;
 pub mod repo_tree;

@@ -44,8 +44,9 @@ pub struct FileStatus {
     pub status: FileStatusKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FileStatusKind {
+    #[default]
     New,
     Modified,
     Deleted,
