@@ -203,7 +203,6 @@ mod imp {
         pub toast_overlay: adw::ToastOverlay,
         // Widget refs
         pub repo_list_box: gtk::ListBox,
-        pub commit_list_box: gtk::ListBox,
         pub commit_list_view: RefCell<Option<gtk::ListView>>,
         pub commit_store: RefCell<Option<gio::ListStore>>,
         pub commit_filter: RefCell<Option<gtk::CustomFilter>>,
@@ -273,7 +272,6 @@ mod imp {
                 inner_split: RefCell::new(None),
                 toast_overlay: adw::ToastOverlay::new(),
                 repo_list_box: gtk::ListBox::new(),
-                commit_list_box: gtk::ListBox::new(),
                 commit_list_view: RefCell::new(None),
                 commit_store: RefCell::new(None),
                 commit_filter: RefCell::new(None),
@@ -617,7 +615,7 @@ impl GitpulsarWindow {
         imp.search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_string();
             if let Some(filter) = win.imp().commit_filter.borrow().clone() {
-                super::commit_list_new::set_commit_filter(&filter, &query);
+                super::commit_list::set_commit_filter(&filter, &query);
             }
         });
 
@@ -628,7 +626,7 @@ impl GitpulsarWindow {
 
         // === Commits tab content (virtualized) ===
         {
-            use super::commit_list_new as commit_list_v;
+            use super::commit_list as commit_list_v;
 
             let date_format_cell = std::rc::Rc::new(std::cell::Cell::new(imp.config.borrow().date_format));
 
@@ -1480,7 +1478,7 @@ impl GitpulsarWindow {
         *imp.selected_commit_id.borrow_mut() = None;
         imp.search_entry.set_text("");
         if let Some(filter) = imp.commit_filter.borrow().clone() {
-            super::commit_list_new::set_commit_filter(&filter, "");
+            super::commit_list::set_commit_filter(&filter, "");
         }
 
         let path = repo.path().to_string_lossy().to_string();
@@ -1626,7 +1624,7 @@ impl GitpulsarWindow {
 
         let Some(store) = imp.commit_store.borrow().clone() else { return };
         let has_more = commits.len() >= COMMIT_PAGE_SIZE;
-        super::commit_list_new::populate_commit_store(&store, commits, tags_map, ahead, has_more);
+        super::commit_list::populate_commit_store(&store, commits, tags_map, ahead, has_more);
 
         imp.commits_loaded_count.set(commits.len());
     }
@@ -1657,7 +1655,7 @@ impl GitpulsarWindow {
             let offset = imp.commits_loaded_count.get();
             let has_more = new_commits.len() >= COMMIT_PAGE_SIZE;
 
-            super::commit_list_new::append_commits_to_store(
+            super::commit_list::append_commits_to_store(
                 &store,
                 &new_commits,
                 &tags_map,
