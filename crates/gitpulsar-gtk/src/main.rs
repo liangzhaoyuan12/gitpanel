@@ -3,6 +3,9 @@ mod config;
 mod undo;
 mod widgets;
 
+#[cfg(test)]
+mod test_support;
+
 use app::GitpulsarApp;
 
 fn main() {

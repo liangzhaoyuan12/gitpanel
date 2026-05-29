@@ -162,3 +162,95 @@ impl Default for CommitObject {
         glib::Object::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use chrono::TimeZone;
+    use serial_test::serial;
+
+    use gitpulsar_core::models::{CommitInfo, Signature};
+
+    use crate::test_support;
+
+    fn sample_info(idx: u32) -> CommitInfo {
+        CommitInfo {
+            id: format!("{:040x}", idx),
+            short_id: format!("{:07x}", idx),
+            summary: format!("commit {idx}"),
+            message: format!("commit {idx}\n\nbody"),
+            author: Signature {
+                name: "Test".into(),
+                email: "t@e.com".into(),
+            },
+            committer: Signature {
+                name: "Test".into(),
+                email: "t@e.com".into(),
+            },
+            time: chrono::Utc
+                .timestamp_opt(1_700_000_000 + idx as i64, 0)
+                .single()
+                .expect("valid timestamp"),
+            parent_ids: if idx == 0 {
+                vec![]
+            } else {
+                vec![format!("{:040x}", idx - 1)]
+            },
+            is_signed: false,
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn from_info_copies_fields() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let info = sample_info(7);
+        let obj = CommitObject::from_info(&info, vec!["v1".into()], true, false);
+
+        assert_eq!(obj.id(), info.id);
+        assert_eq!(obj.short_id(), info.short_id);
+        assert_eq!(obj.summary(), info.summary);
+        assert_eq!(obj.message(), info.message);
+        assert_eq!(obj.tags(), vec!["v1".to_string()]);
+        assert!(obj.is_head());
+        assert!(!obj.is_unpushed());
+        assert!(!obj.expanded());
+        assert!(!obj.files_loaded());
+        assert!(!obj.is_load_more_sentinel());
+    }
+
+    #[test]
+    #[serial]
+    fn load_more_sentinel_flag() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let s = CommitObject::load_more_sentinel();
+        assert!(s.is_load_more_sentinel());
+        assert!(s.id().is_empty());
+        assert!(!s.is_head());
+    }
+
+    #[test]
+    #[serial]
+    fn expanded_toggle() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let obj = CommitObject::from_info(&sample_info(0), vec![], false, false);
+        assert!(!obj.expanded());
+        obj.set_expanded(true);
+        assert!(obj.expanded());
+        obj.set_expanded(false);
+        assert!(!obj.expanded());
+    }
+}
