@@ -205,6 +205,11 @@ mod imp {
         // Widget refs
         pub repo_list_box: gtk::ListBox,
         pub commit_list_box: gtk::ListBox,
+        pub commit_list_view: RefCell<Option<gtk::ListView>>,
+        pub commit_store: RefCell<Option<gio::ListStore>>,
+        pub commit_filter: RefCell<Option<gtk::CustomFilter>>,
+        pub commit_filter_model: RefCell<Option<gtk::FilterListModel>>,
+        pub commit_selection: RefCell<Option<gtk::SingleSelection>>,
         pub view_stack: adw::ViewStack,
         pub branch_label: gtk::Label,
         pub ahead_label: gtk::Label,
@@ -270,6 +275,11 @@ mod imp {
                 toast_overlay: adw::ToastOverlay::new(),
                 repo_list_box: gtk::ListBox::new(),
                 commit_list_box: gtk::ListBox::new(),
+                commit_list_view: RefCell::new(None),
+                commit_store: RefCell::new(None),
+                commit_filter: RefCell::new(None),
+                commit_filter_model: RefCell::new(None),
+                commit_selection: RefCell::new(None),
                 view_stack: adw::ViewStack::new(),
                 branch_label: gtk::Label::new(Some("main")),
                 ahead_label: gtk::Label::new(Some("▲ 0")),
@@ -633,18 +643,11 @@ impl GitpulsarWindow {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
 
+        // Legacy ListBox is still owned by the imp struct (Task 9 deletes it).
+        // It is detached from the layout but still receives populate calls until
+        // Task 7 migrates them — keep the row-activation wiring alive so the
+        // commit_list helpers remain reachable until they're removed.
         imp.commit_list_box.set_selection_mode(gtk::SelectionMode::Browse);
-        imp.commit_list_box.add_css_class("navigation-sidebar");
-
-        let commits_placeholder = gtk::Label::builder()
-            .label("Select a repository")
-            .css_classes(["dim-label"])
-            .margin_top(24)
-            .margin_bottom(24)
-            .build();
-        imp.commit_list_box.set_placeholder(Some(&commits_placeholder));
-
-        // Connect commit activation — toggle expand/collapse detail
         let win = self.clone();
         imp.commit_list_box.connect_row_activated(move |_, row| {
             if row.widget_name() == "load-more-row" {
@@ -654,7 +657,58 @@ impl GitpulsarWindow {
             }
         });
 
-        commit_scrolled.set_child(Some(&imp.commit_list_box));
+        // === Commits tab content (virtualized) ===
+        {
+            use super::commit_list_new as commit_list_v;
+
+            let date_format_cell = std::rc::Rc::new(std::cell::Cell::new(imp.config.borrow().date_format));
+
+            let win_for_activate = self.clone();
+            let on_activate: commit_list_v::RowActivateCallback = std::rc::Rc::new(move |commit_id| {
+                win_for_activate.on_commit_activated_by_id(commit_id);
+            });
+            let win_for_load_more = self.clone();
+            let on_load_more: commit_list_v::LoadMoreCallback = std::rc::Rc::new(move || {
+                win_for_load_more.load_more_commits();
+            });
+            let win_for_edit = self.clone();
+            let on_edit: commit_list_v::EditMessageCallback = std::rc::Rc::new(move |msg| {
+                win_for_edit.show_edit_message_dialog(&msg);
+            });
+
+            let refs = commit_list_v::build_commit_list_view(
+                on_activate,
+                on_load_more,
+                on_edit,
+                date_format_cell,
+            );
+
+            let commits_placeholder = gtk::Label::builder()
+                .label("No commits yet")
+                .css_classes(["dim-label"])
+                .build();
+            // Placeholder lives in a Stack swapped when the store empties.
+            let stack = gtk::Stack::new();
+            stack.add_named(&refs.list_view, Some("list"));
+            stack.add_named(&commits_placeholder, Some("empty"));
+            stack.set_visible_child_name("empty");
+
+            let store_for_stack = refs.store.clone();
+            let stack_for_signal = stack.clone();
+            store_for_stack.connect_items_changed(move |store, _, _, _| {
+                let has_commits = store.n_items() > 0;
+                stack_for_signal.set_visible_child_name(if has_commits { "list" } else { "empty" });
+            });
+
+            *imp.commit_list_view.borrow_mut() = Some(refs.list_view);
+            *imp.commit_store.borrow_mut() = Some(refs.store);
+            *imp.commit_filter.borrow_mut() = Some(refs.filter);
+            *imp.commit_filter_model.borrow_mut() = Some(refs.filter_model);
+            *imp.commit_selection.borrow_mut() = Some(refs.selection);
+
+            commit_scrolled.set_child(Some(&stack));
+        }
+
         commits_page.append(&commit_scrolled);
 
         // --- Changes page: file accordion list with inline diffs ---
@@ -1719,6 +1773,77 @@ impl GitpulsarWindow {
             .build();
         load_more_row.set_child(Some(&label));
         self.imp().commit_list_box.append(&load_more_row);
+    }
+
+    fn on_commit_activated_by_id(&self, commit_id: &str) {
+        let imp = self.imp();
+        let store_opt = imp.commit_store.borrow().clone();
+        let Some(store) = store_opt else { return };
+
+        // Find the CommitObject + its position in the store.
+        let n = store.n_items();
+        let mut found: Option<(u32, super::commit_object::CommitObject)> = None;
+        for i in 0..n {
+            if let Some(obj) = store
+                .item(i)
+                .and_then(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+            {
+                if obj.is_load_more_sentinel() {
+                    continue;
+                }
+                if obj.id() == commit_id {
+                    found = Some((i, obj));
+                    break;
+                }
+            }
+        }
+        let Some((pos, obj)) = found else { return };
+
+        let new_expanded = !obj.expanded();
+        obj.set_expanded(new_expanded);
+        *imp.selected_commit_id.borrow_mut() = Some(commit_id.to_string());
+
+        // Force a re-bind by notifying the model.
+        store.items_changed(pos, 1, 1);
+
+        if !new_expanded {
+            return;
+        }
+        if obj.files_loaded() {
+            return;
+        }
+
+        // Lazy file fetch + lazy signature lookup.
+        let Some(repo_path) = self.repo_path_string() else { return };
+        let commit_id_owned = commit_id.to_string();
+
+        let (tx, rx) = async_channel::bounded::<(Vec<DiffFile>, bool)>(1);
+        std::thread::spawn(move || {
+            let Ok(repo) = GitRepo::open(&repo_path) else { return };
+            let files = repo.diff_commit(&commit_id_owned).unwrap_or_default();
+            let is_signed = repo.commit_is_signed(&commit_id_owned);
+            let _ = tx.send_blocking((files, is_signed));
+        });
+
+        let win = self.clone();
+        let pos_for_async = pos;
+        glib::spawn_future_local(async move {
+            let Ok((files, is_signed)) = rx.recv().await else { return };
+            let imp = win.imp();
+            let Some(store) = imp.commit_store.borrow().clone() else { return };
+            let Some(obj) = store
+                .item(pos_for_async)
+                .and_then(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+            else {
+                return;
+            };
+            obj.set_files(files);
+            obj.set_files_loaded(true);
+            if is_signed {
+                obj.set_is_signed(true);
+            }
+            store.items_changed(pos_for_async, 1, 1);
+        });
     }
 
     fn on_commit_selected(&self, index: usize) {
