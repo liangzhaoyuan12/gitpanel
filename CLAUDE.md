@@ -55,12 +55,13 @@ Two-crate workspace:
 - **Concurrency guard**: `refresh_in_progress` Cell prevents overlapping refreshes.
 - **Lazy diffs**: Background refresh only computes diffs when status hash changes.
 - **Parallel operations**: Workspace scanning uses up to 8 threads; initial repo load runs log/tags and status/branches in parallel threads; workspace scan and repo status run in parallel during refresh.
-- **Paginated commits**: Initial load fetches 50 commits (`COMMIT_PAGE_SIZE`), "Load more" button appends next page.
+- **Paginated commits**: Initial load fetches 50 commits (`COMMIT_PAGE_SIZE`); data stored in `gio::ListStore<CommitObject>`; the model grows on Load more without realizing additional widgets.
 - **Async diff on expand**: `diff_commit` runs in background thread with spinner, not blocking UI.
 - **Remote operations**: git2 for local ops, shelled-out `git` CLI (`run_git_cmd`) for remote ops (push/pull/fetch) due to SSH reliability. 30-second timeout.
 - **Widget builders**: Functions return `(gtk::Box, SomeRefs)` tuples — the widget and a struct of handles for later updates.
 - **Layout**: Outer `AdwOverlaySplitView` (repo sidebar | main) → inner `AdwOverlaySplitView` (content | right sidebar at PackType::End). OverlaySplitView is the GNOME HIG pick for utility-pane sidebars — on collapse the sidebar slides over content with a built-in edge-swipe gesture, while content stays full-width. Breakpoint setters keep `show-sidebar` off on collapse so the sidebar is opened only by toggle button or swipe.
 - **Changes view**: Single unified `gtk::ListView` + `SignalListItemFactory` backed by a `gio::ListStore` of `ChangedFileObject` (custom GObject wrapping path/status/is_staged/expanded). Only viewport rows are realized. `populate_file_lists` splices the store. Per-row click handlers wired once in the factory's setup callback; they walk up to the `gp-file-row`-marked outer Box to read the current item's path.
+- **Commits view**: same pattern as Changes view — `gtk::ListView` + `SignalListItemFactory` + `gio::ListStore<CommitObject>`. Per-row UI state (expanded, files_loaded, tags) lives on the `CommitObject` so virtualization can recycle row widgets without losing state. A sentinel `CommitObject` marked `is_load_more_sentinel` renders the trailing "Load more" row; the factory branches on the flag. Search is a `gtk::CustomFilter` on a `gtk::FilterListModel` wrapping the store.
 - **Undo/redo**: `UndoStack` in `undo.rs` tracks staging ops and discards (with saved file content for restore).
 - **Syntax highlighting**: `syntect` crate in `syntax.rs`, lazy-loaded SyntaxSet/ThemeSet, theme-aware (dark/light via `adw::StyleManager`).
 - **Config**: JSON at `~/.config/io.gitlab.ilshat_apps/config.json` — date format, refresh interval, commit files limit, recent workspaces.

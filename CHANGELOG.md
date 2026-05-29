@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.1.0 (2026-05-29)
+
+### Performance
+
+- **Commits tab virtualized.** Replaced the `gtk::ListBox` Commits list with a
+  `gtk::ListView` + `gio::ListStore<CommitObject>` backed by a
+  `SignalListItemFactory`. After many "Load more" pages, the list now holds
+  data rather than realized widgets — scrolling and refreshing stay smooth
+  on repos with thousands of commits.
+- **Lazy GPG signature lookup.** `repository::log_page` no longer calls
+  `extract_signature` for every commit; instead, signature state is fetched
+  on-demand when a commit row is expanded. Cuts the bulk of per-page cost on
+  large logs.
+- **Graph tab early-exit.** Switching to the Graph tab no longer recomputes
+  and re-renders when the commit set hasn't changed.
+- **Graph tab labels capped at 500.** Long histories rendered thousands of
+  `GtkLabel` widgets in a single Box; we now cap at 500 with a footer that
+  points to "Load more" on the Commits tab.
+
+### Notes
+
+Addresses the GNOME Software user report about sluggishness on projects
+with more than 2000 commits.
+
 ## v1.0.0 (2026-05-17)
 
 First stable release. Focus is performance on huge repositories and a properly adaptive UI down to 360 px phone widths.
