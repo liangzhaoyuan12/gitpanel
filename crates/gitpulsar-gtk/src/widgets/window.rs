@@ -69,6 +69,17 @@ fn hash_commits(commits: &[CommitInfo]) -> u64 {
     hasher.finish()
 }
 
+fn hash_graph_input(commits: &[CommitInfo]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for c in commits {
+        c.id.hash(&mut hasher);
+        for p in &c.parent_ids {
+            p.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for e in entries {
@@ -168,6 +179,8 @@ mod imp {
         pub last_workspace_hash: Cell<u64>,
         /// Hash of last commit list to skip redundant rebuilds.
         pub last_commits_hash: Cell<u64>,
+        /// Hash of last graph input (commit ids + parent ids) to skip redundant graph recomputes.
+        pub last_graph_hash: Cell<u64>,
         /// Guard to prevent concurrent background refreshes.
         pub refresh_in_progress: Cell<bool>,
         /// Tick counter for throttling workspace scans.
@@ -242,6 +255,7 @@ mod imp {
                 last_status_hash: Cell::new(0),
                 last_workspace_hash: Cell::new(0),
                 last_commits_hash: Cell::new(0),
+                last_graph_hash: Cell::new(0),
                 refresh_in_progress: Cell::new(false),
                 refresh_tick: Cell::new(0),
                 workspace_idle_streak: Cell::new(0),
@@ -4304,6 +4318,12 @@ impl GitpulsarWindow {
             return;
         }
 
+        let new_hash = hash_graph_input(&commits);
+        if new_hash == self.imp().last_graph_hash.get() {
+            return;
+        }
+        self.imp().last_graph_hash.set(new_hash);
+
         // Find the graph page's ScrolledWindow
         let graph_page = self.imp().view_stack.child_by_name("graph");
         let Some(graph_page) = graph_page else { return };
@@ -4351,7 +4371,11 @@ impl GitpulsarWindow {
 
                 // Labels column
                 let labels_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                for row in &rows {
+                const GRAPH_LABEL_CAP: usize = 500;
+                for (i, row) in rows.iter().enumerate() {
+                    if i >= GRAPH_LABEL_CAP {
+                        break;
+                    }
                     let label = gtk::Label::builder()
                         .label(format!("{} {}", row.short_id, row.summary))
                         .xalign(0.0)
@@ -4360,6 +4384,19 @@ impl GitpulsarWindow {
                         .height_request(32)
                         .build();
                     labels_box.append(&label);
+                }
+                if rows.len() > GRAPH_LABEL_CAP {
+                    let footer = gtk::Label::builder()
+                        .label(format!(
+                            "Showing first {} of {} commits — Load More on the Commits tab to extend.",
+                            GRAPH_LABEL_CAP,
+                            rows.len()
+                        ))
+                        .css_classes(["dim-label", "caption"])
+                        .margin_top(8)
+                        .margin_bottom(8)
+                        .build();
+                    labels_box.append(&footer);
                 }
 
                 let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
