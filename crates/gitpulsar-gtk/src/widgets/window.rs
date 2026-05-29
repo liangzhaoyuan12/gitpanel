@@ -3700,25 +3700,61 @@ impl GitpulsarWindow {
         let win = self.clone();
         gesture.connect_released(move |_gesture, _, x, y| {
             let imp = win.imp();
-            // Find which row was clicked
-            let Some(row) = imp.commit_list_box.row_at_y(y as i32) else {
-                return;
-            };
-            let idx = row.index() as usize;
+            let Some(list_view) = imp.commit_list_view.borrow().clone() else { return };
+            let Some(picked) = list_view.pick(x, y, gtk::PickFlags::DEFAULT) else { return };
 
-            let commits = imp.commits.borrow();
-            let Some(commit) = commits.get(idx) else {
-                return;
-            };
-            let sha = commit.id.clone();
-            let short_sha = commit.short_id.clone();
-            let message = commit.summary.clone();
-            let full_message = commit.message.clone();
-            drop(commits);
+            // Walk up to find the row's outer Box (marked with `gp-commit-row`).
+            let mut node: Option<gtk::Widget> = Some(picked);
+            let mut commit_id: Option<String> = None;
+            while let Some(w) = node {
+                if let Some(b) = w.downcast_ref::<gtk::Box>() {
+                    if b.has_css_class("gp-commit-row") {
+                        let name = b.widget_name().to_string();
+                        if !name.is_empty() && name != "sentinel" {
+                            commit_id = Some(name);
+                        }
+                        break;
+                    }
+                }
+                node = w.parent();
+            }
+            let Some(id) = commit_id else { return };
+
+            // Look up the CommitObject from the store. The store always reflects
+            // the currently-rendered model. `idx` is the position among non-
+            // sentinel rows so the HEAD/rebase conditionals match the legacy
+            // ListBox behaviour.
+            let Some(store) = imp.commit_store.borrow().clone() else { return };
+            let mut commit: Option<super::commit_object::CommitObject> = None;
+            let mut idx_opt: Option<usize> = None;
+            let mut real_idx: usize = 0;
+            let n = store.n_items();
+            for i in 0..n {
+                if let Some(obj) = store
+                    .item(i)
+                    .and_then(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+                {
+                    if obj.is_load_more_sentinel() {
+                        continue;
+                    }
+                    if obj.id() == id {
+                        commit = Some(obj);
+                        idx_opt = Some(real_idx);
+                        break;
+                    }
+                    real_idx += 1;
+                }
+            }
+            let Some(obj) = commit else { return };
+            let Some(idx) = idx_opt else { return };
+            let sha = obj.id();
+            let short_sha = obj.short_id();
+            let message = obj.summary();
+            let full_message = obj.message();
 
             // Build popover menu
             let popover = gtk::Popover::new();
-            popover.set_parent(&imp.commit_list_box);
+            popover.set_parent(&list_view);
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             popover.set_has_arrow(true);
 
@@ -3937,7 +3973,9 @@ impl GitpulsarWindow {
             popover.popup();
         });
 
-        self.imp().commit_list_box.add_controller(gesture);
+        if let Some(lv) = self.imp().commit_list_view.borrow().clone() {
+            lv.add_controller(gesture);
+        }
     }
 
     fn setup_tag_context_menu(&self) {
