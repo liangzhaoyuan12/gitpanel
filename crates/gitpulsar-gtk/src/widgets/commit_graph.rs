@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use adw::prelude::*;
 use gtk::cairo;
 
 use gitpulsar_core::models::CommitInfo;
@@ -191,29 +190,6 @@ fn draw_graph_row(cr: &cairo::Context, row: &GraphRow, height: f64, all_rows: &[
     cr.set_source_rgb(r, g, b);
     cr.arc(commit_x, mid_y, DOT_RADIUS, 0.0, 2.0 * std::f64::consts::PI);
     let _ = cr.fill();
-}
-
-/// Create a small inline graph widget for a single commit row.
-/// Uses Rc to share graph data across all rows without cloning.
-pub fn create_inline_graph(graph_rows: &std::rc::Rc<Vec<GraphRow>>, row_idx: usize, max_lanes: usize) -> gtk::DrawingArea {
-    let width = (max_lanes as f64 * LANE_WIDTH + PADDING * 2.0).ceil() as i32;
-    let row_height = ROW_HEIGHT as i32;
-
-    let da = gtk::DrawingArea::builder()
-        .content_width(width.min(120))
-        .content_height(row_height)
-        .valign(gtk::Align::Center)
-        .build();
-
-    let rows = graph_rows.clone();
-    let idx = row_idx;
-    da.set_draw_func(move |_da, cr, _w, _h| {
-        if let Some(row) = rows.get(idx) {
-            draw_graph_row(cr, row, ROW_HEIGHT, &rows, idx);
-        }
-    });
-
-    da
 }
 
 fn lane_x(lane: usize) -> f64 {

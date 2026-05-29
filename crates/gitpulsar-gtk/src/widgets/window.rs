@@ -97,7 +97,6 @@ fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
 use super::branches_tags_panel;
 use super::changed_file_object;
 use super::changes_view;
-use super::commit_list;
 use super::blame_view;
 use super::conflict_editor;
 use super::file_history_dialog;
@@ -616,46 +615,16 @@ impl GitpulsarWindow {
         // Connect commit search filter
         let win = self.clone();
         imp.search_entry.connect_search_changed(move |entry| {
-            let query = entry.text().to_lowercase();
-            let commits = win.imp().commits.borrow();
-            let commit_data: Vec<(String, String, String)> = commits
-                .iter()
-                .map(|c| (c.summary.to_lowercase(), c.author.name.to_lowercase(), c.short_id.to_lowercase()))
-                .collect();
-            drop(commits);
-
-            let list = &win.imp().commit_list_box;
-            list.set_filter_func(move |row| {
-                if query.is_empty() {
-                    return true;
-                }
-                let idx = row.index() as usize;
-                if let Some((summary, author, short_id)) = commit_data.get(idx) {
-                    summary.contains(&query) || author.contains(&query) || short_id.contains(&query)
-                } else {
-                    true
-                }
-            });
+            let query = entry.text().to_string();
+            if let Some(filter) = win.imp().commit_filter.borrow().clone() {
+                super::commit_list_new::set_commit_filter(&filter, &query);
+            }
         });
 
         let commit_scrolled = gtk::ScrolledWindow::builder()
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
-
-        // Legacy ListBox is still owned by the imp struct (Task 9 deletes it).
-        // It is detached from the layout but still receives populate calls until
-        // Task 7 migrates them — keep the row-activation wiring alive so the
-        // commit_list helpers remain reachable until they're removed.
-        imp.commit_list_box.set_selection_mode(gtk::SelectionMode::Browse);
-        let win = self.clone();
-        imp.commit_list_box.connect_row_activated(move |_, row| {
-            if row.widget_name() == "load-more-row" {
-                win.load_more_commits();
-            } else {
-                win.on_commit_selected(row.index() as usize);
-            }
-        });
 
         // === Commits tab content (virtualized) ===
         {
@@ -1510,7 +1479,9 @@ impl GitpulsarWindow {
         // Reset search immediately
         *imp.selected_commit_id.borrow_mut() = None;
         imp.search_entry.set_text("");
-        imp.commit_list_box.set_filter_func(|_| true);
+        if let Some(filter) = imp.commit_filter.borrow().clone() {
+            super::commit_list_new::set_commit_filter(&filter, "");
+        }
 
         let path = repo.path().to_string_lossy().to_string();
 
@@ -1646,64 +1617,24 @@ impl GitpulsarWindow {
         tags_map: &HashMap<String, Vec<String>>,
     ) {
         let imp = self.imp();
-        let list_box = &imp.commit_list_box;
 
-        // Skip rebuild if commits haven't changed
         let new_hash = hash_commits(commits);
         if new_hash == imp.last_commits_hash.get() {
             return;
         }
         imp.last_commits_hash.set(new_hash);
 
-        while let Some(child) = list_box.first_child() {
-            list_box.remove(&child);
-        }
+        let Some(store) = imp.commit_store.borrow().clone() else { return };
+        let has_more = commits.len() >= COMMIT_PAGE_SIZE;
+        super::commit_list_new::populate_commit_store(&store, commits, tags_map, ahead, has_more);
 
-        let offset = imp.commits.borrow().len();
-
-        for (idx, commit_info) in commits.iter().enumerate() {
-            let global_idx = offset + idx;
-            let tags = tags_map
-                .get(&commit_info.id)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
-            let is_unpushed = global_idx < ahead;
-            let is_head = global_idx == 0;
-            let date_format = imp.config.borrow().date_format;
-            let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, is_head, date_format, None);
-
-            // Connect edit-message button for HEAD commit
-            if is_head {
-                if let Some(btn) = commit_list::find_edit_message_btn(&row) {
-                    let win = self.clone();
-                    let msg = commit_info.message.clone();
-                    btn.connect_clicked(move |_| {
-                        win.show_edit_message_dialog(&msg);
-                    });
-                }
-            }
-
-            list_box.append(&row);
-        }
-
-        // Show "Load more" button if we got a full page
-        if commits.len() >= COMMIT_PAGE_SIZE {
-            self.append_load_more_row();
-        }
-
-        imp.commits_loaded_count.set(offset + commits.len());
+        imp.commits_loaded_count.set(commits.len());
     }
 
     fn load_more_commits(&self) {
         let imp = self.imp();
-
-        let repo_path = self.repo_path_string();
-        let Some(path) = repo_path else { return };
-
+        let Some(path) = self.repo_path_string() else { return };
         let skip = imp.commits_loaded_count.get();
-
-        // Remove the "Load more" row
-        self.remove_load_more_row();
 
         let (tx, rx) = async_channel::bounded::<(Vec<CommitInfo>, HashMap<String, Vec<String>>)>(1);
         std::thread::spawn(move || {
@@ -1715,64 +1646,28 @@ impl GitpulsarWindow {
 
         let win = self.clone();
         glib::spawn_future_local(async move {
-            if let Ok((new_commits, tags_map)) = rx.recv().await {
-                let imp = win.imp();
-                let list_box = &imp.commit_list_box;
-                let ahead = imp.ahead_label.label()
-                    .strip_prefix("▲ ")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(0);
-                let offset = imp.commits_loaded_count.get();
-                let date_format = imp.config.borrow().date_format;
+            let Ok((new_commits, tags_map)) = rx.recv().await else { return };
+            let imp = win.imp();
+            let Some(store) = imp.commit_store.borrow().clone() else { return };
 
-                for (idx, commit_info) in new_commits.iter().enumerate() {
-                    let global_idx = offset + idx;
-                    let tags = tags_map
-                        .get(&commit_info.id)
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    let is_unpushed = global_idx < ahead;
-                    let row = commit_list::create_commit_row(commit_info, tags, is_unpushed, false, date_format, None);
-                    list_box.append(&row);
-                }
+            let ahead = imp.ahead_label.label()
+                .strip_prefix("▲ ")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+            let offset = imp.commits_loaded_count.get();
+            let has_more = new_commits.len() >= COMMIT_PAGE_SIZE;
 
-                // Add "Load more" if full page
-                if new_commits.len() >= COMMIT_PAGE_SIZE {
-                    win.append_load_more_row();
-                }
-
-                imp.commits_loaded_count.set(offset + new_commits.len());
-                imp.commits.borrow_mut().extend(new_commits);
-            }
+            super::commit_list_new::append_commits_to_store(
+                &store,
+                &new_commits,
+                &tags_map,
+                ahead,
+                offset,
+                has_more,
+            );
+            imp.commits_loaded_count.set(offset + new_commits.len());
+            imp.commits.borrow_mut().extend(new_commits);
         });
-    }
-
-    fn remove_load_more_row(&self) {
-        let list_box = &self.imp().commit_list_box;
-        let n_rows = list_box.observe_children().n_items();
-        if n_rows > 0 {
-            if let Some(last_row) = list_box.row_at_index((n_rows - 1) as i32) {
-                if last_row.widget_name() == "load-more-row" {
-                    list_box.remove(&last_row);
-                }
-            }
-        }
-    }
-
-    fn append_load_more_row(&self) {
-        let load_more_row = gtk::ListBoxRow::builder()
-            .selectable(false)
-            .activatable(true)
-            .build();
-        load_more_row.set_widget_name("load-more-row");
-        let label = gtk::Label::builder()
-            .label("Load more commits...")
-            .css_classes(["dim-label"])
-            .margin_top(8)
-            .margin_bottom(8)
-            .build();
-        load_more_row.set_child(Some(&label));
-        self.imp().commit_list_box.append(&load_more_row);
     }
 
     fn on_commit_activated_by_id(&self, commit_id: &str) {
@@ -1844,51 +1739,6 @@ impl GitpulsarWindow {
             }
             store.items_changed(pos_for_async, 1, 1);
         });
-    }
-
-    fn on_commit_selected(&self, index: usize) {
-        let imp = self.imp();
-        let commits = imp.commits.borrow();
-
-        if let Some(commit) = commits.get(index) {
-            let commit_id = commit.id.clone();
-            drop(commits);
-
-            // Toggle detail expand on the selected row
-            if let Some(row) = imp.commit_list_box.row_at_index(index as i32) {
-                let expanded = commit_list::toggle_detail(&row);
-
-                if expanded {
-                    // Load file list asynchronously to avoid blocking the UI
-                    let repo_path = self.repo_path_string();
-                    let files_box = commit_list::get_files_box(&row);
-                    let limit = imp.config.borrow().commit_files_limit;
-                    let cid = commit_id.clone();
-
-                    if let (Some(path), Some(files_box)) = (repo_path, files_box) {
-                        // Show spinner while loading
-                        commit_list::show_files_loading(&files_box);
-
-                        let (tx, rx) = async_channel::bounded::<Vec<DiffFile>>(1);
-                        std::thread::spawn(move || {
-                            let files = GitRepo::open(&path)
-                                .ok()
-                                .and_then(|r| r.diff_commit(&cid).ok())
-                                .unwrap_or_default();
-                            let _ = tx.send_blocking(files);
-                        });
-
-                        glib::spawn_future_local(async move {
-                            if let Ok(files) = rx.recv().await {
-                                commit_list::populate_commit_files(&files_box, &files, limit);
-                            }
-                        });
-                    }
-                }
-            }
-
-            *imp.selected_commit_id.borrow_mut() = Some(commit_id);
-        }
     }
 
     fn on_commit_clicked(&self) {
@@ -2877,10 +2727,20 @@ impl GitpulsarWindow {
                 gdk::Key::Escape => {
                     // Collapse any expanded commit detail
                     if let Some(id) = imp.selected_commit_id.borrow().clone() {
-                        let commits = imp.commits.borrow();
-                        if let Some(idx) = commits.iter().position(|c| c.id == id) {
-                            if let Some(row) = imp.commit_list_box.row_at_index(idx as i32) {
-                                commit_list::toggle_detail(&row);
+                        let store_opt = imp.commit_store.borrow().clone();
+                        if let Some(store) = store_opt {
+                            let n = store.n_items();
+                            for i in 0..n {
+                                if let Some(obj) = store
+                                    .item(i)
+                                    .and_then(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+                                {
+                                    if obj.id() == id {
+                                        obj.set_expanded(false);
+                                        store.items_changed(i, 1, 1);
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2903,7 +2763,9 @@ impl GitpulsarWindow {
         // Use gtk::Widget so we can mix a ListView (changes) and ListBox (commits, branches)
         let mut panels: Vec<gtk::Widget> = Vec::new();
         if is_commits {
-            panels.push(imp.commit_list_box.clone().upcast());
+            if let Some(lv) = imp.commit_list_view.borrow().clone() {
+                panels.push(lv.upcast());
+            }
         } else if let Some(lv) = changed {
             panels.push(lv.upcast());
         }
