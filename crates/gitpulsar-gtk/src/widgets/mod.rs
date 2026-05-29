@@ -2,6 +2,7 @@ pub mod window;
 pub mod changed_file_object;
 pub mod commit_list;
 pub mod commit_graph;
+pub mod commit_object;
 pub mod repo_tree;
 pub mod branches_tags_panel;
 pub mod changes_view;
