@@ -115,7 +115,7 @@ impl GitRepo {
 
             let oid = oid?;
             let commit = self.repo.find_commit(oid)?;
-            commits.push(commit_to_info(&self.repo, &commit));
+            commits.push(commit_to_info_lite(&commit));
         }
 
         Ok(commits)
@@ -335,6 +335,16 @@ impl GitRepo {
     pub fn inner_mut(&mut self) -> &mut Repository {
         &mut self.repo
     }
+
+    /// Cheap signature presence check for a single commit. Called lazily by the
+    /// UI when a commit row is expanded; the log_page hot path no longer pays
+    /// this cost up front.
+    pub fn commit_is_signed(&self, oid_hex: &str) -> bool {
+        let Ok(oid) = git2::Oid::from_str(oid_hex) else {
+            return false;
+        };
+        self.repo.extract_signature(&oid, None).is_ok()
+    }
 }
 
 fn git_time_to_datetime(time: git2::Time) -> DateTime<Utc> {
@@ -376,5 +386,24 @@ fn commit_to_info(repo: &Repository, commit: &git2::Commit<'_>) -> CommitInfo {
         time: git_time_to_datetime(commit.time()),
         parent_ids: commit.parent_ids().map(|oid| oid.to_string()).collect(),
         is_signed,
+    }
+}
+
+/// Same as `commit_to_info` but skips the signature check (which opens the
+/// object database and is the hot-path cost when paginating large logs).
+/// Callers that need `is_signed` set should look it up lazily on demand.
+fn commit_to_info_lite(commit: &git2::Commit<'_>) -> CommitInfo {
+    let id = commit.id().to_string();
+    let short_id = id[..7.min(id.len())].to_string();
+    CommitInfo {
+        id,
+        short_id,
+        summary: commit.summary().unwrap_or("").to_string(),
+        message: commit.message().unwrap_or("").to_string(),
+        author: signature_to_model(&commit.author()),
+        committer: signature_to_model(&commit.committer()),
+        time: git_time_to_datetime(commit.time()),
+        parent_ids: commit.parent_ids().map(|oid| oid.to_string()).collect(),
+        is_signed: false,
     }
 }
