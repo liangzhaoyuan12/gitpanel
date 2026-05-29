@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use chrono::TimeZone;
 use gtk::gio;
 
 use super::commit_object::CommitObject;
@@ -491,20 +492,184 @@ fn populate_files_into_outer(outer: &gtk::Box, obj: &CommitObject) {
 }
 
 #[allow(dead_code)]
-fn build_file_row(_f: &DiffFile) -> gtk::Box {
-    // Filled in Task 5.
-    gtk::Box::new(gtk::Orientation::Horizontal, 0)
+fn build_file_row(file: &DiffFile) -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let file_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    file_row.set_margin_start(4);
+
+    // Expand arrow
+    let arrow = gtk::Image::builder()
+        .icon_name("pan-end-symbolic")
+        .css_classes(["dim-label"])
+        .pixel_size(12)
+        .build();
+    file_row.append(&arrow);
+
+    // Status icon
+    let (icon_name, icon_class) = diff_file_icon(file);
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .css_classes([icon_class])
+        .pixel_size(14)
+        .build();
+    file_row.append(&icon);
+
+    // File path
+    let path_label = gtk::Label::builder()
+        .label(&file.path)
+        .css_classes(["caption"])
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::Start)
+        .hexpand(true)
+        .build();
+    path_label.set_widget_name(&file.path);
+    file_row.append(&path_label);
+
+    // Stats
+    let stats_text = format!("+{} -{}", file.stats.insertions, file.stats.deletions);
+    let stats_label = gtk::Label::builder()
+        .label(&stats_text)
+        .css_classes(["caption", "dim-label", "monospace"])
+        .build();
+    file_row.append(&stats_label);
+
+    // Clickable header
+    let header_btn = gtk::Button::builder()
+        .child(&file_row)
+        .css_classes(["flat"])
+        .build();
+    container.append(&header_btn);
+
+    // Inline diff (hidden by default)
+    let diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    diff_box.set_visible(false);
+    diff_box.set_margin_start(16);
+    diff_box.set_margin_end(4);
+    diff_box.set_margin_bottom(4);
+
+    let diff_tv = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .left_margin(4)
+        .right_margin(4)
+        .top_margin(4)
+        .bottom_margin(4)
+        .cursor_visible(false)
+        .wrap_mode(gtk::WrapMode::None)
+        .build();
+    diff_tv.add_css_class("card");
+
+    // Render the diff immediately since we already have the data
+    super::changes_view::render_file_diff(&diff_tv, file);
+
+    // Cap height
+    let line_count = file.hunks.iter().map(|h| h.lines.len() + 1).sum::<usize>();
+    let visible_lines = line_count.clamp(3, 25);
+    diff_tv.set_height_request(visible_lines as i32 * 18);
+
+    diff_box.append(&diff_tv);
+    container.append(&diff_box);
+
+    // Toggle diff on click
+    {
+        let diff_box = diff_box.clone();
+        let arrow = arrow.clone();
+        header_btn.connect_clicked(move |_| {
+            let visible = !diff_box.is_visible();
+            diff_box.set_visible(visible);
+            arrow.set_icon_name(Some(if visible {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            }));
+        });
+    }
+
+    container
+}
+
+/// Icon name and CSS class for a diff file status.
+#[allow(dead_code)]
+fn diff_file_icon(file: &DiffFile) -> (&'static str, &'static str) {
+    let has_additions = file.stats.insertions > 0;
+    let has_deletions = file.stats.deletions > 0;
+
+    if has_additions && !has_deletions {
+        ("list-add-symbolic", "success")
+    } else if has_deletions && !has_additions {
+        ("list-remove-symbolic", "error")
+    } else {
+        ("document-edit-symbolic", "accent")
+    }
+}
+
+/// Icon name and CSS class for a diff file status (legacy, kept for reference).
+#[allow(dead_code)]
+fn diff_file_badge(file: &DiffFile) -> (&'static str, &'static str) {
+    let has_additions = file.stats.insertions > 0;
+    let has_deletions = file.stats.deletions > 0;
+
+    if has_additions && !has_deletions {
+        ("list-add-symbolic", "success")
+    } else if has_deletions && !has_additions {
+        ("list-remove-symbolic", "error")
+    } else {
+        ("document-edit-symbolic", "accent")
+    }
 }
 
 #[allow(dead_code)]
-fn find_child_by_name(_w: &gtk::Box, _name: &str) -> Option<gtk::Widget> {
-    // Filled in Task 5.
+fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if c.widget_name() == name {
+            return Some(c);
+        }
+        // Recurse into boxes
+        if let Ok(inner_box) = c.clone().downcast::<gtk::Box>() {
+            if let Some(found) = find_child_by_name(&inner_box, name) {
+                return Some(found);
+            }
+        }
+        // Recurse into revealers
+        if let Ok(revealer) = c.clone().downcast::<gtk::Revealer>() {
+            if let Some(rev_child) = revealer.child() {
+                if rev_child.widget_name() == name {
+                    return Some(rev_child);
+                }
+                if let Ok(inner_box) = rev_child.downcast::<gtk::Box>() {
+                    if let Some(found) = find_child_by_name(&inner_box, name) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        child = c.next_sibling();
+    }
     None
 }
 
 #[allow(dead_code)]
 fn format_relative_time(time_unix: i64, date_format: DateFormat) -> String {
-    // Filled in Task 5; placeholder so the module compiles for now.
-    let _ = (time_unix, date_format);
-    String::new()
+    let time = chrono::Utc
+        .timestamp_opt(time_unix, 0)
+        .single()
+        .unwrap_or_default();
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(time);
+
+    if duration.num_minutes() < 1 {
+        "just now".to_string()
+    } else if duration.num_hours() < 1 {
+        format!("{} min ago", duration.num_minutes())
+    } else if duration.num_days() < 1 {
+        format!("{}h ago", duration.num_hours())
+    } else if duration.num_weeks() < 1 {
+        format!("{}d ago", duration.num_days())
+    } else if duration.num_weeks() < 5 {
+        format!("{}w ago", duration.num_weeks())
+    } else {
+        date_format.format_date(&time)
+    }
 }
