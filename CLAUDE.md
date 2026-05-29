@@ -18,7 +18,7 @@ make help                      # show available targets
 
 **System dependencies**: gtk4-devel, libadwaita-devel (Fedora) / libgtk-4-dev, libadwaita-1-dev (Debian).
 
-There are no tests or lints configured in this project currently.
+Quality gate: `cargo build --release && cargo clippy --all-targets -- -D warnings && cargo test`. Core integration tests live in `crates/gitpulsar-core/tests/` (tempfile-backed `GitRepo`). GTK unit tests live inline under `#[cfg(test)] mod tests {…}` in widget modules + a shared `crates/gitpulsar-gtk/src/test_support.rs` (`ensure_gtk_init` + `GP_SKIP_GTK_TESTS=1` headless soft-skip).
 
 ## Architecture
 
