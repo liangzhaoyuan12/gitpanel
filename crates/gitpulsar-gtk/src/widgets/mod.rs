@@ -6,9 +6,10 @@ pub mod commit_object;
 pub mod repo_tree;
 pub mod branches_tags_panel;
 pub mod changes_view;
-// Renderers are wired up by the commit diff dialog; until that lands nothing
-// calls them, so the module is registered but not yet referenced.
+// Wired into the commits tab by the next commit; until then nothing in the
+// binary calls it.
 #[allow(dead_code)]
+pub mod commit_diff_dialog;
 pub mod diff_view;
 pub mod header_chrome;
 pub mod preferences_dialog;
