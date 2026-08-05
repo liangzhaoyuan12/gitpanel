@@ -23,6 +23,8 @@ pub type RowActivateCallback = Rc<dyn Fn(&str)>;
 pub type LoadMoreCallback = Rc<dyn Fn()>;
 /// Called when the HEAD commit's edit-message pencil is clicked.
 pub type EditMessageCallback = Rc<dyn Fn(String)>;
+/// Called with `(commit_id, file_path)` when a file inside a commit is clicked.
+pub type FileOpenCallback = Rc<dyn Fn(&str, &str)>;
 
 /// Refs returned to window.rs for state management and signal wiring.
 pub struct CommitListRefs {
@@ -37,7 +39,9 @@ pub fn build_commit_list_view(
     on_activate: RowActivateCallback,
     on_load_more: LoadMoreCallback,
     on_edit_head_message: EditMessageCallback,
+    on_open_file: FileOpenCallback,
     date_format_cell: Rc<std::cell::Cell<DateFormat>>,
+    files_limit: Rc<std::cell::Cell<u32>>,
 ) -> CommitListRefs {
     let store = gio::ListStore::new::<CommitObject>();
     let filter = gtk::CustomFilter::new(|_| true);
@@ -48,7 +52,9 @@ pub fn build_commit_list_view(
     let factory = build_row_factory(
         on_load_more.clone(),
         on_edit_head_message.clone(),
+        on_open_file,
         date_format_cell,
+        files_limit,
     );
 
     let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
@@ -161,17 +167,21 @@ fn remove_load_more_sentinel(store: &gio::ListStore) {
 fn build_row_factory(
     on_load_more: LoadMoreCallback,
     on_edit_head_message: EditMessageCallback,
+    on_open_file: FileOpenCallback,
     date_format_cell: Rc<std::cell::Cell<DateFormat>>,
+    files_limit: Rc<std::cell::Cell<u32>>,
 ) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
 
     let lm = on_load_more.clone();
     let em = on_edit_head_message.clone();
+    let of = on_open_file.clone();
+    let fl = files_limit.clone();
     factory.connect_setup(move |_, list_item| {
         let item = list_item
             .downcast_ref::<gtk::ListItem>()
             .expect("ListItem");
-        let outer = build_row_template(lm.clone(), em.clone());
+        let outer = build_row_template(lm.clone(), em.clone(), of.clone(), fl.clone());
         item.set_child(Some(&outer));
         item.set_activatable(true);
     });
@@ -214,6 +224,8 @@ fn build_row_factory(
 fn build_row_template(
     on_load_more: LoadMoreCallback,
     on_edit_head_message: EditMessageCallback,
+    on_open_file: FileOpenCallback,
+    files_limit: Rc<std::cell::Cell<u32>>,
 ) -> gtk::Box {
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     outer.add_css_class(ROW_OUTER_CSS);
@@ -368,6 +380,8 @@ fn build_row_template(
                 detail_revealer,
                 files_box,
                 sentinel_label,
+                on_open_file,
+                files_limit,
             },
         );
     }
@@ -387,6 +401,8 @@ struct RowWidgets {
     detail_revealer: gtk::Revealer,
     files_box: gtk::Box,
     sentinel_label: gtk::Label,
+    on_open_file: FileOpenCallback,
+    files_limit: Rc<std::cell::Cell<u32>>,
 }
 
 /// Key under which [`RowWidgets`] is attached to a row's outer Box.
@@ -530,24 +546,41 @@ fn populate_files_into_outer(outer: &gtk::Box, obj: &CommitObject) {
         files_box.append(&empty);
         return;
     }
-    for f in &files {
-        files_box.append(&build_file_row(f));
+
+    let Some((on_open, limit)) =
+        row_widgets(outer).map(|w| (w.on_open_file.clone(), w.files_limit.get()))
+    else {
+        return;
+    };
+
+    // The `commit_files_limit` preference stopped being honoured during the
+    // ListView migration; a commit touching hundreds of files built hundreds of
+    // widgets inside one row.
+    let shown = files.len().min(limit.max(1) as usize);
+    let commit_id = obj.id();
+    for f in &files[..shown] {
+        files_box.append(&build_file_row(f, &commit_id, on_open.clone()));
+    }
+    if shown < files.len() {
+        let more = gtk::Label::builder()
+            .label(format!("… and {} more files", files.len() - shown))
+            .css_classes(["caption", "dim-label"])
+            .xalign(0.0)
+            .margin_start(4)
+            .margin_top(2)
+            .build();
+        files_box.append(&more);
     }
 }
 
-fn build_file_row(file: &DiffFile) -> gtk::Box {
+/// One file inside an expanded commit. Clicking it opens the diff dialog —
+/// the diff used to expand inline here, inside a `ListView` row, which
+/// scrolled unpredictably and often refused to collapse again.
+fn build_file_row(file: &DiffFile, commit_id: &str, on_open: FileOpenCallback) -> gtk::Box {
     let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let file_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     file_row.set_margin_start(4);
-
-    // Expand arrow
-    let arrow = gtk::Image::builder()
-        .icon_name("pan-end-symbolic")
-        .css_classes(["dim-label"])
-        .pixel_size(12)
-        .build();
-    file_row.append(&arrow);
 
     // Status icon
     let (icon_name, icon_class) = diff_file_icon(file);
@@ -577,57 +610,15 @@ fn build_file_row(file: &DiffFile) -> gtk::Box {
         .build();
     file_row.append(&stats_label);
 
-    // Clickable header
     let header_btn = gtk::Button::builder()
         .child(&file_row)
         .css_classes(["flat"])
+        .tooltip_text("Show diff")
         .build();
+    let path = file.path.clone();
+    let commit_id = commit_id.to_string();
+    header_btn.connect_clicked(move |_| on_open(&commit_id, &path));
     container.append(&header_btn);
-
-    // Inline diff (hidden by default)
-    let diff_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    diff_box.set_visible(false);
-    diff_box.set_margin_start(16);
-    diff_box.set_margin_end(4);
-    diff_box.set_margin_bottom(4);
-
-    let diff_tv = gtk::TextView::builder()
-        .editable(false)
-        .monospace(true)
-        .left_margin(4)
-        .right_margin(4)
-        .top_margin(4)
-        .bottom_margin(4)
-        .cursor_visible(false)
-        .wrap_mode(gtk::WrapMode::None)
-        .build();
-    diff_tv.add_css_class("card");
-
-    // Render the diff immediately since we already have the data
-    super::changes_view::render_file_diff(&diff_tv, file);
-
-    // Cap height
-    let line_count = file.hunks.iter().map(|h| h.lines.len() + 1).sum::<usize>();
-    let visible_lines = line_count.clamp(3, 25);
-    diff_tv.set_height_request(visible_lines as i32 * 18);
-
-    diff_box.append(&diff_tv);
-    container.append(&diff_box);
-
-    // Toggle diff on click
-    {
-        let diff_box = diff_box.clone();
-        let arrow = arrow.clone();
-        header_btn.connect_clicked(move |_| {
-            let visible = !diff_box.is_visible();
-            diff_box.set_visible(visible);
-            arrow.set_icon_name(Some(if visible {
-                "pan-down-symbolic"
-            } else {
-                "pan-end-symbolic"
-            }));
-        });
-    }
 
     container
 }
@@ -734,7 +725,9 @@ mod tests {
             Rc::new(|_| {}),
             Rc::new(|| {}),
             Rc::new(|_| {}),
+            Rc::new(|_, _| {}),
             Rc::new(std::cell::Cell::new(DateFormat::Iso)),
+            Rc::new(std::cell::Cell::new(10u32)),
         )
     }
 
@@ -754,6 +747,97 @@ mod tests {
         assert!(single_click);
     }
 
+    fn sample_diff_file(path: &str) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            hunks: vec![],
+            stats: gitpulsar_core::models::DiffStats {
+                insertions: 1,
+                deletions: 0,
+            },
+        }
+    }
+
+    fn count_children(container: &gtk::Box) -> usize {
+        let mut n = 0;
+        let mut child = container.first_child();
+        while let Some(c) = child {
+            n += 1;
+            child = c.next_sibling();
+        }
+        n
+    }
+
+    /// Clicking a file inside a commit must report which file, so the window can
+    /// open the diff dialog on it.
+    #[test]
+    #[serial]
+    fn file_row_click_reports_its_path() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let seen = test_support::on_gtk_thread(|| {
+            let seen: Rc<std::cell::RefCell<Vec<(String, String)>>> = Rc::default();
+            let sink = seen.clone();
+            let cb: FileOpenCallback = Rc::new(move |commit, path| {
+                sink.borrow_mut().push((commit.to_string(), path.to_string()));
+            });
+
+            let row = build_file_row(&sample_diff_file("src/main.rs"), "abc123", cb);
+            let btn = row
+                .first_child()
+                .and_then(|c| c.downcast::<gtk::Button>().ok())
+                .expect("row's child is the clickable header");
+            btn.emit_clicked();
+
+            let out = seen.borrow().clone();
+            out
+        });
+
+        assert_eq!(
+            seen,
+            vec![("abc123".to_string(), "src/main.rs".to_string())]
+        );
+    }
+
+    /// `commit_files_limit` is a live preference that the ListView migration
+    /// stopped honouring — a commit row rendered every file it touched.
+    #[test]
+    #[serial]
+    fn file_list_respects_the_configured_cap() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let children = test_support::on_gtk_thread(|| {
+            let outer = build_row_template(
+                Rc::new(|| {}),
+                Rc::new(|_| {}),
+                Rc::new(|_, _| {}),
+                Rc::new(std::cell::Cell::new(2u32)),
+            );
+            let obj = CommitObject::from_info(&sample_commit(), vec![], true, false);
+            obj.set_files(vec![
+                sample_diff_file("a.rs"),
+                sample_diff_file("b.rs"),
+                sample_diff_file("c.rs"),
+            ]);
+            obj.set_files_loaded(true);
+            obj.set_expanded(true);
+            rebind_row(&outer, &obj, DateFormat::Iso);
+
+            let files_box = row_widgets(&outer)
+                .map(|w| w.files_box.clone())
+                .expect("files box");
+            count_children(&files_box)
+        });
+
+        assert_eq!(children, 3, "two file rows plus the overflow note");
+    }
+
     /// Expanding a commit mutates its `CommitObject` in place, which
     /// `GtkListView` does not notice — the window pushes the change onto the row
     /// via `rebind_row`. Guard that this actually reveals the detail pane.
@@ -766,7 +850,12 @@ mod tests {
         }
 
         let (revealed_when_expanded, revealed_when_collapsed) = test_support::on_gtk_thread(|| {
-            let row = build_row_template(Rc::new(|| {}), Rc::new(|_| {}));
+            let row = build_row_template(
+                Rc::new(|| {}),
+                Rc::new(|_| {}),
+                Rc::new(|_, _| {}),
+                Rc::new(std::cell::Cell::new(10u32)),
+            );
             let obj = CommitObject::from_info(&sample_commit(), vec![], true, false);
 
             obj.set_expanded(true);

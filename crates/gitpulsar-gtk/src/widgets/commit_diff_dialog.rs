@@ -16,7 +16,11 @@ use super::diff_view;
 /// Handles the caller (and the tests) need after the dialog is built.
 pub struct CommitDiffDialogRefs {
     pub dialog: adw::Dialog,
+    /// The window only needs `dialog`; these two are how the tests inspect the
+    /// dialog's state without walking its widget tree.
+    #[allow(dead_code)]
     pub stack: gtk::Stack,
+    #[allow(dead_code)]
     pub file_list: gtk::ListBox,
 }
 
@@ -34,6 +38,10 @@ pub fn build_commit_diff_dialog(
         .title(short_id)
         .content_width(1000)
         .content_height(700)
+        // A dialog without a minimum size warns and cannot be sized down on a
+        // phone; match the main window's floor.
+        .width_request(360)
+        .height_request(294)
         .build();
 
     // --- Diff panes -------------------------------------------------------

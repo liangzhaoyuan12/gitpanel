@@ -14,7 +14,7 @@ const DIFF_CACHE_MAX_BYTES: usize = 5 * 1024 * 1024;
 use gitpulsar_core::repository::GitRepo;
 use gitpulsar_core::workspace::{self, WorkspaceEntry};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DateFormat};
 use crate::undo::{UndoStack, UndoableOp};
 
 struct BackgroundRepoData {
@@ -210,6 +210,10 @@ mod imp {
         pub commit_filter: RefCell<Option<gtk::CustomFilter>>,
         pub commit_filter_model: RefCell<Option<gtk::FilterListModel>>,
         pub commit_selection: RefCell<Option<gtk::SingleSelection>>,
+        // Shared with the row factory so a preferences change reaches rows that
+        // are already built.
+        pub commit_date_format: Rc<Cell<DateFormat>>,
+        pub commit_files_limit: Rc<Cell<u32>>,
         pub view_stack: adw::ViewStack,
         pub branch_label: gtk::Label,
         pub ahead_label: gtk::Label,
@@ -279,6 +283,8 @@ mod imp {
                 commit_filter: RefCell::new(None),
                 commit_filter_model: RefCell::new(None),
                 commit_selection: RefCell::new(None),
+                commit_date_format: Rc::new(Cell::new(DateFormat::European)),
+                commit_files_limit: Rc::new(Cell::new(10)),
                 view_stack: adw::ViewStack::new(),
                 branch_label: gtk::Label::new(Some("main")),
                 ahead_label: gtk::Label::new(Some("▲ 0")),
@@ -631,7 +637,11 @@ impl GitpulsarWindow {
         {
             use super::commit_list as commit_list_v;
 
-            let date_format_cell = std::rc::Rc::new(std::cell::Cell::new(imp.config.borrow().date_format));
+            let config = imp.config.borrow();
+            imp.commit_date_format.set(config.date_format);
+            imp.commit_files_limit.set(config.commit_files_limit);
+            drop(config);
+            let date_format_cell = imp.commit_date_format.clone();
 
             let win_for_activate = self.clone();
             let on_activate: commit_list_v::RowActivateCallback = std::rc::Rc::new(move |commit_id| {
@@ -646,11 +656,19 @@ impl GitpulsarWindow {
                 win_for_edit.show_edit_message_dialog(&msg);
             });
 
+            let win_for_file = self.clone();
+            let on_open_file: commit_list_v::FileOpenCallback =
+                std::rc::Rc::new(move |commit_id, path| {
+                    win_for_file.open_commit_file_diff(commit_id, path);
+                });
+
             let refs = commit_list_v::build_commit_list_view(
                 on_activate,
                 on_load_more,
                 on_edit,
+                on_open_file,
                 date_format_cell,
+                imp.commit_files_limit.clone(),
             );
 
             let commits_placeholder = gtk::Label::builder()
@@ -1807,6 +1825,41 @@ impl GitpulsarWindow {
             }
             win.rebind_commit_row(&commit_id_for_async, &obj);
         });
+    }
+
+    /// Open the diff dialog for one file of a commit.
+    ///
+    /// The files were fetched when the commit was expanded and live on the
+    /// `CommitObject`, so this costs no git read.
+    fn open_commit_file_diff(&self, commit_id: &str, path: &str) {
+        let imp = self.imp();
+        let Some(store) = imp.commit_store.borrow().clone() else { return };
+
+        for i in 0..store.n_items() {
+            let Some(obj) = store
+                .item(i)
+                .and_then(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+            else {
+                continue;
+            };
+            if obj.id() != commit_id {
+                continue;
+            }
+
+            // Show the same files the row shows, capped identically.
+            let files = obj.files();
+            let limit = imp.commit_files_limit.get().max(1) as usize;
+            let shown = files.len().min(limit);
+
+            let refs = super::commit_diff_dialog::build_commit_diff_dialog(
+                &obj.short_id(),
+                &obj.summary(),
+                &files[..shown],
+                path,
+            );
+            refs.dialog.present(Some(self));
+            return;
+        }
     }
 
     /// Re-apply a commit's state onto its row widget.
@@ -3459,6 +3512,8 @@ impl GitpulsarWindow {
             let interval_changed = old_config.refresh_interval_secs != new_config.refresh_interval_secs;
 
             new_config.save();
+            win.imp().commit_date_format.set(new_config.date_format);
+            win.imp().commit_files_limit.set(new_config.commit_files_limit);
             *win.imp().config.borrow_mut() = new_config.clone();
 
             if date_changed {

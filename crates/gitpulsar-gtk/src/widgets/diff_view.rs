@@ -214,20 +214,27 @@ pub fn render_side_by_side(
 
 /// Synchronize vertical scrolling of two ScrolledWindows
 pub fn sync_scroll(sw1: &gtk::ScrolledWindow, sw2: &gtk::ScrolledWindow) {
-    let adj1 = sw1.vadjustment();
-    let adj2 = sw2.vadjustment();
+    // Both axes: code lines are not wrapped (wrapping would misalign the two
+    // sides), so long lines scroll horizontally — and the sides have to travel
+    // together or the comparison stops lining up.
+    link_adjustments(&sw1.vadjustment(), &sw2.vadjustment());
+    link_adjustments(&sw1.hadjustment(), &sw2.hadjustment());
+}
 
-    let a2 = adj2.clone();
-    adj1.connect_value_changed(move |adj| {
-        if (a2.value() - adj.value()).abs() > 1.0 {
-            a2.set_value(adj.value());
+/// Keep two adjustments at the same value, without the two handlers chasing
+/// each other: the guard drops updates smaller than a pixel.
+fn link_adjustments(a: &gtk::Adjustment, b: &gtk::Adjustment) {
+    let other = b.clone();
+    a.connect_value_changed(move |adj| {
+        if (other.value() - adj.value()).abs() > 1.0 {
+            other.set_value(adj.value());
         }
     });
 
-    let a1 = adj1.clone();
-    adj2.connect_value_changed(move |adj| {
-        if (a1.value() - adj.value()).abs() > 1.0 {
-            a1.set_value(adj.value());
+    let other = a.clone();
+    b.connect_value_changed(move |adj| {
+        if (other.value() - adj.value()).abs() > 1.0 {
+            other.set_value(adj.value());
         }
     });
 }
@@ -235,6 +242,39 @@ pub fn sync_scroll(sw1: &gtk::ScrolledWindow, sw2: &gtk::ScrolledWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use serial_test::serial;
+
+    use crate::test_support;
+
+    /// The two panes must travel together on both axes.
+    #[test]
+    #[serial]
+    fn sync_scroll_links_both_axes() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (v, h) = test_support::on_gtk_thread(|| {
+            let left = gtk::ScrolledWindow::new();
+            let right = gtk::ScrolledWindow::new();
+            for sw in [&left, &right] {
+                for adj in [sw.vadjustment(), sw.hadjustment()] {
+                    adj.set_upper(1000.0);
+                    adj.set_page_size(100.0);
+                }
+            }
+            sync_scroll(&left, &right);
+
+            left.vadjustment().set_value(250.0);
+            left.hadjustment().set_value(80.0);
+            (right.vadjustment().value(), right.hadjustment().value())
+        });
+
+        assert_eq!(v, 250.0, "vertical scroll follows");
+        assert_eq!(h, 80.0, "horizontal scroll follows");
+    }
 
     #[test]
     fn palettes_differ_by_theme() {
