@@ -2,34 +2,79 @@ use adw::prelude::*;
 
 use gitpulsar_core::models::{DiffFile, DiffLineKind};
 
-/// Set up diff tags on a text buffer
-fn setup_tags(buffer: &gtk::TextBuffer) {
-    let tag_table = buffer.tag_table();
+/// Colours for diff rendering, chosen per theme.
+pub struct DiffPalette {
+    pub addition_bg: &'static str,
+    pub addition_fg: &'static str,
+    pub deletion_bg: &'static str,
+    pub deletion_fg: &'static str,
+    pub hunk_bg: &'static str,
+    pub hunk_fg: &'static str,
+    pub file_header_fg: &'static str,
+    pub lineno_fg: &'static str,
+    pub empty_bg: &'static str,
+}
 
-    if tag_table.lookup("addition").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("addition").background("#d4edda").foreground("#1a7f37").build());
+/// The light palette is what this renderer has always used; the dark one keeps
+/// the same hues at the luminance the dark theme expects.
+pub fn diff_palette(dark: bool) -> DiffPalette {
+    if dark {
+        DiffPalette {
+            addition_bg: "#1e3a24",
+            addition_fg: "#7ee787",
+            deletion_bg: "#3d1d20",
+            deletion_fg: "#ff7b72",
+            hunk_bg: "#12283f",
+            hunk_fg: "#79c0ff",
+            file_header_fg: "#8b949e",
+            lineno_fg: "#6e7681",
+            empty_bg: "#161b22",
+        }
+    } else {
+        DiffPalette {
+            addition_bg: "#d4edda",
+            addition_fg: "#1a7f37",
+            deletion_bg: "#f8d7da",
+            deletion_fg: "#cf222e",
+            hunk_bg: "#ddf4ff",
+            hunk_fg: "#0969da",
+            file_header_fg: "#656d76",
+            lineno_fg: "#8b949e",
+            empty_bg: "#f6f8fa",
+        }
     }
-    if tag_table.lookup("deletion").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("deletion").background("#f8d7da").foreground("#cf222e").build());
-    }
-    if tag_table.lookup("hunk-header").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("hunk-header").background("#ddf4ff").foreground("#0969da").build());
-    }
-    if tag_table.lookup("file-header").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("file-header").weight(700).foreground("#656d76").build());
-    }
-    if tag_table.lookup("lineno").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("lineno").foreground("#8b949e").build());
-    }
-    if tag_table.lookup("empty-line").is_none() {
-        tag_table.add(&gtk::TextTag::builder()
-            .name("empty-line").background("#f6f8fa").build());
-    }
+}
+
+/// Set up diff tags on a text buffer, using the current theme's palette.
+fn setup_tags(buffer: &gtk::TextBuffer) {
+    let dark = adw::StyleManager::default().is_dark();
+    setup_tags_with(buffer, &diff_palette(dark));
+}
+
+/// Create the diff tags, or restyle them when the buffer already has them —
+/// re-rendering after a theme change must not keep the previous colours.
+pub fn setup_tags_with(buffer: &gtk::TextBuffer, palette: &DiffPalette) {
+    let table = buffer.tag_table();
+
+    let apply = |name: &str, bg: Option<&str>, fg: Option<&str>, weight: Option<i32>| {
+        let tag = table.lookup(name).unwrap_or_else(|| {
+            let t = gtk::TextTag::builder().name(name).build();
+            table.add(&t);
+            t
+        });
+        tag.set_background(bg);
+        tag.set_foreground(fg);
+        if let Some(w) = weight {
+            tag.set_weight(w);
+        }
+    };
+
+    apply("addition", Some(palette.addition_bg), Some(palette.addition_fg), None);
+    apply("deletion", Some(palette.deletion_bg), Some(palette.deletion_fg), None);
+    apply("hunk-header", Some(palette.hunk_bg), Some(palette.hunk_fg), None);
+    apply("file-header", None, Some(palette.file_header_fg), Some(700));
+    apply("lineno", None, Some(palette.lineno_fg), None);
+    apply("empty-line", Some(palette.empty_bg), None, None);
 }
 
 /// Render unified diff into a single buffer
@@ -185,4 +230,20 @@ pub fn sync_scroll(sw1: &gtk::ScrolledWindow, sw2: &gtk::ScrolledWindow) {
             a1.set_value(adj.value());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palettes_differ_by_theme() {
+        let light = diff_palette(false);
+        let dark = diff_palette(true);
+        assert_ne!(light.addition_bg, dark.addition_bg);
+        assert_ne!(light.deletion_bg, dark.deletion_bg);
+        assert_ne!(light.hunk_bg, dark.hunk_bg);
+        // The light palette is the one this renderer shipped with.
+        assert_eq!(light.addition_bg, "#d4edda");
+    }
 }
