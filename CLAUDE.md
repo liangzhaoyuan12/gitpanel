@@ -75,6 +75,24 @@ Two-crate workspace:
 - **Mobile remote ops**: on `<600sp` the bottom-bar fetch/pull/push buttons hide and a "Sync" `gtk::MenuButton` in the content header (icon `vertical-arrows-none-symbolic` from the GNOME Icon Library, shipped under `data/icons/hicolor/scalable/actions/`) pops up the three operations.
 - **Right sidebar overlay UX**: when the inner split collapses, the right header gains a "Close panel" button at the start so users dismiss the overlay instead of closing the window via the X — the window-close X stays visible too.
 
+## Known cosmetic warning
+
+Scrolling in the commit diff dialog prints `Trying to snapshot GtkGizmo … without a current allocation` (sometimes naming `GtkScrolledWindow` instead). Rendering is unaffected; the message only shows in a terminal.
+
+Investigated 2026-08-05 and **not** root-caused. What is established:
+
+- The parent chain is the dialog's own panes: `GtkGizmo(trough)` → `GtkScrollbar` → `GtkScrolledWindow` → `GtkBox` (split page) → `GtkStack` → `AdwOverlaySplitView` → `AdwToolbarView` → `AdwBreakpointBin` → `AdwDialog`. Not the main window's `AdwViewStack`.
+- The whole backtrace is inside GTK (`gtk_scrolled_window_snapshot` → `gtk_widget_snapshot_child`); no frame of ours appears.
+- It needs live pointer/scroll input. Eight scripted scenarios (open dialog, toggle view, switch file, close, narrow to the breakpoint, programmatic scrolling, expand a commit, signature batch) never reproduced it, so it cannot be caught in a test. Wayland rules out synthesising input with `xdotool`.
+
+Three fixes were tried and **refuted** — do not retry them:
+
+1. Sharing one `GtkAdjustment` per axis between the panes instead of copying values in `value_changed`.
+2. `overlay_scrolling(false)` on the panes (also makes the scrollbars unpleasantly wide).
+3. Deferring the buffer fill to `glib::idle_add_local_once` instead of rendering straight from the row-selected handler.
+
+To reproduce and inspect it again: catch the message with `glib::log_set_writer_func` (GTK sends it through structured logging, so `log_set_default_handler` never sees it), parse the widget address out of the text, and walk `parent()` printing `type_()`, `widget_name()`, `css_name()` and `allocation()`.
+
 ## CI
 
 GitLab CI (`.gitlab-ci.yml`): triggers on `v*` tags, builds on Fedora 41, produces AppImage via linuxdeploy. `NO_STRIP=true` due to Fedora 41 .relr.dyn incompatibility.
