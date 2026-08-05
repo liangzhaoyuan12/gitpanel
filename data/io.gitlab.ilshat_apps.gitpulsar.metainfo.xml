@@ -100,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.2.0" date="2026-08-05">
+      <description>
+        <p>Clicking a file inside a commit now opens a dialog showing it side by side — old on the left, new on the right — with a hideable list of the commit's files, collapsing to a single unified view on narrow screens. Fixes several regressions from the previous release: clicking a commit expands it again, the window-close button and the menu no longer disappear with their sidebars, the commit-files limit and the date-format preference take effect again, and signed-commit locks appear without expanding a commit.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-05-29">
       <description>
         <p>Performance release: the Commits tab is virtualized via gtk::ListView, GPG signature lookup is lazy, and the Graph tab now early-exits on unchanged data. Addresses sluggishness on repositories with thousands of commits.</p>
