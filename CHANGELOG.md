@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Commit diff dialog.** Clicking a file inside an expanded commit opens a
+  dialog showing that file side-by-side — old on the left, new on the right,
+  scrolling together on both axes — with a hideable list of the commit's files.
+  Below 700sp the list collapses to an overlay and the diff falls back to the
+  unified view. Replaces the inline diff that expanded inside the commit row.
+
+### Fixed
+
+- **Clicking a commit works again.** After the v1.1.0 list migration, commit
+  rows only responded to a double-click, and even then the expanded detail
+  never appeared.
+- **The window-close button no longer disappears** with the Branches & Tags
+  panel, and the hamburger menu no longer disappears with the repository
+  sidebar. Both, plus the open-workspace button, move to whichever header bar
+  is on screen.
+- **The commit-files limit works again.** The preference had no effect since
+  the list migration, so a commit row rendered every file it touched.
+- **Changing the date format applies immediately** instead of waiting for a
+  restart.
+- **Signed-commit locks appear on their own**, filled in by a background
+  lookup after each page renders, rather than only after expanding a commit.
+- **Staging buttons on recycled rows.** A scrolled-away row could keep the
+  previous file's Stage/Unstage action.
+- Diff colours follow the dark theme.
+
 ## v1.1.0 (2026-05-29)
 
 ### Performance

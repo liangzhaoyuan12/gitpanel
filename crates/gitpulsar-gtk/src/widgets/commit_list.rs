@@ -128,6 +128,32 @@ pub fn append_commits_to_store(
     }
 }
 
+/// Mark commits as signed from a background lookup's results.
+///
+/// Returns the ids whose flag actually changed, so the caller rebinds only
+/// those rows.
+pub fn apply_signature_flags(store: &gio::ListStore, flags: &[(String, bool)]) -> Vec<String> {
+    let mut changed = Vec::new();
+    for i in 0..store.n_items() {
+        let Some(obj) = store.item(i).and_then(|o| o.downcast::<CommitObject>().ok()) else {
+            continue;
+        };
+        if obj.is_load_more_sentinel() {
+            continue;
+        }
+        let id = obj.id();
+        if flags
+            .iter()
+            .any(|(flagged, signed)| *signed && *flagged == id)
+            && !obj.is_signed()
+        {
+            obj.set_is_signed(true);
+            changed.push(id);
+        }
+    }
+    changed
+}
+
 pub fn set_commit_filter(filter: &gtk::CustomFilter, query: &str) {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -745,6 +771,34 @@ mod tests {
         let single_click =
             test_support::on_gtk_thread(|| build_for_test().list_view.is_single_click_activate());
         assert!(single_click);
+    }
+
+    /// The signature lookup runs off the UI thread and comes back as a list of
+    /// ids; it must land only on the commits it names.
+    #[test]
+    #[serial]
+    fn signature_flags_land_on_matching_commits() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (changed, signed, items) = test_support::on_gtk_thread(|| {
+            let store = gio::ListStore::new::<CommitObject>();
+            let obj = CommitObject::from_info(&sample_commit(), vec![], true, false);
+            store.append(&obj);
+            store.append(&CommitObject::load_more_sentinel());
+
+            let changed = apply_signature_flags(
+                &store,
+                &[(obj.id(), true), ("no-such-commit".to_string(), true)],
+            );
+            (changed, obj.is_signed(), store.n_items())
+        });
+
+        assert_eq!(changed.len(), 1, "only the matching commit is reported");
+        assert!(signed);
+        assert_eq!(items, 2, "unknown ids must not touch the store");
     }
 
     fn sample_diff_file(path: &str) -> DiffFile {

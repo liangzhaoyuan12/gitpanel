@@ -1707,6 +1707,52 @@ impl GitpulsarWindow {
         super::commit_list::populate_commit_store(&store, commits, tags_map, ahead, has_more);
 
         imp.commits_loaded_count.set(commits.len());
+        self.spawn_signature_batch(commits.iter().map(|c| c.id.clone()).collect());
+    }
+
+    /// Look up commit signatures off the UI thread and light up the lock icons.
+    ///
+    /// `log_page` stopped extracting signatures in v1.1.0 because it dominated
+    /// the cost of a page on large logs; without this the icon only appeared
+    /// once a commit was expanded, which read as a glitch.
+    fn spawn_signature_batch(&self, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some(repo_path) = self.repo_path_string() else { return };
+        let path_for_thread = repo_path.clone();
+
+        let (tx, rx) = async_channel::bounded::<Vec<(String, bool)>>(1);
+        std::thread::spawn(move || {
+            let Ok(repo) = GitRepo::open(&path_for_thread) else { return };
+            let flags: Vec<(String, bool)> = ids
+                .into_iter()
+                .map(|id| {
+                    let signed = repo.commit_is_signed(&id);
+                    (id, signed)
+                })
+                .collect();
+            let _ = tx.send_blocking(flags);
+        });
+
+        let win = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(flags) = rx.recv().await else { return };
+            // Drop the result if the user switched repositories meanwhile.
+            if win.repo_path_string().as_deref() != Some(repo_path.as_str()) {
+                return;
+            }
+            let Some(store) = win.imp().commit_store.borrow().clone() else { return };
+            for id in super::commit_list::apply_signature_flags(&store, &flags) {
+                let obj = (0..store.n_items())
+                    .filter_map(|i| store.item(i))
+                    .filter_map(|o| o.downcast::<super::commit_object::CommitObject>().ok())
+                    .find(|o| o.id() == id);
+                if let Some(obj) = obj {
+                    win.rebind_commit_row(&id, &obj);
+                }
+            }
+        });
     }
 
     fn load_more_commits(&self) {
@@ -1744,7 +1790,9 @@ impl GitpulsarWindow {
                 has_more,
             );
             imp.commits_loaded_count.set(offset + new_commits.len());
+            let new_ids: Vec<String> = new_commits.iter().map(|c| c.id.clone()).collect();
             imp.commits.borrow_mut().extend(new_commits);
+            win.spawn_signature_batch(new_ids);
         });
     }
 
