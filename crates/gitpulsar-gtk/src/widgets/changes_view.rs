@@ -502,94 +502,113 @@ fn build_row_template() -> gtk::Box {
     diff_revealer.set_child(Some(&diff_box));
     outer_box.append(&diff_revealer);
 
+    // Cache the handles bind needs. Without this every bind walked the row's
+    // widget tree once per widget, and the walk was fragile besides: bind
+    // renames `action-btn` to `stage-file`/`unstage-file`, so looking it up by
+    // its template name missed on every re-bind of a recycled row.
+    unsafe {
+        outer_box.set_data(
+            ROW_WIDGETS_KEY,
+            RowWidgets {
+                expand_icon,
+                status_icon,
+                path_label,
+                action_btn,
+                discard_btn,
+                revealer: diff_revealer,
+            },
+        );
+    }
+
     outer_box
+}
+
+/// Widget handles cached on each row template at construction time.
+struct RowWidgets {
+    expand_icon: gtk::Image,
+    status_icon: gtk::Image,
+    path_label: gtk::Label,
+    action_btn: gtk::Button,
+    discard_btn: gtk::Button,
+    revealer: gtk::Revealer,
+}
+
+/// Key under which [`RowWidgets`] is attached to a row's outer Box.
+const ROW_WIDGETS_KEY: &str = "gp-row-widgets";
+
+/// Read back the handles stashed by `build_row_template`.
+fn row_widgets(outer: &gtk::Box) -> Option<&RowWidgets> {
+    // Safety: the value is set once in `build_row_template`, never replaced,
+    // and lives as long as the widget. Callers only read through the shared
+    // reference, whose lifetime is tied to `outer` by this signature.
+    unsafe { outer.data::<RowWidgets>(ROW_WIDGETS_KEY).map(|p| p.as_ref()) }
 }
 
 /// Apply the data from `obj` onto the per-row widgets created by `build_row_template`.
 fn bind_row_widgets(outer: &gtk::Box, obj: &ChangedFileObject) {
     outer.set_widget_name(&obj.path());
 
-    let path_label = find_child_by_name(outer, "path-label")
-        .and_then(|w| w.downcast::<gtk::Label>().ok());
-    let status_icon = find_child_by_name(outer, "status-icon")
-        .and_then(|w| w.downcast::<gtk::Image>().ok());
-    let action_btn = find_child_by_name(outer, "action-btn")
-        .and_then(|w| w.downcast::<gtk::Button>().ok());
-    let discard_btn = find_child_by_name(outer, "discard-file")
-        .and_then(|w| w.downcast::<gtk::Button>().ok());
-    let expand_icon = find_child_by_name(outer, "expand-icon")
-        .and_then(|w| w.downcast::<gtk::Image>().ok());
-    let revealer = find_child_by_name(outer, "diff-box")
-        .and_then(|w| w.downcast::<gtk::Revealer>().ok());
+    let Some(widgets) = row_widgets(outer) else {
+        return;
+    };
 
     let is_staged = obj.is_staged();
     let status = obj.status();
     let path = obj.path();
 
     // Status icon — green check when staged, otherwise per-status glyph
-    if let Some(icon) = status_icon {
-        let (name, css, tooltip) = if is_staged {
-            let kind = match status {
-                FileStatusKind::New => "Added",
-                FileStatusKind::Modified => "Modified",
-                FileStatusKind::Deleted => "Deleted",
-                FileStatusKind::Renamed => "Renamed",
-                FileStatusKind::Typechange => "Typechange",
-            };
-            ("object-select-symbolic", "success", format!("Staged ({})", kind))
-        } else {
-            let (n, c, t) = match status {
-                FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
-                FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
-                FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
-                FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
-                FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
-            };
-            (n, c, t.to_string())
+    let (name, css, tooltip) = if is_staged {
+        let kind = match status {
+            FileStatusKind::New => "Added",
+            FileStatusKind::Modified => "Modified",
+            FileStatusKind::Deleted => "Deleted",
+            FileStatusKind::Renamed => "Renamed",
+            FileStatusKind::Typechange => "Typechange",
         };
-        icon.set_icon_name(Some(name));
-        icon.set_css_classes(&[css]);
-        icon.set_tooltip_text(Some(&tooltip));
+        ("object-select-symbolic", "success", format!("Staged ({})", kind))
+    } else {
+        let (n, c, t) = match status {
+            FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
+            FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
+            FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
+            FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
+            FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
+        };
+        (n, c, t.to_string())
+    };
+    widgets.status_icon.set_icon_name(Some(name));
+    widgets.status_icon.set_css_classes(&[css]);
+    widgets.status_icon.set_tooltip_text(Some(&tooltip));
+
+    widgets.path_label.set_label(&path);
+    let attrs = gtk::pango::AttrList::new();
+    if is_staged {
+        attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
+        widgets.path_label.add_css_class("success");
+    } else {
+        widgets.path_label.remove_css_class("success");
+    }
+    widgets.path_label.set_attributes(Some(&attrs));
+
+    // The name doubles as the click handler's op selector, so it is rewritten
+    // on every bind — see `invoke_row_button`.
+    if is_staged {
+        widgets.action_btn.set_icon_name("list-remove-symbolic");
+        widgets.action_btn.set_tooltip_text(Some("Unstage"));
+        widgets.action_btn.set_widget_name("unstage-file");
+    } else {
+        widgets.action_btn.set_icon_name("list-add-symbolic");
+        widgets.action_btn.set_tooltip_text(Some("Stage"));
+        widgets.action_btn.set_widget_name("stage-file");
     }
 
-    if let Some(label) = path_label {
-        label.set_label(&path);
-        let attrs = gtk::pango::AttrList::new();
-        if is_staged {
-            attrs.insert(gtk::pango::AttrInt::new_weight(gtk::pango::Weight::Bold));
-            label.add_css_class("success");
-        } else {
-            label.remove_css_class("success");
-        }
-        label.set_attributes(Some(&attrs));
-    }
-
-    if let Some(btn) = action_btn {
-        if is_staged {
-            btn.set_icon_name("list-remove-symbolic");
-            btn.set_tooltip_text(Some("Unstage"));
-            btn.set_widget_name("unstage-file");
-        } else {
-            btn.set_icon_name("list-add-symbolic");
-            btn.set_tooltip_text(Some("Stage"));
-            btn.set_widget_name("stage-file");
-        }
-    }
-
-    if let Some(btn) = discard_btn {
-        btn.set_visible(!is_staged);
-    }
-
-    if let Some(rev) = revealer {
-        rev.set_reveal_child(obj.expanded());
-    }
-    if let Some(icon) = expand_icon {
-        icon.set_icon_name(Some(if obj.expanded() {
-            "pan-down-symbolic"
-        } else {
-            "pan-end-symbolic"
-        }));
-    }
+    widgets.discard_btn.set_visible(!is_staged);
+    widgets.revealer.set_reveal_child(obj.expanded());
+    widgets.expand_icon.set_icon_name(Some(if obj.expanded() {
+        "pan-down-symbolic"
+    } else {
+        "pan-end-symbolic"
+    }));
 }
 
 /// Install a single ListView-level pointer-motion controller that reveals the
@@ -1098,4 +1117,71 @@ fn find_child_by_name(widget: &gtk::Box, name: &str) -> Option<gtk::Widget> {
         child = c.next_sibling();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serial_test::serial;
+
+    use crate::test_support;
+
+    /// Depth-first search for a descendant button by widget name. Unlike
+    /// `find_child_by_name` this does not care where in the row the button sits.
+    fn find_button(root: &gtk::Widget, name: &str) -> Option<gtk::Button> {
+        if root.widget_name() == name {
+            return root.clone().downcast::<gtk::Button>().ok();
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(found) = find_button(&c, name) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    /// Rows are recycled, so the stage/unstage button must be re-targeted on
+    /// every bind. `bind_row_widgets` renames it to `stage-file`/`unstage-file`,
+    /// which used to make the next bind's `find_child_by_name("action-btn")`
+    /// lookup miss — leaving a recycled row with the previous file's action.
+    #[test]
+    #[serial]
+    fn recycled_row_updates_its_stage_button() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (stage_after_first, unstage_after_rebind, stale_stage) =
+            test_support::on_gtk_thread(|| {
+                let row = build_row_template();
+
+                let unstaged =
+                    ChangedFileObject::new("a.rs".into(), FileStatusKind::Modified, false);
+                bind_row_widgets(&row, &unstaged);
+                let stage_after_first = find_button(row.upcast_ref(), "stage-file").is_some();
+
+                let staged = ChangedFileObject::new("b.rs".into(), FileStatusKind::Modified, true);
+                bind_row_widgets(&row, &staged);
+
+                (
+                    stage_after_first,
+                    find_button(row.upcast_ref(), "unstage-file").is_some(),
+                    find_button(row.upcast_ref(), "stage-file").is_some(),
+                )
+            });
+
+        assert!(stage_after_first, "first bind should present a Stage button");
+        assert!(
+            unstage_after_rebind,
+            "re-bound row should present an Unstage button"
+        );
+        assert!(
+            !stale_stage,
+            "stale Stage button must not survive the re-bind"
+        );
+    }
 }

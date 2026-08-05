@@ -6,6 +6,7 @@ pub mod commit_object;
 pub mod repo_tree;
 pub mod branches_tags_panel;
 pub mod changes_view;
+pub mod header_chrome;
 pub mod preferences_dialog;
 pub mod gitignore_editor;
 pub mod syntax;

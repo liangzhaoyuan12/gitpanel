@@ -54,6 +54,10 @@ pub fn build_commit_list_view(
     let list_view = gtk::ListView::new(Some(selection.clone()), Some(factory));
     list_view.add_css_class("navigation-sidebar");
     list_view.set_vexpand(true);
+    // Single click activates a row (toggles its detail revealer), matching the
+    // ListBox behaviour this list replaced. Without it `ListView` only
+    // activates on double-click and clicking a commit appears to do nothing.
+    list_view.set_single_click_activate(true);
 
     let on_activate_inner = on_activate.clone();
     list_view.connect_activate(move |lv, position| {
@@ -322,10 +326,22 @@ fn build_row_template(
     sentinel_label.set_visible(false);
     outer.append(&sentinel_label);
 
-    // Click anywhere on the sentinel row triggers Load more.
+    // Click anywhere on the sentinel row triggers Load more. Rows are recycled,
+    // so the same controller sits on ordinary commit rows too — there it must
+    // stay out of the way: a claimed sequence would swallow the click before
+    // `ListView` can activate the row.
     let click = gtk::GestureClick::new();
     let lm = on_load_more.clone();
     let outer_weak = outer.downgrade();
+    let outer_weak_press = outer.downgrade();
+    click.connect_pressed(move |gesture, _, _, _| {
+        let is_sentinel = outer_weak_press
+            .upgrade()
+            .is_some_and(|outer| outer.widget_name() == "sentinel");
+        if !is_sentinel {
+            gesture.set_state(gtk::EventSequenceState::Denied);
+        }
+    });
     click.connect_released(move |_, _, _, _| {
         let Some(outer) = outer_weak.upgrade() else {
             return;
@@ -336,25 +352,98 @@ fn build_row_template(
     });
     outer.add_controller(click);
 
+    // Cache the handles bind needs — otherwise every bind walks the row's
+    // widget tree once per widget it touches.
+    unsafe {
+        outer.set_data(
+            ROW_WIDGETS_KEY,
+            RowWidgets {
+                summary_row: row_box,
+                msg_row,
+                hash_label,
+                message_label,
+                meta_label,
+                signed_icon,
+                edit_btn,
+                detail_revealer,
+                files_box,
+                sentinel_label,
+            },
+        );
+    }
+
     outer
 }
 
+/// Widget handles cached on each row template at construction time.
+struct RowWidgets {
+    summary_row: gtk::Box,
+    msg_row: gtk::Box,
+    hash_label: gtk::Label,
+    message_label: gtk::Label,
+    meta_label: gtk::Label,
+    signed_icon: gtk::Image,
+    edit_btn: gtk::Button,
+    detail_revealer: gtk::Revealer,
+    files_box: gtk::Box,
+    sentinel_label: gtk::Label,
+}
+
+/// Key under which [`RowWidgets`] is attached to a row's outer Box.
+const ROW_WIDGETS_KEY: &str = "gp-commit-row-widgets";
+
+/// Read back the handles stashed by `build_row_template`.
+fn row_widgets(outer: &gtk::Box) -> Option<&RowWidgets> {
+    // Safety: set once in `build_row_template`, never replaced, and owned by
+    // the widget for its whole life. Only ever read through a shared reference
+    // whose lifetime this signature ties to `outer`.
+    unsafe { outer.data::<RowWidgets>(ROW_WIDGETS_KEY).map(|p| p.as_ref()) }
+}
+
+/// Find the realized row widget currently showing `commit_id`, if any.
+///
+/// Rows are only realized while in (or near) the viewport, so this returns
+/// `None` for commits scrolled out of view — callers must keep the state on the
+/// [`CommitObject`] as well, which `bind_row` reapplies when the row scrolls
+/// back in.
+pub fn find_row_outer(list_view: &gtk::ListView, commit_id: &str) -> Option<gtk::Box> {
+    // Iterative walk: the row tree is shallow but unbounded in principle.
+    let mut stack: Vec<gtk::Widget> = list_view.first_child().into_iter().collect();
+    while let Some(widget) = stack.pop() {
+        if let Ok(b) = widget.clone().downcast::<gtk::Box>() {
+            if b.has_css_class(ROW_OUTER_CSS) && b.widget_name() == commit_id {
+                return Some(b);
+            }
+        }
+        if let Some(sibling) = widget.next_sibling() {
+            stack.push(sibling);
+        }
+        if let Some(child) = widget.first_child() {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// Re-apply a [`CommitObject`]'s state onto its realized row.
+///
+/// `GtkListView` will not re-bind a row when the object at that position is
+/// unchanged, so emitting `items_changed` after mutating a `CommitObject` is a
+/// no-op. Callers that change row state push it through here instead.
+pub fn rebind_row(outer: &gtk::Box, obj: &CommitObject, date_format: DateFormat) {
+    bind_row(outer, obj, date_format);
+}
+
 fn bind_row(outer: &gtk::Box, obj: &CommitObject, date_format: DateFormat) {
-    let summary_row = find_child_by_name(outer, "summary-row");
-    let detail_revealer = find_child_by_name(outer, "detail-revealer");
-    let sentinel_label = find_child_by_name(outer, "sentinel-label");
+    let Some(widgets) = row_widgets(outer) else {
+        return;
+    };
 
     if obj.is_load_more_sentinel() {
         outer.set_widget_name("sentinel");
-        if let Some(w) = summary_row.as_ref() {
-            w.set_visible(false);
-        }
-        if let Some(w) = detail_revealer.as_ref() {
-            w.set_visible(false);
-        }
-        if let Some(w) = sentinel_label.as_ref() {
-            w.set_visible(true);
-        }
+        widgets.summary_row.set_visible(false);
+        widgets.detail_revealer.set_visible(false);
+        widgets.sentinel_label.set_visible(true);
         return;
     }
 
@@ -364,85 +453,58 @@ fn bind_row(outer: &gtk::Box, obj: &CommitObject, date_format: DateFormat) {
         outer.set_data::<String>("commit-message", obj.message());
     }
 
-    if let Some(w) = summary_row.as_ref() {
-        w.set_visible(true);
-    }
-    if let Some(w) = detail_revealer.as_ref() {
-        w.set_visible(true);
-    }
-    if let Some(w) = sentinel_label.as_ref() {
-        w.set_visible(false);
-    }
+    widgets.summary_row.set_visible(true);
+    widgets.detail_revealer.set_visible(true);
+    widgets.sentinel_label.set_visible(false);
 
-    if let Some(hash) = find_child_by_name(outer, "hash-label")
-        .and_then(|w| w.downcast::<gtk::Label>().ok())
-    {
-        hash.set_label(&obj.short_id());
-    }
-    if let Some(msg) = find_child_by_name(outer, "message-label")
-        .and_then(|w| w.downcast::<gtk::Label>().ok())
-    {
-        msg.set_label(&obj.summary());
-    }
-    if let Some(meta) = find_child_by_name(outer, "meta-label")
-        .and_then(|w| w.downcast::<gtk::Label>().ok())
-    {
-        let when = format_relative_time(obj.time_unix(), date_format);
-        meta.set_label(&format!("{} {}", obj.author().name, when));
-    }
-    if let Some(signed) = find_child_by_name(outer, "signed-icon") {
-        signed.set_visible(obj.is_signed());
-    }
-    if let Some(edit) = find_child_by_name(outer, "edit-msg-btn") {
-        edit.set_visible(obj.is_head());
-    }
+    widgets.hash_label.set_label(&obj.short_id());
+    widgets.message_label.set_label(&obj.summary());
+    let when = format_relative_time(obj.time_unix(), date_format);
+    widgets
+        .meta_label
+        .set_label(&format!("{} {}", obj.author().name, when));
+    widgets.signed_icon.set_visible(obj.is_signed());
+    widgets.edit_btn.set_visible(obj.is_head());
 
     // Tag badges live inside msg-row after the message label. Clear and re-add.
-    if let Some(msg_row) =
-        find_child_by_name(outer, "msg-row").and_then(|w| w.downcast::<gtk::Box>().ok())
-    {
-        // Remove all children after message-label.
-        let mut child = msg_row.first_child();
-        let mut skip_first = true;
-        while let Some(c) = child {
-            let next = c.next_sibling();
-            if skip_first {
-                skip_first = false;
-            } else {
-                msg_row.remove(&c);
-            }
-            child = next;
+    let msg_row = &widgets.msg_row;
+    // Remove all children after message-label.
+    let mut child = msg_row.first_child();
+    let mut skip_first = true;
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        if skip_first {
+            skip_first = false;
+        } else {
+            msg_row.remove(&c);
         }
-        for tag_name in obj.tags() {
-            let label = gtk::Label::builder()
-                .label(&tag_name)
-                .css_classes(["caption"])
-                .valign(gtk::Align::Center)
-                .build();
-            let frame = gtk::Frame::new(None);
-            frame.set_child(Some(&label));
-            frame.add_css_class("accent");
-            frame.set_margin_start(2);
-            msg_row.append(&frame);
-        }
+        child = next;
+    }
+    for tag_name in obj.tags() {
+        let label = gtk::Label::builder()
+            .label(&tag_name)
+            .css_classes(["caption"])
+            .valign(gtk::Align::Center)
+            .build();
+        let frame = gtk::Frame::new(None);
+        frame.set_child(Some(&label));
+        frame.add_css_class("accent");
+        frame.set_margin_start(2);
+        msg_row.append(&frame);
     }
 
     // Detail visibility + file list — populated lazily; window.rs sets
     // files via CommitObject and re-binds by toggling expanded.
-    if let Some(rev) = detail_revealer.and_then(|w| w.downcast::<gtk::Revealer>().ok()) {
-        rev.set_reveal_child(obj.expanded());
-        if obj.expanded() {
-            // Render whatever's currently in obj.files() — window.rs handles the
-            // async fetch and re-binds via store.items_changed(idx, 1, 1).
-            populate_files_into_outer(outer, obj);
-        }
+    widgets.detail_revealer.set_reveal_child(obj.expanded());
+    if obj.expanded() {
+        // Render whatever's currently in obj.files() — window.rs handles the
+        // async fetch and re-binds via store.items_changed(idx, 1, 1).
+        populate_files_into_outer(outer, obj);
     }
 }
 
 fn populate_files_into_outer(outer: &gtk::Box, obj: &CommitObject) {
-    let Some(files_box) = find_child_by_name(outer, "files-box")
-        .and_then(|w| w.downcast::<gtk::Box>().ok())
-    else {
+    let Some(files_box) = row_widgets(outer).map(|w| w.files_box.clone()) else {
         return;
     };
     while let Some(c) = files_box.first_child() {
@@ -634,5 +696,95 @@ fn format_relative_time(time_unix: i64, date_format: DateFormat) -> String {
         format!("{}w ago", duration.num_weeks())
     } else {
         date_format.format_date(&time)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serial_test::serial;
+
+    use crate::test_support;
+
+    fn sample_commit() -> CommitInfo {
+        use gitpulsar_core::models::Signature;
+        let who = Signature {
+            name: "Test".into(),
+            email: "t@e.com".into(),
+        };
+        CommitInfo {
+            id: "5a6607e2a7e4da9d8dc393d87d7e54a67817d24f".into(),
+            short_id: "5a6607e".into(),
+            summary: "a commit".into(),
+            message: "a commit\n\nbody".into(),
+            author: who.clone(),
+            committer: who,
+            time: chrono::Utc
+                .timestamp_opt(1_700_000_000, 0)
+                .single()
+                .unwrap_or_default(),
+            parent_ids: vec![],
+            is_signed: false,
+        }
+    }
+
+    fn build_for_test() -> CommitListRefs {
+        build_commit_list_view(
+            Rc::new(|_| {}),
+            Rc::new(|| {}),
+            Rc::new(|_| {}),
+            Rc::new(std::cell::Cell::new(DateFormat::Iso)),
+        )
+    }
+
+    /// Regression guard: the ListBox this list replaced activated rows on a
+    /// single click. `gtk::ListView` defaults to double-click activation, so
+    /// the property must be set explicitly or clicking a commit does nothing.
+    #[test]
+    #[serial]
+    fn rows_activate_on_single_click() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let single_click =
+            test_support::on_gtk_thread(|| build_for_test().list_view.is_single_click_activate());
+        assert!(single_click);
+    }
+
+    /// Expanding a commit mutates its `CommitObject` in place, which
+    /// `GtkListView` does not notice — the window pushes the change onto the row
+    /// via `rebind_row`. Guard that this actually reveals the detail pane.
+    #[test]
+    #[serial]
+    fn rebind_reveals_expanded_detail() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (revealed_when_expanded, revealed_when_collapsed) = test_support::on_gtk_thread(|| {
+            let row = build_row_template(Rc::new(|| {}), Rc::new(|_| {}));
+            let obj = CommitObject::from_info(&sample_commit(), vec![], true, false);
+
+            obj.set_expanded(true);
+            rebind_row(&row, &obj, DateFormat::Iso);
+            let expanded = row_widgets(&row)
+                .map(|w| w.detail_revealer.reveals_child())
+                .unwrap_or(false);
+
+            obj.set_expanded(false);
+            rebind_row(&row, &obj, DateFormat::Iso);
+            let collapsed = row_widgets(&row)
+                .map(|w| w.detail_revealer.reveals_child())
+                .unwrap_or(true);
+
+            (expanded, collapsed)
+        });
+
+        assert!(revealed_when_expanded, "expanded commit must reveal detail");
+        assert!(!revealed_when_collapsed, "collapsing must hide detail again");
     }
 }

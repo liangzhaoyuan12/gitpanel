@@ -2,6 +2,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -105,6 +106,7 @@ use super::reflog_dialog;
 use super::remotes_dialog;
 use super::branch_compare_dialog;
 use super::gitignore_editor;
+use super::header_chrome;
 use super::preferences_dialog;
 use super::rebase_editor;
 use super::repo_tree;
@@ -410,9 +412,10 @@ impl GitpulsarWindow {
         sidebar_header.set_show_start_title_buttons(true);
         sidebar_header.set_title_widget(Some(&imp.sidebar_title_label));
 
-        // Hamburger menu button (end of sidebar header)
+        // Hamburger menu button. Packed by `sync_header_chrome` below — it
+        // moves between this header and the content header so it stays
+        // reachable when the repo sidebar is hidden.
         self.rebuild_hamburger_menu();
-        sidebar_header.pack_end(&imp.menu_btn);
 
         // ==========================================
         // CONTENT HEADER BAR
@@ -434,13 +437,13 @@ impl GitpulsarWindow {
             .build();
         content_header.pack_start(&toggle_repo_tree);
 
-        // Content header left: open workspace
+        // Open workspace. Like the hamburger, this button travels between the
+        // sidebar header and the content header — see `sync_header_chrome`.
         let open_button = gtk::Button::builder()
             .icon_name("folder-open-symbolic")
             .tooltip_text("Open Workspace / Repository")
             .build();
         open_button.set_action_name(Some("win.open-repo"));
-        content_header.pack_start(&open_button);
 
         // fetch / pull / push are in the bottom bar (see below)
 
@@ -922,8 +925,9 @@ impl GitpulsarWindow {
         inner_split.set_min_sidebar_width(200.0);
         inner_split.set_max_sidebar_width(260.0);
 
-        // Content header: no window buttons by default (right_header has end buttons)
-        content_header.set_show_end_title_buttons(false);
+        // Window buttons are handed between content_header and right_header by
+        // `sync_header_chrome` below, depending on whether the right sidebar is
+        // laid out beside the content.
 
         // Outer split: repo sidebar | content. Plain OverlaySplitView too —
         // on collapse the sidebar slides over content with a built-in edge
@@ -967,6 +971,67 @@ impl GitpulsarWindow {
                 trp.set_active(split.shows_sidebar());
             }
         });
+
+        // ==========================================
+        // MOVABLE HEADER CHROME
+        // ==========================================
+        // The open-workspace button, the hamburger and the window controls have
+        // no fixed header: whichever bar owns them can be hidden by a sidebar
+        // toggle or a breakpoint. `header_chrome::placement` decides where each
+        // belongs; this closure applies that decision and runs on every split
+        // state change. See the module docs for the rules.
+        let sync_chrome: Rc<dyn Fn()> = {
+            let outer = outer_split.clone();
+            let inner = inner_split.clone();
+            let sidebar_header = sidebar_header.clone();
+            let content_header = content_header.clone();
+            let open_button = open_button.clone();
+            let menu_btn = imp.menu_btn.clone();
+            // None until the first run, so the initial packing always happens.
+            let applied: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+
+            Rc::new(move || {
+                let placement = header_chrome::placement(
+                    outer.shows_sidebar(),
+                    inner.shows_sidebar(),
+                    inner.is_collapsed(),
+                );
+
+                if applied.get() != Some(placement.left_pair_in_sidebar) {
+                    if let Some(was_in_sidebar) = applied.get() {
+                        let from = if was_in_sidebar {
+                            &sidebar_header
+                        } else {
+                            &content_header
+                        };
+                        from.remove(&open_button);
+                        from.remove(&menu_btn);
+                    }
+                    if placement.left_pair_in_sidebar {
+                        // Top-left corner of the sidebar, hamburger opposite it.
+                        sidebar_header.pack_start(&open_button);
+                        sidebar_header.pack_end(&menu_btn);
+                    } else {
+                        // Start group, in order after the sidebar toggle (which
+                        // never moves): toggle | hamburger | open workspace.
+                        content_header.pack_start(&menu_btn);
+                        content_header.pack_start(&open_button);
+                    }
+                    applied.set(Some(placement.left_pair_in_sidebar));
+                }
+
+                content_header.set_show_end_title_buttons(placement.window_controls_in_content);
+            })
+        };
+
+        for split in [&outer_split, &inner_split] {
+            let s = sync_chrome.clone();
+            split.connect_show_sidebar_notify(move |_| s());
+            let s = sync_chrome.clone();
+            split.connect_collapsed_notify(move |_| s());
+        }
+        // Initial packing — no notify has fired yet.
+        sync_chrome();
 
         // Store refs
         *imp.outer_split.borrow_mut() = Some(outer_split.clone());
@@ -1015,7 +1080,6 @@ impl GitpulsarWindow {
         bp_tablet.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_tablet.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         bp_tablet.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
-        bp_tablet.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         let win = self.clone();
         bp_tablet.connect_apply(move |_| win.add_css_class("gp-collapsed"));
         let win = self.clone();
@@ -1032,7 +1096,6 @@ impl GitpulsarWindow {
         bp_narrow.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_narrow.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         bp_narrow.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
-        bp_narrow.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         bp_narrow.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&branch_content, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&view_switcher, "visible", Some(&false.to_value()));
@@ -1063,7 +1126,6 @@ impl GitpulsarWindow {
         bp_mobile.add_setter(&outer_split, "show-sidebar", Some(&false.to_value()));
         bp_mobile.add_setter(&inner_split, "collapsed", Some(&true.to_value()));
         bp_mobile.add_setter(&inner_split, "show-sidebar", Some(&false.to_value()));
-        bp_mobile.add_setter(&content_header, "show-end-title-buttons", Some(&true.to_value()));
         bp_mobile.add_setter(&imp.sidebar_title_label, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&branch_content, "visible", Some(&false.to_value()));
         bp_mobile.add_setter(&content_title, "visible", Some(&false.to_value()));
@@ -1696,8 +1758,11 @@ impl GitpulsarWindow {
         obj.set_expanded(new_expanded);
         *imp.selected_commit_id.borrow_mut() = Some(commit_id.to_string());
 
-        // Force a re-bind by notifying the model.
-        store.items_changed(pos, 1, 1);
+        // Push the new state onto the realized row. `store.items_changed` looks
+        // like the model-driven way to do this, but `GtkListView` skips the
+        // re-bind when the object at that position is unchanged — which it is
+        // here, since we mutated it in place — so nothing would happen.
+        self.rebind_commit_row(commit_id, &obj);
 
         if !new_expanded {
             return;
@@ -1720,6 +1785,7 @@ impl GitpulsarWindow {
 
         let win = self.clone();
         let pos_for_async = pos;
+        let commit_id_for_async = commit_id.to_string();
         glib::spawn_future_local(async move {
             let Ok((files, is_signed)) = rx.recv().await else { return };
             let imp = win.imp();
@@ -1730,13 +1796,31 @@ impl GitpulsarWindow {
             else {
                 return;
             };
+            // The store may have been repopulated while the diff was loading.
+            if obj.id() != commit_id_for_async {
+                return;
+            }
             obj.set_files(files);
             obj.set_files_loaded(true);
             if is_signed {
                 obj.set_is_signed(true);
             }
-            store.items_changed(pos_for_async, 1, 1);
+            win.rebind_commit_row(&commit_id_for_async, &obj);
         });
+    }
+
+    /// Re-apply a commit's state onto its row widget.
+    ///
+    /// A no-op when the row is not realized (scrolled out of view) — the state
+    /// lives on the `CommitObject`, so the factory reapplies it on the next bind.
+    fn rebind_commit_row(&self, commit_id: &str, obj: &super::commit_object::CommitObject) {
+        let imp = self.imp();
+        let Some(list_view) = imp.commit_list_view.borrow().clone() else { return };
+        let Some(outer) = super::commit_list::find_row_outer(&list_view, commit_id) else {
+            return;
+        };
+        let date_format = imp.config.borrow().date_format;
+        super::commit_list::rebind_row(&outer, obj, date_format);
     }
 
     fn on_commit_clicked(&self) {
