@@ -67,6 +67,9 @@ pub fn build_changes_view(
         .margin_start(12)
         .margin_top(8)
         .can_focus(false)
+        .can_target(false)
+        .valign(gtk::Align::Start)
+        .halign(gtk::Align::Start)
         .build();
     overlay.add_overlay(&placeholder_label);
 
