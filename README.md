@@ -122,11 +122,18 @@ myeditor --workspace {path} --no-splash
 
 Editors installed as Flatpaks are found under their application ID.
 
-**This feature is not available in the Flatpak build.** Flathub does not permit
-the sandbox permission needed to start an application on the host, so the menu
-entry and the preference are hidden there rather than offered in a form that
-cannot work. Use the AppImage, a distribution package, or a build from source
-if you want it.
+**In the Flatpak build this works differently.** Flathub does not permit the
+sandbox permission needed to start an application on the host, so there is
+nothing to configure: the menu entry reads **Open With…** and asks the system
+which application should open the repository. Your choice is remembered by the
+desktop portal.
+
+That chooser only lists applications registering as handlers for
+`inode/directory`. VS Code, VSCodium, Kate, IntelliJ IDEA and Android Studio
+do; Zed, GNOME Builder, Qt Creator and Emacs do not, and will not appear. That
+is set by each application's own desktop entry and cannot be changed from here
+— Zed, for instance, ships the line commented out deliberately. If your editor
+is missing, the AppImage and distribution packages launch it directly.
 
 ## Architecture
 
@@ -192,7 +199,7 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 |---|---|
 | `GP_WIDTH` | Initial window width in pixels (default 1200) |
 | `GP_HEIGHT` | Initial window height in pixels (default 800) |
-| `GP_SIMULATE_FLATPAK` | Set to `1` to behave as the Flatpak build does (hides "Open in editor") |
+| `GP_SIMULATE_FLATPAK` | Set to `1` to behave as the Flatpak build does ("Open with" goes through the desktop portal) |
 
 ## Requirements
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.2 (2026-08-18)
+
+### Added
+
+- **"Open With…" is back in the Flatpak build**, going through the desktop
+  portal so the host chooses the application. v1.3.1 hid the feature there on
+  the assumption that the portal reached no editors; that was wrong. VS Code,
+  VSCodium, Kate, IntelliJ IDEA and Android Studio register as handlers for
+  `inode/directory` and do appear in the chooser. Zed, GNOME Builder, Qt
+  Creator and Emacs do not register and will not appear — that is set by each
+  application's own desktop entry. Outside Flatpak nothing changes: the editor
+  chosen in Preferences is still launched directly.
+
 ## v1.3.1 (2026-08-18)
 
 ### Changed

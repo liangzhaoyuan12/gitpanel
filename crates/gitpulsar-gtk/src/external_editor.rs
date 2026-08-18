@@ -6,9 +6,9 @@
 //! Inside a Flatpak sandbox neither detection nor spawning is possible: host
 //! binaries are invisible, and reaching them would need
 //! `--talk-name=org.freedesktop.Flatpak`, which Flathub's linter rejects
-//! outright (`finish-args-flatpak-spawn-access`). The feature is therefore
-//! hidden entirely there — no menu entry, no preference — rather than offered
-//! in a form that cannot work.
+//! outright (`finish-args-flatpak-spawn-access`). There the UI asks the XDG
+//! desktop portal to pick an application instead — no permission required.
+//! See `GitpulsarWindow::open_with_portal`.
 
 use std::path::Path;
 use std::process::{Command, Stdio};

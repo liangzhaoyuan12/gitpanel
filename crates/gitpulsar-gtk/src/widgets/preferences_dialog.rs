@@ -150,8 +150,8 @@ where
         .description("Open the current repository in an editor or IDE")
         .build();
 
-    // The Flatpak build cannot start host applications at all, so the whole
-    // group is left out there rather than offering a setting that does nothing.
+    // The Flatpak build cannot see or start host applications, so there is
+    // nothing to pick from — the desktop portal asks the host instead.
     let sandboxed = external_editor::in_flatpak();
 
     let editor_row = adw::ComboRow::builder().title("Open with").build();
@@ -164,7 +164,14 @@ where
     let choices: Rc<RefCell<Vec<EditorChoice>>> = Rc::new(RefCell::new(Vec::new()));
     let refilling = Rc::new(std::cell::Cell::new(false));
 
-    if !sandboxed {
+    if sandboxed {
+        tools_group.add(
+            &adw::ActionRow::builder()
+                .title("Open with")
+                .subtitle("Asks the system which application to use")
+                .build(),
+        );
+    } else {
         tools_group.add(&editor_row);
         tools_group.add(&custom_row);
         fill_editor_combo(&editor_row, &choices, &[], config.external_editor.as_deref());
@@ -172,8 +179,9 @@ where
             choices.borrow().get(editor_row.selected() as usize),
             Some(EditorChoice::Custom)
         ));
-        page.add(&tools_group);
     }
+
+    page.add(&tools_group);
 
     dialog.add(&page);
 
@@ -363,21 +371,48 @@ mod tests {
         assert!(titles_with_sandbox(false).contains(&"External Tools".to_string()));
     }
 
+    /// Count `AdwEntryRow`s — the custom-command field is the only one in this
+    /// dialog, so its presence stands in for "the editor picker is shown".
+    fn entry_rows(dialog: &adw::PreferencesDialog) -> usize {
+        let mut n = 0;
+        let mut stack: Vec<gtk::Widget> = dialog.child().into_iter().collect();
+        while let Some(widget) = stack.pop() {
+            if widget.downcast_ref::<adw::EntryRow>().is_some() {
+                n += 1;
+            }
+            let mut child = widget.first_child();
+            while let Some(w) = child {
+                child = w.next_sibling();
+                stack.push(w);
+            }
+        }
+        n
+    }
+
+    fn entry_rows_with_sandbox(sandboxed: bool) -> usize {
+        if sandboxed {
+            std::env::set_var("GP_SIMULATE_FLATPAK", "1");
+        } else {
+            std::env::remove_var("GP_SIMULATE_FLATPAK");
+        }
+        let n = test_support::on_gtk_thread(|| {
+            entry_rows(&build_preferences_dialog(&AppConfig::default(), |_| {}))
+        });
+        std::env::remove_var("GP_SIMULATE_FLATPAK");
+        n
+    }
+
     #[test]
     #[serial]
-    fn external_tools_group_is_absent_under_flatpak() {
+    fn sandboxed_dialog_explains_instead_of_offering_a_picker() {
         test_support::ensure_gtk_init();
         if !test_support::gtk_available() {
             return;
         }
-        // The sandbox cannot start host applications, so the setting must not
-        // be offered at all — an inert picker is worse than no picker.
-        let titles = titles_with_sandbox(true);
-        assert!(
-            !titles.contains(&"External Tools".to_string()),
-            "External Tools leaked into the sandboxed dialog: {titles:?}"
-        );
-        // The rest of the dialog is unaffected.
-        assert!(titles.contains(&"Display".to_string()));
+        // The group stays — the portal is still reachable from the menu — but
+        // there is nothing to configure, so the custom-command field is gone.
+        assert!(titles_with_sandbox(true).contains(&"External Tools".to_string()));
+        assert_eq!(entry_rows_with_sandbox(true), 0);
+        assert_eq!(entry_rows_with_sandbox(false), 1);
     }
 }
