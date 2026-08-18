@@ -1,10 +1,14 @@
 //! Launching an external editor or IDE on the currently open repository.
 //!
-//! Inside a Flatpak sandbox the app can neither see nor execute host binaries,
-//! so every command is routed through `flatpak-spawn --host`. That requires
-//! `--talk-name=org.freedesktop.Flatpak` in the manifest's `finish-args`; the
-//! same wrapper is used for detection, otherwise the sandbox would report every
-//! editor as missing.
+//! This module covers the unsandboxed case only — a distribution package, a
+//! build from source, or the AppImage — where the editor can simply be spawned.
+//!
+//! Inside a Flatpak sandbox neither detection nor spawning is possible: host
+//! binaries are invisible, and reaching them would need
+//! `--talk-name=org.freedesktop.Flatpak`, which Flathub's linter rejects
+//! outright (`finish-args-flatpak-spawn-access`). The feature is therefore
+//! hidden entirely there — no menu entry, no preference — rather than offered
+//! in a form that cannot work.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -50,8 +54,15 @@ pub struct DetectedEditor {
     pub command: String,
 }
 
-/// True when running inside a Flatpak sandbox.
+/// True when running inside a Flatpak sandbox, where this module does not apply.
+///
+/// `GP_SIMULATE_FLATPAK=1` forces the sandboxed behaviour on an ordinary
+/// desktop. That path is otherwise only reachable from a real Flatpak build,
+/// and shipping it unexercised is how the broken v1.3.0 reached Flathub.
 pub fn in_flatpak() -> bool {
+    if std::env::var("GP_SIMULATE_FLATPAK").is_ok_and(|v| v == "1") {
+        return true;
+    }
     Path::new("/.flatpak-info").exists()
 }
 
@@ -132,20 +143,10 @@ pub fn build_argv(command_line: &str, repo_path: &str) -> Result<Vec<String>> {
     Ok(argv)
 }
 
-/// Prefix `argv` with `flatpak-spawn --host` when running sandboxed.
-pub fn wrap_for_sandbox(argv: Vec<String>, sandboxed: bool) -> Vec<String> {
-    if !sandboxed {
-        return argv;
-    }
-    let mut wrapped = vec!["flatpak-spawn".to_string(), "--host".to_string()];
-    wrapped.extend(argv);
-    wrapped
-}
-
 /// Shell snippet that prints, one per line, whichever of `commands` resolves.
 ///
-/// One probe for the whole list: under Flatpak each check costs a
-/// `flatpak-spawn` round trip, and doing it per command would mean ~25 of them.
+/// One probe for the whole list rather than one per command — ~25 process
+/// spawns to answer a single question would be wasteful.
 pub fn detect_script(commands: &[&str]) -> String {
     let list = commands.join(" ");
     format!("for c in {list}; do command -v \"$c\" >/dev/null 2>&1 && printf '%s\\n' \"$c\"; done")
@@ -192,20 +193,22 @@ pub fn label_for_command(command_line: &str) -> String {
         .to_string()
 }
 
-/// Probe the host for installed editors. Blocking — call from a worker thread.
+/// Probe the system for installed editors. Blocking — call from a worker thread.
+///
+/// Returns nothing under Flatpak: the sandbox has its own PATH, so a probe
+/// would only ever find the runtime's binaries, never the user's editor.
 pub fn detect_installed() -> Vec<DetectedEditor> {
+    if in_flatpak() {
+        return Vec::new();
+    }
+
     let all: Vec<&str> = KNOWN_EDITORS
         .iter()
         .flat_map(|e| e.commands.iter().copied())
         .collect();
     let script = detect_script(&all);
 
-    let argv = wrap_for_sandbox(
-        vec!["sh".to_string(), "-c".to_string(), script],
-        in_flatpak(),
-    );
-
-    let output = match Command::new(&argv[0]).args(&argv[1..]).output() {
+    let output = match Command::new("sh").arg("-c").arg(&script).output() {
         Ok(out) => out,
         Err(e) => {
             tracing::warn!("Editor detection failed: {e}");
@@ -223,9 +226,17 @@ pub fn detect_installed() -> Vec<DetectedEditor> {
 }
 
 /// Launch `command_line` on `repo_path`, detached from this process.
+///
+/// Refuses under Flatpak rather than spawning something meaningless inside the
+/// sandbox — callers must route that case through the portal instead.
 pub fn launch(command_line: &str, repo_path: &Path) -> Result<()> {
+    if in_flatpak() {
+        return Err(anyhow!(
+            "Host applications cannot be started from inside the Flatpak sandbox"
+        ));
+    }
+
     let argv = build_argv(command_line, &repo_path.to_string_lossy())?;
-    let argv = wrap_for_sandbox(argv, in_flatpak());
 
     tracing::info!("Opening {} with: {}", repo_path.display(), argv.join(" "));
 
@@ -279,15 +290,6 @@ mod tests {
         assert!(build_argv("   ", "/repo").is_err());
     }
 
-    #[test]
-    fn sandboxed_launches_go_through_the_host() {
-        let argv = vec!["code".to_string(), "/repo".to_string()];
-        assert_eq!(
-            wrap_for_sandbox(argv.clone(), true),
-            vec!["flatpak-spawn", "--host", "code", "/repo"]
-        );
-        assert_eq!(wrap_for_sandbox(argv.clone(), false), argv);
-    }
 
     #[test]
     fn detection_prefers_the_first_listed_command() {

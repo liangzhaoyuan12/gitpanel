@@ -150,32 +150,36 @@ where
         .description("Open the current repository in an editor or IDE")
         .build();
 
-    let editor_row = adw::ComboRow::builder().title("Open with").build();
-    tools_group.add(&editor_row);
+    // The Flatpak build cannot start host applications at all, so the whole
+    // group is left out there rather than offering a setting that does nothing.
+    let sandboxed = external_editor::in_flatpak();
 
+    let editor_row = adw::ComboRow::builder().title("Open with").build();
     let custom_row = adw::EntryRow::builder()
         .title("Custom command")
         .show_apply_button(true)
         .build();
     custom_row.set_text(config.external_editor.as_deref().unwrap_or(""));
-    tools_group.add(&custom_row);
 
     let choices: Rc<RefCell<Vec<EditorChoice>>> = Rc::new(RefCell::new(Vec::new()));
     let refilling = Rc::new(std::cell::Cell::new(false));
 
-    fill_editor_combo(&editor_row, &choices, &[], config.external_editor.as_deref());
-    custom_row.set_visible(matches!(
-        choices.borrow().get(editor_row.selected() as usize),
-        Some(EditorChoice::Custom)
-    ));
-
-    page.add(&tools_group);
+    if !sandboxed {
+        tools_group.add(&editor_row);
+        tools_group.add(&custom_row);
+        fill_editor_combo(&editor_row, &choices, &[], config.external_editor.as_deref());
+        custom_row.set_visible(matches!(
+            choices.borrow().get(editor_row.selected() as usize),
+            Some(EditorChoice::Custom)
+        ));
+        page.add(&tools_group);
+    }
 
     dialog.add(&page);
 
     // Probing the host for installed editors costs a `flatpak-spawn` round
     // trip, so it runs off the UI thread and refills the combo on arrival.
-    {
+    if !sandboxed {
         let (tx, rx) = async_channel::bounded::<Vec<DetectedEditor>>(1);
         std::thread::spawn(move || {
             let _ = tx.send_blocking(external_editor::detect_installed());
@@ -211,19 +215,26 @@ where
         let custom_row = custom_row.clone();
         let choices = choices.clone();
         let recent = config.recent_workspaces.clone();
+        // Sandboxed builds show no editor picker, so the combo sits at "Not
+        // configured" and would otherwise wipe a command set outside Flatpak.
+        let preserved_editor = config.external_editor.clone();
         move || AppConfig {
             date_format: DateFormat::from_index(date_row.selected()),
             refresh_interval_secs: spin_row.value() as u32,
             commit_files_limit: files_limit_row.value() as u32,
             sidebar_items_limit: sidebar_limit_row.value() as u32,
             recent_workspaces: recent.clone(),
-            external_editor: match choices.borrow().get(editor_row.selected() as usize) {
-                Some(EditorChoice::Detected(cmd)) => Some(cmd.clone()),
-                Some(EditorChoice::Custom) => {
-                    let text = custom_row.text().trim().to_string();
-                    (!text.is_empty()).then_some(text)
+            external_editor: if sandboxed {
+                preserved_editor.clone()
+            } else {
+                match choices.borrow().get(editor_row.selected() as usize) {
+                    Some(EditorChoice::Detected(cmd)) => Some(cmd.clone()),
+                    Some(EditorChoice::Custom) => {
+                        let text = custom_row.text().trim().to_string();
+                        (!text.is_empty()).then_some(text)
+                    }
+                    _ => None,
                 }
-                _ => None,
             },
         }
     };
@@ -301,4 +312,72 @@ where
     }
 
     dialog
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serial_test::serial;
+
+    use crate::test_support;
+
+    /// Walk the dialog and collect the titles of every `AdwPreferencesGroup`.
+    fn group_titles(dialog: &adw::PreferencesDialog) -> Vec<String> {
+        let mut titles = Vec::new();
+        let mut stack: Vec<gtk::Widget> = dialog.child().into_iter().collect();
+        while let Some(widget) = stack.pop() {
+            if let Ok(group) = widget.clone().downcast::<adw::PreferencesGroup>() {
+                titles.push(group.title().to_string());
+            }
+            let mut child = widget.first_child();
+            while let Some(w) = child {
+                child = w.next_sibling();
+                stack.push(w);
+            }
+        }
+        titles
+    }
+
+    fn titles_with_sandbox(sandboxed: bool) -> Vec<String> {
+        if sandboxed {
+            std::env::set_var("GP_SIMULATE_FLATPAK", "1");
+        } else {
+            std::env::remove_var("GP_SIMULATE_FLATPAK");
+        }
+        let titles = test_support::on_gtk_thread(|| {
+            let dialog = build_preferences_dialog(&AppConfig::default(), |_| {});
+            group_titles(&dialog)
+        });
+        std::env::remove_var("GP_SIMULATE_FLATPAK");
+        titles
+    }
+
+    #[test]
+    #[serial]
+    fn external_tools_group_is_offered_outside_the_sandbox() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        assert!(titles_with_sandbox(false).contains(&"External Tools".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn external_tools_group_is_absent_under_flatpak() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        // The sandbox cannot start host applications, so the setting must not
+        // be offered at all — an inert picker is worse than no picker.
+        let titles = titles_with_sandbox(true);
+        assert!(
+            !titles.contains(&"External Tools".to_string()),
+            "External Tools leaked into the sandboxed dialog: {titles:?}"
+        );
+        // The rest of the dialog is unaffected.
+        assert!(titles.contains(&"Display".to_string()));
+    }
 }

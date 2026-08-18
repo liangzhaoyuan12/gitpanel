@@ -13,10 +13,6 @@ finish-args:
   - --filesystem=host
   # SSH agent for git SSH authentication
   - --socket=ssh-auth
-  # Launch the user's editor/IDE on the host via flatpak-spawn --host
-  # ("Open in <editor>", Ctrl+Shift+O). Without this the sandbox can neither
-  # see nor start host applications.
-  - --talk-name=org.freedesktop.Flatpak
   # Wayland & X11
 
   - --socket=wayland

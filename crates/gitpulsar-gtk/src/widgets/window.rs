@@ -174,7 +174,7 @@ fn find_row_outer_for_path(list_view: &gtk::ListView, path: &str) -> Option<gtk:
 ///
 /// Free function rather than a method so the shape can be asserted in a test;
 /// `gio::Menu` is GIO, not GTK, and needs no display.
-fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::Menu {
+fn build_primary_menu(recent_workspaces: &[String], editor_label: Option<&str>) -> gio::Menu {
     let menu = gio::Menu::new();
 
     let recent_submenu = gio::Menu::new();
@@ -195,7 +195,9 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     }
 
     let open_section = gio::Menu::new();
-    open_section.append(Some(editor_label), Some("win.open-in-editor"));
+    if let Some(label) = editor_label {
+        open_section.append(Some(label), Some("win.open-in-editor"));
+    }
     open_section.append(Some("Clone Repository…"), Some("win.clone-repo"));
     menu.append_section(None, &open_section);
 
@@ -1256,11 +1258,15 @@ impl GitpulsarWindow {
     fn rebuild_hamburger_menu(&self) {
         let imp = self.imp();
         let config = imp.config.borrow();
-        let editor_label = match config.external_editor.as_deref() {
-            Some(cmd) => format!("Open in {}", crate::external_editor::label_for_command(cmd)),
-            None => "Open in External Editor…".to_string(),
-        };
-        let menu_model = build_primary_menu(&config.recent_workspaces, &editor_label);
+        // Omitted entirely under Flatpak — the sandbox cannot start host
+        // applications, so an entry there would only ever fail.
+        let editor_label = (!crate::external_editor::in_flatpak()).then(|| {
+            match config.external_editor.as_deref() {
+                Some(cmd) => format!("Open in {}", crate::external_editor::label_for_command(cmd)),
+                None => "Open in External Editor…".to_string(),
+            }
+        });
+        let menu_model = build_primary_menu(&config.recent_workspaces, editor_label.as_deref());
         drop(config);
 
         imp.menu_btn.set_menu_model(Some(&menu_model));
@@ -1300,13 +1306,17 @@ impl GitpulsarWindow {
         });
         self.add_action(&open_recent_action);
 
-        // Open the current repository in the configured external editor
-        let open_in_editor_action = gio::SimpleAction::new("open-in-editor", None);
-        let window = self.clone();
-        open_in_editor_action.connect_activate(move |_, _| {
-            window.open_in_editor();
-        });
-        self.add_action(&open_in_editor_action);
+        // Open the current repository in the configured external editor.
+        // Not registered under Flatpak, so Ctrl+Shift+O stays inert there
+        // rather than firing an action that cannot succeed.
+        if !crate::external_editor::in_flatpak() {
+            let open_in_editor_action = gio::SimpleAction::new("open-in-editor", None);
+            let window = self.clone();
+            open_in_editor_action.connect_activate(move |_, _| {
+                window.open_in_editor();
+            });
+            self.add_action(&open_in_editor_action);
+        }
 
         // Clone action
 
@@ -4849,7 +4859,7 @@ mod tests {
 
     #[test]
     fn primary_menu_is_four_sections_without_recents() {
-        let menu = build_primary_menu(&[], "Open in Zed");
+        let menu = build_primary_menu(&[], Some("Open in Zed"));
         // Recent is omitted entirely when there is nothing to list.
         assert_eq!(menu.n_items(), 3);
         assert_eq!(
@@ -4867,9 +4877,17 @@ mod tests {
     }
 
     #[test]
+    fn sandboxed_menu_omits_the_editor_entry() {
+        // Under Flatpak the app cannot start host applications, so the entry
+        // must be absent rather than present-and-failing.
+        let menu = build_primary_menu(&[], None);
+        assert_eq!(labels(&section(&menu, 0)), vec!["Clone Repository…"]);
+    }
+
+    #[test]
     fn recent_workspaces_lead_the_menu_by_folder_name() {
         let recents = vec!["/home/u/projects/alpha".to_string()];
-        let menu = build_primary_menu(&recents, "Open in External Editor…");
+        let menu = build_primary_menu(&recents, Some("Open in External Editor…"));
         assert_eq!(menu.n_items(), 4);
 
         let recent_section = section(&menu, 0);
@@ -4882,7 +4900,7 @@ mod tests {
 
     #[test]
     fn stash_sits_under_tools_not_remote() {
-        let menu = build_primary_menu(&[], "Open in Zed");
+        let menu = build_primary_menu(&[], Some("Open in Zed"));
         let repo_section = section(&menu, 1);
 
         let remote = repo_section
