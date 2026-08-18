@@ -164,6 +164,72 @@ fn find_row_outer_for_path(list_view: &gtk::ListView, path: &str) -> Option<gtk:
     None
 }
 
+/// Build the primary (hamburger) menu.
+///
+/// Grouped into sections so the popover reads as four short blocks instead of
+/// one wall of entries: recent workspaces, ways to get a repository in front of
+/// you, what you do to the open one, and app-level items. Everything rarely
+/// reached lives under `Tools` — the frequently used entries stay one click
+/// away.
+///
+/// Free function rather than a method so the shape can be asserted in a test;
+/// `gio::Menu` is GIO, not GTK, and needs no display.
+fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::Menu {
+    let menu = gio::Menu::new();
+
+    let recent_submenu = gio::Menu::new();
+    for workspace_path in recent_workspaces {
+        let label = std::path::Path::new(workspace_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| workspace_path.clone());
+        recent_submenu.append(
+            Some(&label),
+            Some(&format!("win.open-recent('{}')", workspace_path.replace('\'', ""))),
+        );
+    }
+    if recent_submenu.n_items() > 0 {
+        let section = gio::Menu::new();
+        section.append_submenu(Some("Recent"), &recent_submenu);
+        menu.append_section(None, &section);
+    }
+
+    let open_section = gio::Menu::new();
+    open_section.append(Some(editor_label), Some("win.open-in-editor"));
+    open_section.append(Some("Clone Repository…"), Some("win.clone-repo"));
+    menu.append_section(None, &open_section);
+
+    let repo_section = gio::Menu::new();
+
+    // Remote operations are also on Ctrl+Shift+{F,L,P} and the bottom bar;
+    // they stay in the menu so mobile widths, where the bar collapses, keep them.
+    let remote_submenu = gio::Menu::new();
+    remote_submenu.append(Some("Fetch"), Some("win.fetch"));
+    remote_submenu.append(Some("Pull"), Some("win.pull"));
+    remote_submenu.append(Some("Push"), Some("win.push"));
+    repo_section.append_submenu(Some("Remote"), &remote_submenu);
+    repo_section.append(Some("Manage Remotes…"), Some("win.remotes"));
+
+    let tools_submenu = gio::Menu::new();
+    tools_submenu.append(Some("Stash"), Some("win.stash-save"));
+    tools_submenu.append(Some("Compare Branches…"), Some("win.branch-compare"));
+    tools_submenu.append(Some("Reflog"), Some("win.reflog"));
+    tools_submenu.append(Some("Start Bisect…"), Some("win.bisect-start"));
+    tools_submenu.append(Some("Apply Patch…"), Some("win.apply-patch"));
+    tools_submenu.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
+    tools_submenu.append(Some("Export Graph as PNG…"), Some("win.export-graph"));
+    repo_section.append_submenu(Some("Tools"), &tools_submenu);
+
+    menu.append_section(None, &repo_section);
+
+    let app_section = gio::Menu::new();
+    app_section.append(Some("Preferences"), Some("win.preferences"));
+    app_section.append(Some("About Gitpulsar"), Some("win.about"));
+    menu.append_section(None, &app_section);
+
+    menu
+}
+
 mod imp {
     use super::*;
 
@@ -1189,54 +1255,13 @@ impl GitpulsarWindow {
 
     fn rebuild_hamburger_menu(&self) {
         let imp = self.imp();
-        let menu_model = gio::Menu::new();
-
-        // Recent workspaces submenu
-        let recent_submenu = gio::Menu::new();
         let config = imp.config.borrow();
-        for workspace_path in &config.recent_workspaces {
-            let label = std::path::Path::new(workspace_path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| workspace_path.clone());
-            recent_submenu.append(
-                Some(&label),
-                Some(&format!("win.open-recent('{}')", workspace_path.replace('\'', ""))),
-            );
-        }
-        drop(config);
-        if recent_submenu.n_items() > 0 {
-            menu_model.append_submenu(Some("Recent"), &recent_submenu);
-        }
-
-        // Open the current repository in an external editor. The label names the
-        // configured editor so the action is self-explanatory in the menu.
-        let editor_label = match imp.config.borrow().external_editor.as_deref() {
+        let editor_label = match config.external_editor.as_deref() {
             Some(cmd) => format!("Open in {}", crate::external_editor::label_for_command(cmd)),
             None => "Open in External Editor…".to_string(),
         };
-        menu_model.append(Some(&editor_label), Some("win.open-in-editor"));
-
-        // Remote operations — also reachable via Ctrl+Shift+{F,L,P} and bottom bar.
-
-        // Listed here so they remain accessible on mobile where the bottom bar collapses.
-        let remote_submenu = gio::Menu::new();
-        remote_submenu.append(Some("Fetch"), Some("win.fetch"));
-        remote_submenu.append(Some("Pull"), Some("win.pull"));
-        remote_submenu.append(Some("Push"), Some("win.push"));
-        remote_submenu.append(Some("Stash"), Some("win.stash-save"));
-        menu_model.append_submenu(Some("Remote"), &remote_submenu);
-
-        menu_model.append(Some("Clone Repository…"), Some("win.clone-repo"));
-        menu_model.append(Some("Manage Remotes…"), Some("win.remotes"));
-        menu_model.append(Some("Compare Branches…"), Some("win.branch-compare"));
-        menu_model.append(Some("Reflog"), Some("win.reflog"));
-        menu_model.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
-        menu_model.append(Some("Apply Patch…"), Some("win.apply-patch"));
-        menu_model.append(Some("Start Bisect…"), Some("win.bisect-start"));
-        menu_model.append(Some("Export Graph as PNG…"), Some("win.export-graph"));
-        menu_model.append(Some("Preferences"), Some("win.preferences"));
-        menu_model.append(Some("About Gitpulsar"), Some("win.about"));
+        let menu_model = build_primary_menu(&config.recent_workspaces, &editor_label);
+        drop(config);
 
         imp.menu_btn.set_menu_model(Some(&menu_model));
     }
@@ -4801,4 +4826,74 @@ impl GitpulsarWindow {
         dialog.present(Some(self));
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn section(menu: &gio::Menu, index: i32) -> gio::MenuModel {
+        menu.item_link(index, gio::MENU_LINK_SECTION)
+            .expect("every top-level entry is a section")
+    }
+
+    fn labels(model: &gio::MenuModel) -> Vec<String> {
+        (0..model.n_items())
+            .filter_map(|i| {
+                model
+                    .item_attribute_value(i, "label", Some(glib::VariantTy::STRING))
+                    .and_then(|v| v.get::<String>())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn primary_menu_is_four_sections_without_recents() {
+        let menu = build_primary_menu(&[], "Open in Zed");
+        // Recent is omitted entirely when there is nothing to list.
+        assert_eq!(menu.n_items(), 3);
+        assert_eq!(
+            labels(&section(&menu, 0)),
+            vec!["Open in Zed", "Clone Repository…"]
+        );
+        assert_eq!(
+            labels(&section(&menu, 1)),
+            vec!["Remote", "Manage Remotes…", "Tools"]
+        );
+        assert_eq!(
+            labels(&section(&menu, 2)),
+            vec!["Preferences", "About Gitpulsar"]
+        );
+    }
+
+    #[test]
+    fn recent_workspaces_lead_the_menu_by_folder_name() {
+        let recents = vec!["/home/u/projects/alpha".to_string()];
+        let menu = build_primary_menu(&recents, "Open in External Editor…");
+        assert_eq!(menu.n_items(), 4);
+
+        let recent_section = section(&menu, 0);
+        assert_eq!(labels(&recent_section), vec!["Recent"]);
+        let submenu = recent_section
+            .item_link(0, gio::MENU_LINK_SUBMENU)
+            .expect("Recent is a submenu");
+        assert_eq!(labels(&submenu), vec!["alpha"]);
+    }
+
+    #[test]
+    fn stash_sits_under_tools_not_remote() {
+        let menu = build_primary_menu(&[], "Open in Zed");
+        let repo_section = section(&menu, 1);
+
+        let remote = repo_section
+            .item_link(0, gio::MENU_LINK_SUBMENU)
+            .expect("Remote is a submenu");
+        assert_eq!(labels(&remote), vec!["Fetch", "Pull", "Push"]);
+
+        let tools = repo_section
+            .item_link(2, gio::MENU_LINK_SUBMENU)
+            .expect("Tools is a submenu");
+        assert!(labels(&tools).contains(&"Stash".to_string()));
+        assert_eq!(labels(&tools).len(), 7);
+    }
 }
