@@ -13,9 +13,33 @@ cache:
     - .cargo/git/
     - target/
 
+# Quality gate for merge requests and pushes to the default branch.
+# Tag pipelines skip it — `appimage` already builds the same tree there.
+test:
+  stage: build
+  image: fedora:41
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - dnf install -y gcc g++ gtk4-devel libadwaita-devel openssl-devel
+        pkg-config pango-devel gdk-pixbuf2-devel graphene-devel cmake curl
+        xorg-x11-server-Xvfb
+    - export RUSTUP_HOME="${CARGO_HOME}/rustup"
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        --default-toolchain stable --no-modify-path --component clippy
+    - source "${CARGO_HOME}/env"
+  script:
+    - cargo build --locked
+    - cargo clippy --all-targets --locked -- -D warnings
+    # GTK widget tests need a display. Under Xvfb they run for real; without
+    # one, GP_SKIP_GTK_TESTS=1 would soft-skip them and silently lose coverage.
+    - GDK_BACKEND=x11 xvfb-run -a cargo test --locked
+
 appimage:
   stage: build
   image: fedora:41
+
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
   before_script:
