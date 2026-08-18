@@ -120,9 +120,13 @@ belongs somewhere else, put `{path}` where it should go:
 myeditor --workspace {path} --no-splash
 ```
 
-Under Flatpak the editor runs on the host via `flatpak-spawn --host`, which is
-why the sandbox declares `--talk-name=org.freedesktop.Flatpak`. Editors
-installed as Flatpaks are found under their application ID.
+Editors installed as Flatpaks are found under their application ID.
+
+**This feature is not available in the Flatpak build.** Flathub does not permit
+the sandbox permission needed to start an application on the host, so the menu
+entry and the preference are hidden there rather than offered in a form that
+cannot work. Use the AppImage, a distribution package, or a build from source
+if you want it.
 
 ## Architecture
 
@@ -188,6 +192,7 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 |---|---|
 | `GP_WIDTH` | Initial window width in pixels (default 1200) |
 | `GP_HEIGHT` | Initial window height in pixels (default 800) |
+| `GP_SIMULATE_FLATPAK` | Set to `1` to behave as the Flatpak build does (hides "Open in editor") |
 
 ## Requirements
 

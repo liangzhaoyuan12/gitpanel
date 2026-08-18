@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.3.1 (2026-08-18)
+
+### Changed
+
+- **"Open in your editor" is hidden in the Flatpak build.** Flathub does not
+  permit `--talk-name=org.freedesktop.Flatpak`, without which the sandbox can
+  neither detect nor start an application on the host, so v1.3.0 never built
+  for Flathub. The menu entry and the preference are now omitted there rather
+  than offered in a form that cannot work. The desktop portal is not a
+  substitute: it only lists applications that register as handlers for
+  `inode/directory`, which most editors do not — Zed ships that line commented
+  out on purpose.
+- Everywhere else — distribution packages, source builds, the AppImage — the
+  feature is unchanged.
+
 ## v1.3.0 (2026-08-18)
 
 ### Added

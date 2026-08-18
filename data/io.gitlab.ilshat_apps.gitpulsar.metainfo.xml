@@ -100,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.3.1" date="2026-08-18">
+      <description>
+        <p>Hides "Open in your editor" in the Flatpak build, where the sandbox is not permitted to start an application on the host. Outside Flatpak — distribution packages, source builds and the AppImage — the feature is unchanged.</p>
+      </description>
+    </release>
     <release version="1.3.0" date="2026-08-18">
       <description>
         <p>Adds "Open in your editor": choose an editor in Preferences and open the current repository in it from the menu or with Ctrl+Shift+O. Installed editors are detected automatically — VS Code, VSCodium, Cursor, Windsurf, Zed, GNOME Builder, Kate, KDevelop, Sublime Text, Qt Creator, Emacs, Android Studio and the JetBrains IDEs — and anything else can be set as a custom command. Also fixes opening a single repository pulling every sibling repository into the sidebar, and the commit message field swallowing clicks on its placeholder text.</p>
