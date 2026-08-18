@@ -12,6 +12,11 @@ pub struct AppConfig {
     pub sidebar_items_limit: u32,
     #[serde(default)]
     pub recent_workspaces: Vec<String>,
+    /// Command line used by "Open in <editor>". `None` means unconfigured.
+    /// Stored as a command rather than an editor id so a custom command and a
+    /// detected one are the same thing to everything downstream.
+    #[serde(default)]
+    pub external_editor: Option<String>,
 }
 
 fn default_commit_files_limit() -> u32 {
@@ -30,6 +35,7 @@ impl Default for AppConfig {
             commit_files_limit: default_commit_files_limit(),
             sidebar_items_limit: default_sidebar_items_limit(),
             recent_workspaces: Vec::new(),
+            external_editor: None,
         }
     }
 }

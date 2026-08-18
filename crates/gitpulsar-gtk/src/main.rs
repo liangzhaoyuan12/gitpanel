@@ -1,6 +1,8 @@
 mod app;
 mod config;
+mod external_editor;
 mod undo;
+
 mod widgets;
 
 #[cfg(test)]

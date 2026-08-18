@@ -1,6 +1,52 @@
 use adw::prelude::*;
+use gtk::glib;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::config::{AppConfig, DateFormat};
+use crate::external_editor::{self, DetectedEditor};
+
+/// What a row of the "Open with" combo maps to.
+#[derive(Clone, PartialEq)]
+enum EditorChoice {
+    Unset,
+    Detected(String),
+    Custom,
+}
+
+/// Rebuild the combo's model from the editors we currently know about, keeping
+/// `current` selected. Called once synchronously and again when host detection
+/// finishes, so the list may grow under the user without losing their choice.
+fn fill_editor_combo(
+    combo: &adw::ComboRow,
+    choices: &Rc<RefCell<Vec<EditorChoice>>>,
+    detected: &[DetectedEditor],
+    current: Option<&str>,
+) {
+    let mut labels: Vec<String> = vec!["Not configured".to_string()];
+    let mut mapping: Vec<EditorChoice> = vec![EditorChoice::Unset];
+
+    for editor in detected {
+        labels.push(editor.name.clone());
+        mapping.push(EditorChoice::Detected(editor.command.clone()));
+    }
+
+    labels.push("Custom command…".to_string());
+    mapping.push(EditorChoice::Custom);
+
+    let selected = match current {
+        None => 0,
+        Some(cmd) => mapping
+            .iter()
+            .position(|c| matches!(c, EditorChoice::Detected(d) if d == cmd))
+            .unwrap_or(mapping.len() - 1) as usize,
+    };
+
+    let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    combo.set_model(Some(&gtk::StringList::new(&refs)));
+    *choices.borrow_mut() = mapping;
+    combo.set_selected(selected as u32);
+}
 
 pub fn build_preferences_dialog<F>(config: &AppConfig, on_changed: F) -> adw::PreferencesDialog
 where
@@ -98,7 +144,61 @@ where
     updates_group.add(&refresh_row);
     page.add(&updates_group);
 
+    // --- External tools group ---
+    let tools_group = adw::PreferencesGroup::builder()
+        .title("External Tools")
+        .description("Open the current repository in an editor or IDE")
+        .build();
+
+    let editor_row = adw::ComboRow::builder().title("Open with").build();
+    tools_group.add(&editor_row);
+
+    let custom_row = adw::EntryRow::builder()
+        .title("Custom command")
+        .show_apply_button(true)
+        .build();
+    custom_row.set_text(config.external_editor.as_deref().unwrap_or(""));
+    tools_group.add(&custom_row);
+
+    let choices: Rc<RefCell<Vec<EditorChoice>>> = Rc::new(RefCell::new(Vec::new()));
+    let refilling = Rc::new(std::cell::Cell::new(false));
+
+    fill_editor_combo(&editor_row, &choices, &[], config.external_editor.as_deref());
+    custom_row.set_visible(matches!(
+        choices.borrow().get(editor_row.selected() as usize),
+        Some(EditorChoice::Custom)
+    ));
+
+    page.add(&tools_group);
+
     dialog.add(&page);
+
+    // Probing the host for installed editors costs a `flatpak-spawn` round
+    // trip, so it runs off the UI thread and refills the combo on arrival.
+    {
+        let (tx, rx) = async_channel::bounded::<Vec<DetectedEditor>>(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(external_editor::detect_installed());
+        });
+
+        let editor_row = editor_row.clone();
+        let choices = choices.clone();
+        let current = config.external_editor.clone();
+        let refilling = refilling.clone();
+        glib::spawn_future_local(async move {
+            let Ok(detected) = rx.recv().await else { return };
+            if detected.is_empty() {
+                return;
+            }
+            // `set_model` emits `selected` before the real selection is
+            // restored; without this guard that transient 0 would be saved as
+            // "Not configured" and wipe the user's editor.
+            refilling.set(true);
+            fill_editor_combo(&editor_row, &choices, &detected, current.as_deref());
+            refilling.set(false);
+        });
+
+    }
 
     // --- Signals ---
     // We build the new config from current widget values on each change
@@ -107,6 +207,9 @@ where
         let spin_row = spin_row.clone();
         let files_limit_row = files_limit_row.clone();
         let sidebar_limit_row = sidebar_limit_row.clone();
+        let editor_row = editor_row.clone();
+        let custom_row = custom_row.clone();
+        let choices = choices.clone();
         let recent = config.recent_workspaces.clone();
         move || AppConfig {
             date_format: DateFormat::from_index(date_row.selected()),
@@ -114,6 +217,14 @@ where
             commit_files_limit: files_limit_row.value() as u32,
             sidebar_items_limit: sidebar_limit_row.value() as u32,
             recent_workspaces: recent.clone(),
+            external_editor: match choices.borrow().get(editor_row.selected() as usize) {
+                Some(EditorChoice::Detected(cmd)) => Some(cmd.clone()),
+                Some(EditorChoice::Custom) => {
+                    let text = custom_row.text().trim().to_string();
+                    (!text.is_empty()).then_some(text)
+                }
+                _ => None,
+            },
         }
     };
 
@@ -149,7 +260,35 @@ where
         });
     }
 
+    {
+        let on_changed = on_changed.clone();
+        let build_config = build_config.clone();
+        let custom_row = custom_row.clone();
+        let choices = choices.clone();
+        let refilling = refilling.clone();
+        editor_row.connect_selected_notify(move |row| {
+            let is_custom = matches!(
+                choices.borrow().get(row.selected() as usize),
+                Some(EditorChoice::Custom)
+            );
+            custom_row.set_visible(is_custom);
+            if refilling.get() {
+                return;
+            }
+            on_changed(build_config());
+        });
+    }
+
+    {
+        let on_changed = on_changed.clone();
+        let build_config = build_config.clone();
+        custom_row.connect_apply(move |_| {
+            on_changed(build_config());
+        });
+    }
+
     // Refresh Now — emit special config with refresh_interval_secs = u32::MAX as signal
+
     {
         let on_changed = on_changed;
         let build_config = build_config;

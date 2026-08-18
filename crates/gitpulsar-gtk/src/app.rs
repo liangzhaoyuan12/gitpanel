@@ -73,6 +73,8 @@ impl GitpulsarApp {
 
         // Keyboard shortcuts
         app.set_accels_for_action("win.open-repo", &["<Control>o"]);
+        app.set_accels_for_action("win.open-in-editor", &["<Control><Shift>o"]);
+
         app.set_accels_for_action("win.commit", &["<Control>Return"]);
         app.set_accels_for_action("win.stage-all", &["<Control><Shift>s"]);
         app.set_accels_for_action("win.unstage-all", &["<Control><Shift>u"]);

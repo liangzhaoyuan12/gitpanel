@@ -1211,7 +1211,16 @@ impl GitpulsarWindow {
             menu_model.append_submenu(Some("Recent"), &recent_submenu);
         }
 
+        // Open the current repository in an external editor. The label names the
+        // configured editor so the action is self-explanatory in the menu.
+        let editor_label = match imp.config.borrow().external_editor.as_deref() {
+            Some(cmd) => format!("Open in {}", crate::external_editor::label_for_command(cmd)),
+            None => "Open in External Editor…".to_string(),
+        };
+        menu_model.append(Some(&editor_label), Some("win.open-in-editor"));
+
         // Remote operations — also reachable via Ctrl+Shift+{F,L,P} and bottom bar.
+
         // Listed here so they remain accessible on mobile where the bottom bar collapses.
         let remote_submenu = gio::Menu::new();
         remote_submenu.append(Some("Fetch"), Some("win.fetch"));
@@ -1268,7 +1277,16 @@ impl GitpulsarWindow {
         });
         self.add_action(&open_recent_action);
 
+        // Open the current repository in the configured external editor
+        let open_in_editor_action = gio::SimpleAction::new("open-in-editor", None);
+        let window = self.clone();
+        open_in_editor_action.connect_activate(move |_, _| {
+            window.open_in_editor();
+        });
+        self.add_action(&open_in_editor_action);
+
         // Clone action
+
         let clone_action = gio::SimpleAction::new("clone-repo", None);
         let window = self.clone();
         clone_action.connect_activate(move |_, _| {
@@ -3553,7 +3571,38 @@ impl GitpulsarWindow {
         dialog.present(Some(self));
     }
 
+    /// Launch the configured editor on the active repository.
+    ///
+    /// With nothing configured yet this drops the user into Preferences rather
+    /// than failing silently — the menu entry is the only place the feature is
+    /// discoverable, so it has to lead somewhere.
+    fn open_in_editor(&self) {
+        let Some(repo_path) = self.repo_path_string() else {
+            self.show_toast("No repository is open");
+            return;
+        };
+
+        let command = self.imp().config.borrow().external_editor.clone();
+        let Some(command) = command else {
+            self.show_toast("Choose an editor in Preferences → External Tools");
+            self.open_preferences();
+            return;
+        };
+
+        match crate::external_editor::launch(&command, std::path::Path::new(&repo_path)) {
+            Ok(()) => {
+                let label = crate::external_editor::label_for_command(&command);
+                self.show_toast(&format!("Opening in {label}"));
+            }
+            Err(e) => {
+                tracing::error!("Failed to launch external editor: {e}");
+                self.show_error_dialog("Could not open the editor", &e.to_string());
+            }
+        }
+    }
+
     fn open_preferences(&self) {
+
         let config = self.imp().config.borrow().clone();
         let win = self.clone();
         let dialog = preferences_dialog::build_preferences_dialog(&config, move |new_config| {
@@ -3599,7 +3648,14 @@ impl GitpulsarWindow {
             if interval_changed {
                 win.start_refresh_timer(new_config.refresh_interval_secs);
             }
+
+            // The "Open in …" entry carries the editor's name, so the menu has
+            // to be rebuilt whenever that preference changes.
+            if old_config.external_editor != new_config.external_editor {
+                win.rebuild_hamburger_menu();
+            }
         });
+
         dialog.present(Some(self));
     }
 
