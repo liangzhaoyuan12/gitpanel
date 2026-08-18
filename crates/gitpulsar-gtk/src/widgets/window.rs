@@ -172,6 +172,11 @@ mod imp {
     pub struct GitpulsarWindow {
         pub repo: RefCell<Option<GitRepo>>,
         pub workspace_entries: RefCell<Vec<WorkspaceEntry>>,
+        /// Folder the user actually opened. Never derived from the entries —
+        /// a single-repo workspace would otherwise drift up to its parent and
+        /// pull in every sibling repository on the next background scan.
+        pub workspace_root: RefCell<Option<std::path::PathBuf>>,
+
         pub commits: RefCell<Vec<CommitInfo>>,
         pub selected_commit_id: RefCell<Option<String>>,
         /// Hash of last status to skip redundant UI updates.
@@ -259,6 +264,8 @@ mod imp {
             Self {
                 repo: RefCell::new(None),
                 workspace_entries: RefCell::new(Vec::new()),
+                workspace_root: RefCell::new(None),
+
                 commits: RefCell::new(Vec::new()),
                 selected_commit_id: RefCell::new(None),
                 last_status_hash: Cell::new(0),
@@ -1490,6 +1497,7 @@ impl GitpulsarWindow {
 
                 let auto_select = entries.len() == 1 && entries[0].is_git_repo;
                 *self.imp().workspace_entries.borrow_mut() = entries;
+                *self.imp().workspace_root.borrow_mut() = Some(path.to_path_buf());
 
                 if auto_select {
                     self.select_repo(0);
@@ -3610,20 +3618,7 @@ impl GitpulsarWindow {
             let repo_ref = imp.repo.borrow();
             repo_ref.as_ref().map(|r| r.path().to_string_lossy().to_string())
         };
-        let workspace_root = {
-            let entries = imp.workspace_entries.borrow();
-            if entries.is_empty() {
-                None
-            } else {
-                Some(
-                    entries[0]
-                        .path
-                        .parent()
-                        .unwrap_or(&entries[0].path)
-                        .to_path_buf(),
-                )
-            }
-        };
+        let workspace_root = imp.workspace_root.borrow().clone();
 
         let prev_status_hash = imp.last_status_hash.get();
         // Throttle workspace scans: every 4th tick (~2 min at default 30s interval).
