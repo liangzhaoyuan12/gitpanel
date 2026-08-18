@@ -139,29 +139,27 @@ fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> 
 /// widget_name matches `path`. Used after activation to find the row that
 /// represents the activated file (ListView recycles rows, so we can't capture
 /// a `&ListBoxRow` like the old ListBox-based API did).
+/// Iterative rather than recursive: the widget tree is shallow in practice but
+/// GTK imposes no depth bound, and an explicit stack keeps it that way.
 fn find_row_outer_for_path(list_view: &gtk::ListView, path: &str) -> Option<gtk::Box> {
+    let mut stack: Vec<gtk::Widget> = Vec::new();
     let mut child = list_view.first_child();
     while let Some(c) = child {
-        if let Some(outer) = walk_for_outer(&c, path) {
-            return Some(outer);
-        }
         child = c.next_sibling();
+        stack.push(c);
     }
-    None
-}
 
-fn walk_for_outer(widget: &gtk::Widget, path: &str) -> Option<gtk::Box> {
-    if let Ok(b) = widget.clone().downcast::<gtk::Box>() {
-        if b.has_css_class("gp-file-row") && b.widget_name() == path {
-            return Some(b);
+    while let Some(widget) = stack.pop() {
+        if let Ok(b) = widget.clone().downcast::<gtk::Box>() {
+            if b.has_css_class("gp-file-row") && b.widget_name() == path {
+                return Some(b);
+            }
         }
-    }
-    let mut child = widget.first_child();
-    while let Some(c) = child {
-        if let Some(found) = walk_for_outer(&c, path) {
-            return Some(found);
+        let mut c = widget.first_child();
+        while let Some(w) = c {
+            c = w.next_sibling();
+            stack.push(w);
         }
-        child = c.next_sibling();
     }
     None
 }
