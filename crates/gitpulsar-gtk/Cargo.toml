@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 gitpulsar-core.workspace = true
-gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
 cairo = { package = "cairo-rs", version = "0.20", features = ["png"] }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
 anyhow.workspace = true

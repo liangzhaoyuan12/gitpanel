@@ -38,7 +38,7 @@ impl GitpulsarApp {
                 .gp-mobile viewswitcherbar > revealer > box { min-height: 32px; padding: 0; }
             ";
             let provider = gtk::CssProvider::new();
-            provider.load_from_data(css);
+            provider.load_from_string(css);
             if let Some(display) = gtk::gdk::Display::default() {
                 gtk::style_context_add_provider_for_display(
                     &display,
