@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.3.0 (2026-08-18)
+
+### Added
+
+- **Open the repository in your editor.** Pick an editor in Preferences →
+  External Tools and the menu gains an "Open in …" entry, bound to
+  Ctrl+Shift+O. Installed editors are detected automatically — VS Code,
+  VSCodium, Cursor, Windsurf, Zed, GNOME Builder, Kate, KDevelop, Sublime Text,
+  Qt Creator, Emacs, Android Studio and the JetBrains IDEs — and anything else
+  can be entered as a custom command, with an optional `{path}` placeholder.
+  Under Flatpak the editor is launched on the host.
+- `CONTRIBUTING.md`, and a CI job that runs build, clippy and the test suite on
+  every merge request.
+
+### Changed
+
+- **The primary menu is grouped into sections.** Fourteen entries in one flat
+  list became four short blocks, with everything rarely reached moved under a
+  `Tools` submenu. Stash moved out of `Remote`, where it never belonged — it is
+  a local operation.
+
+### Fixed
+
+- **Opening a single repository no longer pulls in its siblings.** The
+  background refresh recomputed the workspace root from the first entry's
+  parent directory, so a few seconds after opening `~/Projects/MyRepo` every
+  other repository in `~/Projects` appeared in the sidebar. Reported by
+  @kmwallio.
+- **The commit message field no longer swallows clicks** on its "Commit
+  message" placeholder, which also covered the whole field rather than its
+  top-left corner. Thanks to [Iyaan Azeez](https://gitlab.com/gxhamster).
+
 ## v1.2.0 (2026-08-05)
 
 ### Added

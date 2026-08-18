@@ -100,7 +100,13 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.3.0" date="2026-08-18">
+      <description>
+        <p>Adds "Open in your editor": choose an editor in Preferences and open the current repository in it from the menu or with Ctrl+Shift+O. Installed editors are detected automatically — VS Code, VSCodium, Cursor, Windsurf, Zed, GNOME Builder, Kate, KDevelop, Sublime Text, Qt Creator, Emacs, Android Studio and the JetBrains IDEs — and anything else can be set as a custom command. Also fixes opening a single repository pulling every sibling repository into the sidebar, and the commit message field swallowing clicks on its placeholder text.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-08-05">
+
       <description>
         <p>Clicking a file inside a commit now opens a dialog showing it side by side — old on the left, new on the right — with a hideable list of the commit's files, collapsing to a single unified view on narrow screens. Fixes several regressions from the previous release: clicking a commit expands it again, the window-close button and the menu no longer disappear with their sidebars, the commit-files limit and the date-format preference take effect again, and signed-commit locks appear without expanding a commit.</p>
       </description>

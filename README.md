@@ -48,8 +48,9 @@
 - **Tag remote operations** — right-click tag: push to remote, delete from remote, delete locally
 - **Patch import/export** — export a commit as a `.patch` file or apply an existing patch (`git am` + `git apply` fallback)
 - **Adaptive layout** — 4-tier responsive design backed by `AdwOverlaySplitView` so sidebars overlay content with an edge-swipe gesture on phone widths, plus an `AdwViewSwitcherBar` that surfaces on narrow widths. Breakpoints at 1080 sp / 860 sp / 600 sp / 500 sp. Minimum 360 px width.
+- **Open in your editor** — launch the current repository in VS Code, Zed, GNOME Builder, a JetBrains IDE or any custom command (Ctrl+Shift+O)
 - **Auto-refresh** — configurable polling with hash-based skip
-- **Preferences** — date format, refresh interval, commit files limit
+- **Preferences** — date format, refresh interval, commit files limit, external editor
 
 ## Usage
 
@@ -99,7 +100,29 @@ The **Commits** tab (Ctrl+1) shows the commit log with expandable details:
 - **Stash**: Ctrl+Alt+S to save, Ctrl+Alt+P to pop. Manage stashes in the right sidebar.
 - **Branches & Tags**: Create, checkout, and search in the right sidebar panel.
 - **.gitignore**: Edit from the hamburger menu (Menu → Edit .gitignore).
-- **Preferences**: Date format, auto-refresh interval, commit files limit.
+- **Preferences**: Date format, auto-refresh interval, commit files limit, external editor.
+
+### Opening the repository in an editor
+
+Pick your editor once in **Preferences → External Tools → Open with**. Gitpulsar
+scans for the editors it knows about — VS Code, VSCodium, Cursor, Windsurf, Zed,
+GNOME Builder, Kate, KDevelop, Sublime Text, Qt Creator, Emacs, Android Studio
+and the JetBrains IDEs — and lists whichever are installed. Anything else goes
+under **Custom command**.
+
+The menu entry then reads **Open in Zed** (or whichever you chose) and is bound
+to **Ctrl+Shift+O**.
+
+A custom command receives the repository path as its final argument. If the path
+belongs somewhere else, put `{path}` where it should go:
+
+```
+myeditor --workspace {path} --no-splash
+```
+
+Under Flatpak the editor runs on the host via `flatpak-spawn --host`, which is
+why the sandbox declares `--talk-name=org.freedesktop.Flatpak`. Editors
+installed as Flatpaks are found under their application ID.
 
 ## Architecture
 
@@ -143,6 +166,7 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 | Shortcut | Action |
 |---|---|
 | Ctrl+O | Open workspace/repo |
+| Ctrl+Shift+O | Open repo in external editor |
 | Ctrl+Enter | Commit |
 | Ctrl+Shift+S | Stage all |
 | Ctrl+Shift+U | Unstage all |
@@ -226,6 +250,16 @@ make uninstall
 
 - [User Guide (English)](docs/guide-en.md)
 - [Руководство пользователя (Русский)](docs/guide-ru.md)
+
+## Contributing
+
+Bug reports and merge requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md)
+for the build setup, the quality gate, and how to run the widget tests headless.
+
+## Thanks
+
+- [Iyaan Azeez](https://gitlab.com/gxhamster) — fixed the commit message field
+  swallowing clicks on its placeholder
 
 ## License
 

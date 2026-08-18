@@ -67,7 +67,10 @@ Two-crate workspace:
 - **Config cells for row factories**: `commit_date_format` and `commit_files_limit` live on the window as `Rc<Cell<_>>` shared with the row factory, and are updated when preferences are saved — a cell captured once at startup silently ignores later preference changes.
 - **Undo/redo**: `UndoStack` in `undo.rs` tracks staging ops and discards (with saved file content for restore).
 - **Syntax highlighting**: `syntect` crate in `syntax.rs`, lazy-loaded SyntaxSet/ThemeSet, theme-aware (dark/light via `adw::StyleManager`).
-- **Config**: JSON at `~/.config/io.gitlab.ilshat_apps/config.json` — date format, refresh interval, commit files limit, recent workspaces.
+- **Config**: JSON at `~/.config/io.gitlab.ilshat_apps/config.json` — date format, refresh interval, commit files limit, recent workspaces, external editor.
+- **External editor** (`external_editor.rs`): "Open in <editor>" (`win.open-in-editor`, Ctrl+Shift+O). Under Flatpak both detection and launch go through `flatpak-spawn --host`, which needs `--talk-name=org.freedesktop.Flatpak` in the manifest — without it the sandbox reports every editor as missing. Detection is one `sh -c` probe for the whole catalogue, not one per command, because each `flatpak-spawn` is a round trip; it runs on a worker thread and refills the preferences combo on arrival. Flatpak app IDs work as commands (`/var/lib/flatpak/exports/bin`). Pure parts (`split_command`, `build_argv`, `match_detected`, `label_for_command`) are unit-tested; `{path}` in a custom command is substituted, otherwise the path is appended.
+- **Workspace root is stored, never derived**: `imp.workspace_root` is set in `open_workspace` from the folder the user actually picked. It used to be recomputed each background tick as `entries[0].path.parent()`, which meant opening a single repository silently widened the workspace to its parent and pulled in every sibling repo (issue #2).
+
 - **CLI open**: App uses `HANDLES_OPEN` flag — accepts repo path as CLI argument (`gitpulsar-gtk /path/to/repo`).
 - **Branch graph**: `commit_graph.rs` renders via cairo, not standard GTK widgets — separate drawing model.
 - **Hunk staging**: Builds partial unified-diff patches and applies via `git2::Repository::apply` to index.
@@ -95,7 +98,10 @@ To reproduce and inspect it again: catch the message with `glib::log_set_writer_
 
 ## CI
 
-GitLab CI (`.gitlab-ci.yml`): triggers on `v*` tags, builds on Fedora 41, produces AppImage via linuxdeploy. `NO_STRIP=true` due to Fedora 41 .relr.dyn incompatibility.
+GitLab CI (`.gitlab-ci.yml`):
+- `test` — runs on merge requests and pushes to the default branch: `cargo build`, `cargo clippy --all-targets -- -D warnings`, then `xvfb-run -a cargo test` (widget tests need a display; `GP_SKIP_GTK_TESTS=1` would soft-skip them and silently drop coverage).
+- `appimage` + `release` — trigger on `v*` tags, build on Fedora 41, produce an AppImage via linuxdeploy. `NO_STRIP=true` due to Fedora 41 .relr.dyn incompatibility.
+
 Release notes auto-extracted from `CHANGELOG.md` via `sed -n` (not `awk` — cascades; not `head -n -1` — BusyBox incompatible).
 
 ## Release Process
