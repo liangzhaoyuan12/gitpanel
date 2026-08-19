@@ -463,11 +463,16 @@ impl GitpulsarWindow {
         window.setup_keyboard_navigation();
         window.setup_auto_refresh();
 
-        // Auto-open last workspace
+        // Auto-open last workspace. Deferred to idle, so it must not clobber a
+        // workspace opened in the meantime — `gitpulsar-gtk /path/to/repo`
+        // opens its argument synchronously right after construction.
         let last_workspace = window.imp().config.borrow().recent_workspaces.first().cloned();
         if let Some(path) = last_workspace {
             let win = window.clone();
             glib::idle_add_local_once(move || {
+                if win.imp().workspace_root.borrow().is_some() {
+                    return;
+                }
                 let p = std::path::PathBuf::from(&path);
                 if p.is_dir() {
                     win.open_workspace(&p);
