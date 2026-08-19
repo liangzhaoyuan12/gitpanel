@@ -108,6 +108,19 @@ GitLab CI (`.gitlab-ci.yml`):
 
 Release notes auto-extracted from `CHANGELOG.md` via `sed -n` (not `awk` — cascades; not `head -n -1` — BusyBox incompatible).
 
+## Flatpak manifest
+
+`io.gitlab.ilshat_apps.gitpulsar.yml` at the root is for local `flatpak-builder` runs; the published packaging lives in the separate `flathub/io.gitlab.ilshat_apps.gitpulsar` GitHub repository (do not keep a second copy in this tree — one existed until v1.3.0 and silently rotted).
+
+`cargo-sources.json` vendors every crate and must be regenerated whenever `Cargo.lock` gains or drops a dependency — a version bump of the workspace crates alone does not count:
+
+```sh
+curl -sSLO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json   # needs aiohttp + tomlkit
+```
+
+It includes dev-dependencies, so a stale file still builds a release but breaks a build that runs the tests.
+
 ## Release Process
 
 1. Update version in `Cargo.toml` (workspace level)
