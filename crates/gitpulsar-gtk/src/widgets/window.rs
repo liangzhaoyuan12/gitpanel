@@ -861,17 +861,16 @@ impl GitpulsarWindow {
         // ==========================================
         let (branches_panel, branches_refs) = branches_tags_panel::build_branches_tags_panel();
 
-        // Connect branch click → checkout
+        // Connect branch click → checkout. Goes through the panel's helper so
+        // the synthetic "Show all" row is not mistaken for a branch (issue #7).
         let win = self.clone();
-        branches_refs.local_list.connect_row_activated(move |_, row| {
-            let name = row.widget_name().to_string();
-            win.on_checkout_branch(&name);
+        branches_tags_panel::connect_item_activated(&branches_refs.local_list, move |name| {
+            win.on_checkout_branch(name);
         });
 
         let win = self.clone();
-        branches_refs.remote_list.connect_row_activated(move |_, row| {
-            let name = row.widget_name().to_string();
-            win.on_checkout_remote_branch(&name);
+        branches_tags_panel::connect_item_activated(&branches_refs.remote_list, move |name| {
+            win.on_checkout_remote_branch(name);
         });
 
         // Connect create branch button

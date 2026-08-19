@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use gtk::glib;
 
 use gitpulsar_core::models::{BranchInfo, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo};
 
@@ -164,6 +165,30 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     (panel, refs)
 }
 
+/// Widget name of the synthetic row `apply_row_limit` appends. It is not an
+/// item, and callers must not read a branch, tag or stash name out of it.
+pub const SHOW_MORE_ROW: &str = "show-more-row";
+
+/// Where the toggle's signal handler id is parked on the ListBox, so the next
+/// application of the limit can drop it.
+const TOGGLE_HANDLER_KEY: &str = "gp-show-more-handler";
+
+/// Connect `on_item` to row activations, skipping the synthetic "Show all" row.
+///
+/// Every consumer of these lists used to wire `connect_row_activated` itself and
+/// read `widget_name()` as the item name, which turned a click on "Show all"
+/// into a checkout of a branch called `show-more-row` (issue #7). Going through
+/// here keeps that filtering in one place, next to the code that creates the row.
+pub fn connect_item_activated<F: Fn(&str) + 'static>(list: &gtk::ListBox, on_item: F) {
+    list.connect_row_activated(move |_, row| {
+        let name = row.widget_name().to_string();
+        if name == SHOW_MORE_ROW {
+            return;
+        }
+        on_item(&name);
+    });
+}
+
 /// Apply a row limit to a ListBox: hide rows beyond `limit` and add a "Show all" toggle.
 /// If limit is 0, show everything.
 pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
@@ -177,7 +202,7 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
 
     while let Some(c) = child {
         let next = c.next_sibling();
-        if c.widget_name() == "show-more-row" {
+        if c.widget_name() == SHOW_MORE_ROW {
             list.remove(&c);
         } else {
             count += 1;
@@ -197,7 +222,7 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
         .selectable(false)
         .activatable(true)
         .build();
-    toggle_row.set_widget_name("show-more-row");
+    toggle_row.set_widget_name(SHOW_MORE_ROW);
     let collapsed_text = format!("Show all ({} more)", overflow_rows.len());
     let label = gtk::Label::builder()
         .label(&collapsed_text)
@@ -208,11 +233,21 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
     toggle_row.set_child(Some(&label));
     list.append(&toggle_row);
 
+    // This function runs on every background refresh. Without dropping the
+    // previous handler they accumulate, and each one toggles the rows in turn —
+    // so after an even number of refreshes "Show all" flipped the rows twice
+    // and appeared to do nothing at all.
+    unsafe {
+        if let Some(previous) = list.steal_data::<glib::SignalHandlerId>(TOGGLE_HANDLER_KEY) {
+            list.disconnect(previous);
+        }
+    }
+
     let overflow_rows = std::rc::Rc::new(overflow_rows);
     let rows = overflow_rows.clone();
     let collapsed = collapsed_text.clone();
-    list.connect_row_activated(move |_, row| {
-        if row.widget_name() != "show-more-row" {
+    let handler = list.connect_row_activated(move |_, row| {
+        if row.widget_name() != SHOW_MORE_ROW {
             return;
         }
         let label = row.child()
@@ -225,6 +260,9 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
         }
         label.set_label(if currently_hidden { "Show less" } else { &collapsed });
     });
+    unsafe {
+        list.set_data(TOGGLE_HANDLER_KEY, handler);
+    }
 }
 
 /// Update the section header label to show count, e.g. "Tags (13)".
@@ -557,5 +595,115 @@ where
             .build();
         row.set_widget_name(&wt.name);
         list.append(&row);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serial_test::serial;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::test_support;
+
+    /// A ListBox of `names`, each row named after its item, as the panel builds them.
+    fn list_of(names: &[&str]) -> gtk::ListBox {
+        let list = gtk::ListBox::new();
+        for name in names {
+            let row = gtk::ListBoxRow::builder().activatable(true).build();
+            row.set_widget_name(name);
+            row.set_child(Some(&gtk::Label::new(Some(name))));
+            list.append(&row);
+        }
+        list
+    }
+
+    fn row_named(list: &gtk::ListBox, name: &str) -> gtk::ListBoxRow {
+        let mut child = list.first_child();
+        while let Some(c) = child {
+            if c.widget_name() == name {
+                return c.downcast::<gtk::ListBoxRow>().expect("rows are ListBoxRow");
+            }
+            child = c.next_sibling();
+        }
+        panic!("no row named {name}");
+    }
+
+    /// Activations reported to a consumer wired through `connect_item_activated`.
+    fn activations(names: &[&'static str], limit: u32, activate: &'static str) -> Vec<String> {
+        test_support::on_gtk_thread({
+            let names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+            move || {
+                let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let list = list_of(&refs);
+                apply_row_limit(&list, limit);
+
+                let seen = Rc::new(RefCell::new(Vec::new()));
+                let recorder = seen.clone();
+                connect_item_activated(&list, move |name| {
+                    recorder.borrow_mut().push(name.to_string());
+                });
+
+                let row = row_named(&list, activate);
+                list.emit_by_name::<()>("row-activated", &[&row]);
+                let reported = seen.borrow().clone();
+                reported
+            }
+        })
+    }
+
+    #[test]
+    #[serial]
+    fn activating_a_branch_reports_its_name() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        assert_eq!(activations(&["main", "dev", "wip"], 1, "dev"), vec!["dev"]);
+    }
+
+    #[test]
+    #[serial]
+    fn activating_show_all_reports_nothing() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        // Issue #7: this used to check out a branch named "show-more-row".
+        let seen = activations(&["main", "dev", "wip"], 1, SHOW_MORE_ROW);
+        assert!(seen.is_empty(), "the Show all row was taken for an item: {seen:?}");
+    }
+    /// Visibility of the overflow rows after activating "Show all" `times`
+    /// applications of the limit.
+    fn overflow_visible_after_applies(applies: usize) -> Vec<bool> {
+        test_support::on_gtk_thread(move || {
+            let list = list_of(&["main", "dev", "wip"]);
+            for _ in 0..applies {
+                apply_row_limit(&list, 1);
+            }
+            let row = row_named(&list, SHOW_MORE_ROW);
+            list.emit_by_name::<()>("row-activated", &[&row]);
+
+            ["dev", "wip"]
+                .iter()
+                .map(|n| row_named(&list, n).is_visible())
+                .collect()
+        })
+    }
+
+    #[test]
+    #[serial]
+    fn show_all_still_expands_after_a_refresh() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        // The background refresh re-applies the limit on every tick. A handler
+        // connected per call would toggle the rows once per tick, so an even
+        // number of ticks would leave them hidden.
+        assert_eq!(overflow_visible_after_applies(1), vec![true, true]);
+        assert_eq!(overflow_visible_after_applies(2), vec![true, true]);
     }
 }
