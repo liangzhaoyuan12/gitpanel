@@ -135,21 +135,18 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let wtl = worktrees_list.clone();
     search_entry.connect_search_changed(move |entry| {
         let query = entry.text().to_lowercase();
-        let filter = move |row: &gtk::ListBoxRow, q: &str| -> bool {
-            q.is_empty() || row.widget_name().to_lowercase().contains(q)
-        };
         let q = query.clone();
-        ll.set_filter_func(move |row| filter(row, &q));
+        ll.set_filter_func(move |row| matches_search(row, &q));
         let q = query.clone();
-        rl.set_filter_func(move |row| filter(row, &q));
+        rl.set_filter_func(move |row| matches_search(row, &q));
         let q = query.clone();
-        tl.set_filter_func(move |row| filter(row, &q));
+        tl.set_filter_func(move |row| matches_search(row, &q));
         let q = query.clone();
-        sl.set_filter_func(move |row| filter(row, &q));
+        sl.set_filter_func(move |row| matches_search(row, &q));
         let q = query.clone();
-        sml.set_filter_func(move |row| filter(row, &q));
+        sml.set_filter_func(move |row| matches_search(row, &q));
         let q = query;
-        wtl.set_filter_func(move |row| filter(row, &q));
+        wtl.set_filter_func(move |row| matches_search(row, &q));
     });
 
     let refs = BranchesTagsRefs {
@@ -194,6 +191,19 @@ pub fn connect_item_activated<F: Fn(&str) + 'static>(list: &gtk::ListBox, on_ite
 /// left-click activation alone was not enough: the right-click context menus
 /// read `widget_name()` straight off the row under the cursor and offered to
 /// check out, merge or delete a branch called `show-more-row` (issues #7, #8).
+/// Whether `row` survives the sidebar search for `query`, which must already be
+/// lowercased.
+///
+/// The "Show all" toggle belongs to the list rather than to the results:
+/// matching it on "show", "more" or "row" surfaced it as a branch called
+/// `show-more-row`. With no query it stays, because it is still the toggle.
+pub fn matches_search(row: &gtk::ListBoxRow, query: &str) -> bool {
+    match item_name(row) {
+        None => query.is_empty(),
+        Some(name) => query.is_empty() || name.to_lowercase().contains(query),
+    }
+}
+
 pub fn item_name(row: &gtk::ListBoxRow) -> Option<String> {
     let name = row.widget_name().to_string();
     // GTK falls back to the widget's type name when none was set, so an
@@ -668,6 +678,32 @@ mod tests {
                 reported
             }
         })
+    }
+
+    #[test]
+    #[serial]
+    fn the_toggle_row_is_never_a_search_hit() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        // Searching the sidebar for "show", "more" or "row" used to return the
+        // synthetic toggle as though it were a branch called `show-more-row`.
+        let (on_show, on_row, on_empty, on_branch) = test_support::on_gtk_thread(|| {
+            let list = list_of(&["main", "dev", "wip"]);
+            apply_row_limit(&list, 1);
+            let toggle = row_named(&list, SHOW_MORE_ROW);
+            (
+                matches_search(&toggle, "show"),
+                matches_search(&toggle, "row"),
+                matches_search(&toggle, ""),
+                matches_search(&row_named(&list, "wip"), "wi"),
+            )
+        });
+        assert!(!on_show, "\"show\" matched the toggle row");
+        assert!(!on_row, "\"row\" matched the toggle row");
+        assert!(on_empty, "the toggle must stay visible with no query");
+        assert!(on_branch, "a real branch must still match");
     }
 
     #[test]
