@@ -100,6 +100,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.3.3" date="2026-09-04">
+      <description>
+        <p>Fixes the "Show all" row under Local branches and Tags being treated as a branch: clicking it attempted to check out "show-more-row", and right-clicking it offered checkout, merge, rename and delete for that name. Also fixes the same button becoming unresponsive after the sidebar had refreshed a few times, and makes opening a repository from the command line — gitpulsar-gtk /path/to/repo — work at last; it had never been wired up.</p>
+      </description>
+    </release>
     <release version="1.3.2" date="2026-08-18">
       <description>
         <p>Restores "Open With…" in the Flatpak build, where it now asks the desktop portal to choose an application. Editors that register as directory handlers — VS Code, VSCodium, Kate, IntelliJ IDEA, Android Studio — appear in the chooser; those that do not register, such as Zed and GNOME Builder, will not. Outside Flatpak the configured editor is launched directly as before.</p>

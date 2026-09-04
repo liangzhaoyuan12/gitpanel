@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "gitpulsar-core"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "gitpulsar-gtk"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "async-channel",

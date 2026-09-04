@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.3 (2026-09-04)
+
+### Fixed
+
+- **Clicking "Show all" under Local branches tried to check out a branch named
+  `show-more-row`.** The row is synthetic, but the checkout handler read a
+  branch name off whatever row was activated. Reported by @rachaalaraj.
+- **Right-clicking "Show all" offered branch and tag operations** on that same
+  non-existent name — Checkout, Merge, Rename, Delete. Both context menus read
+  the row under the cursor directly; every path now goes through one filter.
+  Reported by @rachaalaraj.
+- **"Show all" stopped working after a while.** The row limit was re-applied on
+  every background refresh and connected a fresh handler each time, so the
+  accumulated handlers toggled the rows once each and cancelled out.
+- **`gitpulsar-gtk /path/to/repo` now opens that repository.** It never did:
+  the application declares `HANDLES_OPEN`, which makes GApplication emit `open`
+  instead of `activate`, and no `open` handler had ever been connected — so the
+  window was not created at all. The path is also no longer overwritten a
+  moment later by the deferred "restore last workspace".
+
 ## v1.3.2 (2026-08-18)
 
 ### Added
