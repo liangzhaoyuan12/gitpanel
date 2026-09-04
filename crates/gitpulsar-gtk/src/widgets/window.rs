@@ -4292,8 +4292,7 @@ impl GitpulsarWindow {
         let tl = tags_list.clone();
         gesture.connect_released(move |_gesture, _, x, y| {
             let Some(row) = tl.row_at_y(y as i32) else { return };
-            let tag_name = row.widget_name().to_string();
-            if tag_name.is_empty() { return; }
+            let Some(tag_name) = branches_tags_panel::item_name(&row) else { return };
 
             let popover = gtk::Popover::new();
             popover.set_parent(&tl);
@@ -4423,8 +4422,7 @@ impl GitpulsarWindow {
         let ll = local_list.clone();
         gesture.connect_released(move |_gesture, _, x, y| {
             let Some(row) = ll.row_at_y(y as i32) else { return };
-            let branch_name = row.widget_name().to_string();
-            if branch_name.is_empty() { return; }
+            let Some(branch_name) = branches_tags_panel::item_name(&row) else { return };
 
             // Check if this is the current branch
             let is_head = win.imp().branch_label.label().as_str() == branch_name;

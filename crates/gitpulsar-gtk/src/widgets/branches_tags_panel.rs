@@ -181,12 +181,28 @@ const TOGGLE_HANDLER_KEY: &str = "gp-show-more-handler";
 /// here keeps that filtering in one place, next to the code that creates the row.
 pub fn connect_item_activated<F: Fn(&str) + 'static>(list: &gtk::ListBox, on_item: F) {
     list.connect_row_activated(move |_, row| {
-        let name = row.widget_name().to_string();
-        if name == SHOW_MORE_ROW {
-            return;
+        if let Some(name) = item_name(row) {
+            on_item(&name);
         }
-        on_item(&name);
     });
+}
+
+/// The branch, tag or stash a row stands for, or `None` when the row is not an
+/// item at all — the synthetic "Show all" toggle, or an unnamed row.
+///
+/// Every path that turns a row into an operation must go through here. Filtering
+/// left-click activation alone was not enough: the right-click context menus
+/// read `widget_name()` straight off the row under the cursor and offered to
+/// check out, merge or delete a branch called `show-more-row` (issues #7, #8).
+pub fn item_name(row: &gtk::ListBoxRow) -> Option<String> {
+    let name = row.widget_name().to_string();
+    // GTK falls back to the widget's type name when none was set, so an
+    // unnamed row reports "GtkListBoxRow" and never an empty string — which is
+    // why the `is_empty()` guard the context menus used could not fire.
+    if name.is_empty() || name == SHOW_MORE_ROW || name == "GtkListBoxRow" {
+        return None;
+    }
+    Some(name)
 }
 
 /// Apply a row limit to a ListBox: hide rows beyond `limit` and add a "Show all" toggle.
@@ -652,6 +668,33 @@ mod tests {
                 reported
             }
         })
+    }
+
+    #[test]
+    #[serial]
+    fn item_name_rejects_everything_that_is_not_an_item() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+        // The right-click menus look rows up by position, so they need the same
+        // filter the activation path uses (issue #8).
+        let (show_more, unnamed, branch) = test_support::on_gtk_thread(|| {
+            let list = list_of(&["main", "dev", "wip"]);
+            apply_row_limit(&list, 1);
+
+            let unnamed = gtk::ListBoxRow::new();
+            list.append(&unnamed);
+
+            (
+                item_name(&row_named(&list, SHOW_MORE_ROW)),
+                item_name(&unnamed),
+                item_name(&row_named(&list, "main")),
+            )
+        });
+        assert_eq!(show_more, None, "the Show all row is not an item");
+        assert_eq!(unnamed, None, "an unnamed row is not an item");
+        assert_eq!(branch, Some("main".to_string()));
     }
 
     #[test]
