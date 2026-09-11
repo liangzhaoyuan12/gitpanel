@@ -1,11 +1,11 @@
-# Gitpulsar
+# Gitpanel
 
 **A fast, native Git client for GNOME.** Written in Rust with GTK4 and libadwaita — small binary, low memory, no telemetry, no cloud, no terminal required.
 
-![Gitpulsar — light theme](data/screenshots/light.png)
-![Gitpulsar — dark theme](data/screenshots/dark.png)
+![Gitpanel — light theme](data/screenshots/light.png)
+![Gitpanel — dark theme](data/screenshots/dark.png)
 
-## Why Gitpulsar
+## Why Gitpanel
 
 - **Native GNOME experience** — libadwaita widgets, dark/light themes, follows your accent color
 - **Multi-repository workspace** — open a folder, see every repo with live status indicators (modified, untracked, ahead of remote)
@@ -59,8 +59,8 @@
 Open a workspace folder or a single Git repository:
 
 ```sh
-gitpulsar-gtk /path/to/projects   # open a folder with multiple repos
-gitpulsar-gtk /path/to/repo       # open a single repository
+gitpanel /path/to/projects   # open a folder with multiple repos
+gitpanel /path/to/repo       # open a single repository
 ```
 
 Or use **Ctrl+O** inside the app to open a folder. If the folder contains multiple Git repositories, they appear in the left sidebar. Click a repository to select it.
@@ -104,7 +104,7 @@ The **Commits** tab (Ctrl+1) shows the commit log with expandable details:
 
 ### Opening the repository in an editor
 
-Pick your editor once in **Preferences → External Tools → Open with**. Gitpulsar
+Pick your editor once in **Preferences → External Tools → Open with**. Gitpanel
 scans for the editors it knows about — VS Code, VSCodium, Cursor, Windsurf, Zed,
 GNOME Builder, Kate, KDevelop, Sublime Text, Qt Creator, Emacs, Android Studio
 and the JetBrains IDEs — and lists whichever are installed. Anything else goes
@@ -139,7 +139,7 @@ is missing, the AppImage and distribution packages launch it directly.
 
 ```
 crates/
-├── gitpulsar-core/        # Git operations library (git2-rs + git CLI)
+├── gitpanel/        # Git operations library (git2-rs + git CLI)
 │   ├── repository.rs      # Repo open, status, log (paginated), branches, ahead/behind
 │   ├── staging.rs          # Stage, unstage, commit, discard, hunk-level staging
 │   ├── remote.rs           # Fetch, pull, push (git2 for local, CLI for remote)
@@ -153,7 +153,7 @@ crates/
 │   ├── worktrees.rs        # Worktree list, add, remove
 │   ├── gitignore.rs        # Read/write .gitignore
 │   └── models.rs           # Data types (CommitInfo, BranchInfo, DiffFile, etc.)
-└── gitpulsar-gtk/          # GTK4 + libadwaita frontend
+└── gitpanel/          # GTK4 + libadwaita frontend
     ├── app.rs              # Application setup + keyboard shortcuts
     ├── main.rs             # Entry point
     ├── config.rs           # Preferences (date format, refresh interval, files limit)
@@ -243,13 +243,13 @@ cargo build --release
 ## Running
 
 ```sh
-gitpulsar-gtk
+gitpanel
 ```
 
 Or from source:
 
 ```sh
-cargo run -p gitpulsar-gtk
+cargo run -p gitpanel
 ```
 
 ## Uninstall

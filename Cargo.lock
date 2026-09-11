@@ -467,20 +467,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitpulsar-core"
-version = "1.3.3"
-dependencies = [
- "anyhow",
- "chrono",
- "git2",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "gitpulsar-gtk"
+name = "gitpanel"
 version = "1.3.3"
 dependencies = [
  "anyhow",
@@ -488,13 +475,14 @@ dependencies = [
  "cairo-rs",
  "chrono",
  "dirs",
- "gitpulsar-core",
+ "git2",
  "gtk4",
  "libadwaita",
  "serde",
  "serde_json",
  "serial_test",
  "syntect",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
