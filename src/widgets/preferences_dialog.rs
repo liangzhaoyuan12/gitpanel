@@ -48,6 +48,22 @@ fn fill_editor_combo(
     combo.set_selected(selected as u32);
 }
 
+/// Always offer "Zed" in the picker, even when host detection does not find it.
+/// Detection only lists editors it can resolve on PATH; the user explicitly wants
+/// Zed selectable regardless, so we inject it (deduped against a detected copy).
+fn ensure_zed_present(detected: &[DetectedEditor]) -> Vec<DetectedEditor> {
+    if detected.iter().any(|d| d.name == "Zed") {
+        return detected.to_vec();
+    }
+    let mut out = Vec::with_capacity(detected.len() + 1);
+    out.push(DetectedEditor {
+        name: "Zed".to_string(),
+        command: "zed".to_string(),
+    });
+    out.extend(detected.iter().cloned());
+    out
+}
+
 pub fn build_preferences_dialog<F>(config: &AppConfig, on_changed: F) -> adw::PreferencesDialog
 where
     F: Fn(AppConfig) + Clone + 'static,
@@ -174,7 +190,13 @@ where
     } else {
         tools_group.add(&editor_row);
         tools_group.add(&custom_row);
-        fill_editor_combo(&editor_row, &choices, &[], config.external_editor.as_deref());
+        let detected_initial = ensure_zed_present(&[]);
+        fill_editor_combo(
+            &editor_row,
+            &choices,
+            &detected_initial,
+            config.external_editor.as_deref(),
+        );
         custom_row.set_visible(matches!(
             choices.borrow().get(editor_row.selected() as usize),
             Some(EditorChoice::Custom)
@@ -206,7 +228,12 @@ where
             // restored; without this guard that transient 0 would be saved as
             // "Not configured" and wipe the user's editor.
             refilling.set(true);
-            fill_editor_combo(&editor_row, &choices, &detected, current.as_deref());
+            fill_editor_combo(
+                &editor_row,
+                &choices,
+                &ensure_zed_present(&detected),
+                current.as_deref(),
+            );
             refilling.set(false);
         });
 
