@@ -135,6 +135,14 @@ fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> 
     }
 }
 
+/// Which remote operation to run after the user picks a remote from the list.
+#[derive(Clone, Copy)]
+enum RemoteOp {
+    Fetch,
+    Pull,
+    Push { force: bool },
+}
+
 /// Walk the realized children of a ListView and return the outer Box whose
 /// widget_name matches `path`. Used after activation to find the row that
 /// represents the activated file (ListView recycles rows, so we can't capture
@@ -205,8 +213,13 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     // they stay in the menu so mobile widths, where the bar collapses, keep them.
     let remote_submenu = gio::Menu::new();
     remote_submenu.append(Some("Fetch"), Some("win.fetch"));
+    remote_submenu.append(Some("Fetch from…"), Some("win.fetch-from"));
     remote_submenu.append(Some("Pull"), Some("win.pull"));
+    remote_submenu.append(Some("Pull from…"), Some("win.pull-from"));
     remote_submenu.append(Some("Push"), Some("win.push"));
+    remote_submenu.append(Some("Push to…"), Some("win.push-to"));
+    remote_submenu.append(Some("Force Push to…"), Some("win.force-push-to"));
+
     repo_section.append_submenu(Some("Remote"), &remote_submenu);
     repo_section.append(Some("Manage Remotes…"), Some("win.remotes"));
 
@@ -293,8 +306,15 @@ mod imp {
         pub amend_check: gtk::CheckButton,
         pub allow_empty_check: gtk::CheckButton,
         pub fetch_btn: gtk::Button,
+        // Plain (origin) pull/push buttons. The dropdown "…from… / …to…"
+        // variants are exposed by a caret MenuButton grouped with these via a
+        // `.linked` box, mirroring a GtkSplitButton (gtk4 0.9 has no
+        // SplitButton binding, so we compose the equivalent from primitives).
         pub pull_btn: gtk::Button,
         pub push_btn: gtk::Button,
+        // `.linked` containers holding the button + caret, for layout/visibility.
+        pub pull_container: RefCell<Option<gtk::Box>>,
+        pub push_container: RefCell<Option<gtk::Box>>,
         // Branches/tags panel refs (set during setup_ui)
         pub branches_local_list: RefCell<Option<gtk::ListBox>>,
         pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
@@ -387,6 +407,8 @@ mod imp {
                     .icon_name("go-up-symbolic")
                     .tooltip_text("Push")
                     .build(),
+                pull_container: RefCell::new(None),
+                push_container: RefCell::new(None),
                 branches_local_list: RefCell::new(None),
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
@@ -543,19 +565,38 @@ impl GitpanelWindow {
             win.on_push(false);
         });
 
-        // Push menu with force-push option
+        // SplitButton-style controls: a plain (origin) pull/push button grouped
+        // with a caret MenuButton via a `.linked` box. The caret opens the
+        // "choose a remote" variants; Force Push / Force Push to… live there too.
+        let pull_menu = gio::Menu::new();
+        pull_menu.append(Some("Pull from…"), Some("win.pull-from"));
+        let pull_caret = gtk::MenuButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text("More pull options")
+            .build();
+        pull_caret.set_menu_model(Some(&pull_menu));
+        pull_caret.add_css_class("flat");
+        let pull_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        pull_container.add_css_class("linked");
+        pull_container.append(&imp.pull_btn);
+        pull_container.append(&pull_caret);
+        *imp.pull_container.borrow_mut() = Some(pull_container.clone());
+
         let push_menu = gio::Menu::new();
+        push_menu.append(Some("Push to…"), Some("win.push-to"));
         push_menu.append(Some("Force Push"), Some("win.force-push"));
-
-        let push_popover = gtk::PopoverMenu::from_model(Some(&push_menu));
-        push_popover.set_parent(&imp.push_btn);
-
-        let push_gesture = gtk::GestureLongPress::new();
-        let pp = push_popover.clone();
-        push_gesture.connect_pressed(move |_, _, _| {
-            pp.popup();
-        });
-        imp.push_btn.add_controller(push_gesture);
+        push_menu.append(Some("Force Push to…"), Some("win.force-push-to"));
+        let push_caret = gtk::MenuButton::builder()
+            .icon_name("pan-down-symbolic")
+            .tooltip_text("More push options")
+            .build();
+        push_caret.set_menu_model(Some(&push_menu));
+        push_caret.add_css_class("flat");
+        let push_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        push_container.add_css_class("linked");
+        push_container.append(&imp.push_btn);
+        push_container.append(&push_caret);
+        *imp.push_container.borrow_mut() = Some(push_container.clone());
 
         // Content header right: toggle right sidebar (always visible)
         let toggle_right_panel = gtk::ToggleButton::builder()
@@ -585,6 +626,10 @@ impl GitpanelWindow {
             ("Fetch", "win.fetch", "view-refresh-symbolic"),
             ("Pull", "win.pull", "go-down-symbolic"),
             ("Push", "win.push", "go-up-symbolic"),
+            ("Fetch from…", "win.fetch-from", "view-refresh-symbolic"),
+            ("Pull from…", "win.pull-from", "go-down-symbolic"),
+            ("Push to…", "win.push-to", "go-up-symbolic"),
+            ("Force Push to…", "win.force-push-to", "go-up-symbolic"),
         ] {
             let row = gtk::Button::builder()
                 .css_classes(["flat"])
@@ -923,8 +968,18 @@ impl GitpanelWindow {
         imp.pull_btn.add_css_class("flat");
         imp.push_btn.add_css_class("flat");
         bottom_left.append(&imp.fetch_btn);
-        bottom_left.append(&imp.pull_btn);
-        bottom_left.append(&imp.push_btn);
+        bottom_left.append(
+            imp.pull_container
+                .borrow()
+                .as_ref()
+                .expect("pull_container set"),
+        );
+        bottom_left.append(
+            imp.push_container
+                .borrow()
+                .as_ref()
+                .expect("push_container set"),
+        );
 
         // Center: ViewSwitcher (wide) + compact icon-only toggles (narrow)
         let view_switcher = adw::ViewSwitcher::new();
@@ -1201,8 +1256,16 @@ impl GitpanelWindow {
         // Move fetch/pull/push from the bottom bar into a single "Sync"
         // header MenuButton so the bottom bar isn't crowded on narrow widths.
         bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(
+            imp.pull_container.borrow().as_ref().unwrap(),
+            "visible",
+            Some(&false.to_value()),
+        );
+        bp_narrow.add_setter(
+            imp.push_container.borrow().as_ref().unwrap(),
+            "visible",
+            Some(&false.to_value()),
+        );
         bp_narrow.add_setter(&sync_btn, "visible", Some(&true.to_value()));
         // Hide commit-extras buttons on narrow — keep the row from overflowing.
         bp_narrow.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
@@ -1430,6 +1493,38 @@ impl GitpanelWindow {
             window.on_pull();
         });
         self.add_action(&pull_action);
+
+        // Fetch from… (choose a remote)
+        let fetch_from_action = gio::SimpleAction::new("fetch-from", None);
+        let window = self.clone();
+        fetch_from_action.connect_activate(move |_, _| {
+            window.on_fetch_from();
+        });
+        self.add_action(&fetch_from_action);
+
+        // Pull from… (choose a remote)
+        let pull_from_action = gio::SimpleAction::new("pull-from", None);
+        let window = self.clone();
+        pull_from_action.connect_activate(move |_, _| {
+            window.on_pull_from();
+        });
+        self.add_action(&pull_from_action);
+
+        // Push to… (choose a remote)
+        let push_to_action = gio::SimpleAction::new("push-to", None);
+        let window = self.clone();
+        push_to_action.connect_activate(move |_, _| {
+            window.on_push_to(false);
+        });
+        self.add_action(&push_to_action);
+
+        // Force push to… (choose a remote, force)
+        let force_push_to_action = gio::SimpleAction::new("force-push-to", None);
+        let window = self.clone();
+        force_push_to_action.connect_activate(move |_, _| {
+            window.on_push_to(true);
+        });
+        self.add_action(&force_push_to_action);
 
         // Show commits page
         let show_commits_action = gio::SimpleAction::new("show-commits", None);
@@ -2790,8 +2885,12 @@ impl GitpanelWindow {
     fn set_remote_buttons_sensitive(&self, sensitive: bool) {
         let imp = self.imp();
         imp.fetch_btn.set_sensitive(sensitive);
-        imp.pull_btn.set_sensitive(sensitive);
-        imp.push_btn.set_sensitive(sensitive);
+        if let Some(c) = imp.pull_container.borrow().as_ref() {
+            c.set_sensitive(sensitive);
+        }
+        if let Some(c) = imp.push_container.borrow().as_ref() {
+            c.set_sensitive(sensitive);
+        }
     }
 
     /// Run a git operation in a background thread with UI feedback.
@@ -2865,6 +2964,133 @@ impl GitpanelWindow {
             run_git_cmd(path, &args)
                 .map(|_| if force { "Force push complete".to_string() } else { "Push complete".to_string() })
         });
+    }
+
+    /// Fetch from a specific remote chosen by the user (not hardcoded to origin).
+    fn on_fetch_from(&self) {
+        self.open_remote_picker(RemoteOp::Fetch);
+    }
+
+    /// Pull from a specific remote chosen by the user.
+    fn on_pull_from(&self) {
+        self.open_remote_picker(RemoteOp::Pull);
+    }
+
+    /// Push to a specific remote chosen by the user.
+    fn on_push_to(&self, force: bool) {
+        self.open_remote_picker(RemoteOp::Push { force });
+    }
+
+    /// Pop up a dialog listing every configured remote so the user can choose
+    /// which one to fetch from / pull from / push to. Remotes are no longer
+    /// assumed to be a single `origin`.
+    fn open_remote_picker(&self, op: RemoteOp) {
+        let Some(path) = self.repo_path_string() else {
+            self.show_toast("No repository selected");
+            return;
+        };
+
+        let repo = match GitRepo::open(&path) {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Remote", &format!("{:#}", e));
+                return;
+            }
+        };
+        let remotes = match repo.remotes() {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Remote", &format!("{:#}", e));
+                return;
+            }
+        };
+        if remotes.is_empty() {
+            self.show_toast("No remotes configured");
+            return;
+        }
+
+        let (title, body) = match op {
+            RemoteOp::Fetch => ("Fetch from…", "Choose a remote to fetch from:"),
+            RemoteOp::Pull => ("Pull from…", "Choose a remote to pull from:"),
+            RemoteOp::Push { .. } => ("Push to…", "Choose a remote to push to:"),
+        };
+
+        let dialog = adw::AlertDialog::new(Some(title), Some(body));
+        let list = gtk::ListBox::new();
+        list.add_css_class("boxed-list");
+        for r in &remotes {
+            let row = adw::ActionRow::builder()
+                .title(&r.name)
+                .activatable(true)
+                .build();
+            if !r.url.is_empty() {
+                row.set_subtitle(&r.url);
+            }
+            list.append(&row);
+        }
+        dialog.set_extra_child(Some(&list));
+        dialog.add_response("cancel", "Cancel");
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        dialog.present(Some(self));
+
+        let win = self.clone();
+        list.connect_row_activated(move |_, row| {
+            let idx = row.index();
+            if let Some(r) = remotes.get(idx as usize) {
+                let name = r.name.clone();
+                dialog.close();
+                win.run_remote_op(op, &name);
+            }
+        });
+    }
+
+    /// Run the chosen remote operation against a specific remote (no longer
+    /// hardcoded to `origin`).
+    fn run_remote_op(&self, op: RemoteOp, remote: &str) {
+        match op {
+            RemoteOp::Fetch => {
+                let remote = remote.to_string();
+                self.run_git_op("Fetch", move |path| {
+                    run_git_cmd(path, &["fetch", "--prune", remote.as_str()])
+                        .map(|_| format!("Fetched from {}", remote))
+                });
+            }
+            RemoteOp::Pull => {
+                let remote = remote.to_string();
+                self.run_git_op("Pull", move |path| {
+                    let branch = run_git_cmd(path, &["rev-parse", "--abbrev-ref", "HEAD"])?
+                        .trim()
+                        .to_string();
+                    run_git_cmd(path, &["pull", "--ff-only", remote.as_str(), &branch]).map(
+                        |out| {
+                            if out.trim().is_empty() {
+                                format!("Pulled from {}", remote)
+                            } else {
+                                out
+                            }
+                        },
+                    )
+                });
+            }
+            RemoteOp::Push { force } => {
+                let remote = remote.to_string();
+                self.run_git_op("Push", move |path| {
+                    let mut args: Vec<&str> = vec!["push", "-u", remote.as_str(), "HEAD"];
+                    if force {
+                        args.insert(1, "--force");
+                    }
+                    run_git_cmd(path, &args).map(|_| {
+                        if force {
+                            format!("Force pushed to {}", remote)
+                        } else {
+                            format!("Pushed to {}", remote)
+                        }
+                    })
+                });
+            }
+        }
     }
 
     fn show_force_push_dialog(&self) {
