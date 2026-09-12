@@ -44,6 +44,19 @@ impl GitRepo {
             });
         }
 
+        // Sort by the commit each tag points to, newest first, so the list
+        // follows commit order instead of the arbitrary `tag_names` order
+        // (which is effectively alphabetical and scrambles semantic versions).
+        tags.sort_by(|a, b| {
+            let time_of = |id: &str| -> Option<i64> {
+                git2::Oid::from_str(id)
+                    .ok()
+                    .and_then(|oid| repo.find_commit(oid).ok())
+                    .map(|c| c.time().seconds())
+            };
+            time_of(&b.target_id).cmp(&time_of(&a.target_id))
+        });
+
         Ok(tags)
     }
 
