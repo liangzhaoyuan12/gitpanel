@@ -27,6 +27,7 @@ mod imp {
         pub expanded: Cell<bool>,
         pub files_loaded: Cell<bool>,
         pub is_load_more_sentinel: Cell<bool>,
+        pub highlighted: Cell<bool>,
     }
 
     impl Default for CommitObject {
@@ -50,6 +51,7 @@ mod imp {
                 expanded: Cell::new(false),
                 files_loaded: Cell::new(false),
                 is_load_more_sentinel: Cell::new(false),
+                highlighted: Cell::new(false),
             }
         }
     }
@@ -154,6 +156,12 @@ impl CommitObject {
     }
     pub fn is_load_more_sentinel(&self) -> bool {
         self.imp().is_load_more_sentinel.get()
+    }
+    pub fn is_highlighted(&self) -> bool {
+        self.imp().highlighted.get()
+    }
+    pub fn set_highlighted(&self, v: bool) {
+        self.imp().highlighted.set(v);
     }
 }
 

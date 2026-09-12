@@ -413,7 +413,7 @@ pub fn populate_tags(tags_list: &gtk::ListBox, tags: &[TagInfo]) {
 
         let row = gtk::ListBoxRow::builder()
             .child(&row_box)
-            .activatable(false)
+            .activatable(true)
             .build();
         row.set_widget_name(&tag.name);
 

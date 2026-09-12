@@ -490,6 +490,12 @@ fn bind_row(outer: &gtk::Box, obj: &CommitObject, date_format: DateFormat) {
     }
 
     outer.set_widget_name(&obj.id());
+    // Highlight when its tag is clicked in the sidebar (recycle-safe: lives on the object).
+    if obj.is_highlighted() {
+        outer.add_css_class("gp-tag-highlight");
+    } else {
+        outer.remove_css_class("gp-tag-highlight");
+    }
     // Stash full message for the edit-button closure to read.
     unsafe {
         outer.set_data::<String>("commit-message", obj.message());

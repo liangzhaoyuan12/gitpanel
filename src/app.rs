@@ -18,6 +18,11 @@ fn present_window(app: &adw::Application) -> GitpanelWindow {
             label.gp-ind-yellow { color: #e5a50a; }
             label.gp-ind-blue { color: #3584e4; }
             label.gp-ind-green { color: #26a269; }
+            /* Highlight a commit row when its tag is clicked in the sidebar. */
+            .gp-commit-row.gp-tag-highlight {
+                background-color: alpha(@accent_color, 0.22);
+                border-radius: 8px;
+            }
             /* Touch-friendly row heights once mobile breakpoint applies. */
             .gp-mobile .gp-file-row { min-height: 48px; }
             .gp-mobile listview.navigation-sidebar > row { min-height: 48px; }

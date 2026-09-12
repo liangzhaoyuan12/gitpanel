@@ -172,6 +172,40 @@ fn find_row_outer_for_path(list_view: &gtk::ListView, path: &str) -> Option<gtk:
     None
 }
 
+/// Find the [`CommitObject`] for `commit_id` in the commit store, if loaded.
+fn find_commit_object(
+    store: &gio::ListStore,
+    commit_id: &str,
+) -> Option<crate::widgets::commit_object::CommitObject> {
+    for i in 0..store.n_items() {
+        if let Some(item) = store.item(i) {
+            if let Ok(obj) = item.downcast::<crate::widgets::commit_object::CommitObject>() {
+                if obj.id() == commit_id {
+                    return Some(obj);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Position of `commit_id` in the model the list view actually renders
+/// (`selection` -> `filter_model` -> `store`), so the index matches what
+/// `ListView::scroll_to` expects even when a filter is active.
+fn commit_position(list_view: &gtk::ListView, commit_id: &str) -> Option<u32> {
+    let model = list_view.model()?;
+    for i in 0..model.n_items() {
+        if let Some(item) = model.item(i) {
+            if let Ok(obj) = item.downcast::<crate::widgets::commit_object::CommitObject>() {
+                if obj.id() == commit_id {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Build the primary (hamburger) menu.
 ///
 /// Grouped into sections so the popover reads as four short blocks instead of
@@ -295,6 +329,11 @@ mod imp {
         pub commit_filter: RefCell<Option<gtk::CustomFilter>>,
         pub commit_filter_model: RefCell<Option<gtk::FilterListModel>>,
         pub commit_selection: RefCell<Option<gtk::SingleSelection>>,
+        /// Commit a tag click wants to jump to while it is still beyond the
+        /// loaded pages; retried by `load_more_commits` after every page.
+        pub pending_highlight: RefCell<Option<String>>,
+        /// Guard so only one "load more" request is in flight at a time.
+        pub loading_more: Cell<bool>,
         // Shared with the row factory so a preferences change reaches rows that
         // are already built.
         pub commit_date_format: Rc<Cell<DateFormat>>,
@@ -317,6 +356,12 @@ mod imp {
         pub branches_local_list: RefCell<Option<gtk::ListBox>>,
         pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
         pub tags_list: RefCell<Option<gtk::ListBox>>,
+        // tag name → commit id it points to, kept in sync with the last tags
+        // populate so a tag click can jump to its commit.
+        pub tag_targets: RefCell<std::collections::HashMap<String, String>>,
+        // Currently highlighted commit id (from a tag click), so the highlight
+        // can be cleared before another is applied.
+        pub highlighted_commit_id: RefCell<Option<String>>,
         // Changes view file list (set during setup_ui)
         pub changed_file_list: RefCell<Option<gtk::ListView>>,
         pub changed_file_store: RefCell<Option<gio::ListStore>>,
@@ -372,6 +417,8 @@ mod imp {
                 commit_filter: RefCell::new(None),
                 commit_filter_model: RefCell::new(None),
                 commit_selection: RefCell::new(None),
+                pending_highlight: RefCell::new(None),
+                loading_more: Cell::new(false),
                 commit_date_format: Rc::new(Cell::new(DateFormat::European)),
                 commit_files_limit: Rc::new(Cell::new(10)),
                 view_stack: adw::ViewStack::new(),
@@ -408,6 +455,8 @@ mod imp {
                 branches_local_list: RefCell::new(None),
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
+                tag_targets: RefCell::new(std::collections::HashMap::new()),
+                highlighted_commit_id: RefCell::new(None),
                 changed_file_list: RefCell::new(None),
                 changed_file_store: RefCell::new(None),
                 stashes_list: RefCell::new(None),
@@ -770,9 +819,12 @@ impl GitpanelWindow {
                 .label("No commits yet")
                 .css_classes(["dim-label"])
                 .build();
-            // Placeholder lives in a Stack swapped when the store empties.
-            let stack = gtk::Stack::new();
-            stack.add_named(&refs.list_view, Some("list"));
+            // The empty-state placeholder swaps with the *scroll window*, never
+            // with the list itself: a `ListView` only receives the scroll window's
+            // adjustments — and can therefore be scrolled via `scroll_to` — while
+            // it is that scroll window's direct child.
+            let stack = gtk::Stack::builder().vexpand(true).build();
+            stack.add_named(&commit_scrolled, Some("list"));
             stack.add_named(&commits_placeholder, Some("empty"));
             stack.set_visible_child_name("empty");
 
@@ -783,16 +835,15 @@ impl GitpanelWindow {
                 stack_for_signal.set_visible_child_name(if has_commits { "list" } else { "empty" });
             });
 
+            commit_scrolled.set_child(Some(&refs.list_view));
             *imp.commit_list_view.borrow_mut() = Some(refs.list_view);
             *imp.commit_store.borrow_mut() = Some(refs.store);
             *imp.commit_filter.borrow_mut() = Some(refs.filter);
             *imp.commit_filter_model.borrow_mut() = Some(refs.filter_model);
             *imp.commit_selection.borrow_mut() = Some(refs.selection);
 
-            commit_scrolled.set_child(Some(&stack));
+            commits_page.append(&stack);
         }
-
-        commits_page.append(&commit_scrolled);
 
         // --- Changes page: file accordion list with inline diffs ---
         let (changes_box, changes_refs) = changes_view::build_changes_view(
@@ -895,6 +946,12 @@ impl GitpanelWindow {
         let win = self.clone();
         branches_tags_panel::connect_item_activated(&branches_refs.remote_list, move |name| {
             win.on_checkout_remote_branch(name);
+        });
+
+        // Connect tag click → jump to its commit on the Commits page (highlighted).
+        let win = self.clone();
+        branches_tags_panel::connect_item_activated(&branches_refs.tags_list, move |name| {
+            win.on_tag_activated(name);
         });
 
         // Connect create branch button
@@ -1847,6 +1904,20 @@ impl GitpanelWindow {
         let has_more = commits.len() >= COMMIT_PAGE_SIZE;
         crate::widgets::commit_list::populate_commit_store(&store, commits, tags_map, ahead, has_more);
 
+        // Keep a tag-click highlight alive across a commit-list rebuild.
+        if let Some(id) = imp.highlighted_commit_id.borrow().clone() {
+            for i in 0..store.n_items() {
+                if let Some(item) = store.item(i) {
+                    if let Ok(obj) = item.downcast::<crate::widgets::commit_object::CommitObject>() {
+                        if obj.id() == id {
+                            obj.set_highlighted(true);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         imp.commits_loaded_count.set(commits.len());
         self.spawn_signature_batch(commits.iter().map(|c| c.id.clone()).collect());
     }
@@ -1898,7 +1969,11 @@ impl GitpanelWindow {
 
     fn load_more_commits(&self) {
         let imp = self.imp();
+        if imp.loading_more.get() {
+            return; // a page is already in flight
+        }
         let Some(path) = self.repo_path_string() else { return };
+        imp.loading_more.set(true);
         let skip = imp.commits_loaded_count.get();
 
         let (tx, rx) = async_channel::bounded::<(Vec<CommitInfo>, HashMap<String, Vec<String>>)>(1);
@@ -1911,9 +1986,15 @@ impl GitpanelWindow {
 
         let win = self.clone();
         glib::spawn_future_local(async move {
-            let Ok((new_commits, tags_map)) = rx.recv().await else { return };
+            let Ok((new_commits, tags_map)) = rx.recv().await else {
+                win.imp().loading_more.set(false);
+                return;
+            };
             let imp = win.imp();
-            let Some(store) = imp.commit_store.borrow().clone() else { return };
+            let Some(store) = imp.commit_store.borrow().clone() else {
+                imp.loading_more.set(false);
+                return;
+            };
 
             let ahead = imp.ahead_label.label()
                 .strip_prefix("▲ ")
@@ -1934,6 +2015,10 @@ impl GitpanelWindow {
             let new_ids: Vec<String> = new_commits.iter().map(|c| c.id.clone()).collect();
             imp.commits.borrow_mut().extend(new_commits);
             win.spawn_signature_batch(new_ids);
+
+            imp.loading_more.set(false);
+            // A tag click may be waiting for this page to appear.
+            win.continue_pending_highlight();
         });
     }
 
@@ -2063,6 +2148,126 @@ impl GitpanelWindow {
         };
         let date_format = imp.config.borrow().date_format;
         crate::widgets::commit_list::rebind_row(&outer, obj, date_format);
+    }
+
+    /// Jump to the commit a tag points at: switch to the Commits page and
+    /// highlight that commit's row.
+    fn on_tag_activated(&self, name: &str) {
+        let commit_id = self.imp().tag_targets.borrow().get(name).cloned();
+        let Some(commit_id) = commit_id else {
+            self.show_toast("Tag has no resolvable commit");
+            return;
+        };
+        self.imp().view_stack.set_visible_child_name("commits");
+        // A tag can point at a commit that is still behind "load more"; in that
+        // case keep loading pages until it turns up (or history runs out).
+        if !self.highlight_commit(&commit_id) {
+            *self.imp().pending_highlight.borrow_mut() = Some(commit_id);
+            self.load_more_for_highlight();
+        }
+    }
+
+    /// Highlight `commit_id` in the commits list, clearing any previous highlight.
+    /// The highlight lives on the `CommitObject` so it survives `ListView` row
+    /// recycling; the factory applies/removes the CSS class on every bind.
+    ///
+    /// Returns `false` when the commit is not in the store yet (still behind
+    /// "load more"), so the caller can load more pages and retry.
+    fn highlight_commit(&self, commit_id: &str) -> bool {
+        let imp = self.imp();
+        let Some(list_view) = imp.commit_list_view.borrow().clone() else {
+            return false;
+        };
+        let Some(store) = imp.commit_store.borrow().clone() else {
+            return false;
+        };
+        let date_format = imp.config.borrow().date_format;
+
+        // Clear the previously highlighted commit.
+        if let Some(prev) = imp.highlighted_commit_id.borrow_mut().take() {
+            if let Some(obj) = find_commit_object(&store, &prev) {
+                obj.set_highlighted(false);
+                if let Some(outer) = crate::widgets::commit_list::find_row_outer(&list_view, &prev) {
+                    crate::widgets::commit_list::rebind_row(&outer, &obj, date_format);
+                }
+            }
+        }
+
+        // Highlight the new one (steady highlight that persists).
+        let Some(obj) = find_commit_object(&store, commit_id) else {
+            return false; // not loaded yet — caller loads more and retries
+        };
+        {
+            obj.set_highlighted(true);
+            *imp.highlighted_commit_id.borrow_mut() = Some(commit_id.to_string());
+            if let Some(pos) = commit_position(&list_view, commit_id) {
+                // The Commits page may have just been revealed, in which case the
+                // list view is not laid out yet and scroll_to has no effect; defer
+                // it to the next idle and repeat once more after the layout settles.
+                let lv = list_view.clone();
+                glib::idle_add_local_once(move || {
+                    lv.scroll_to(pos, gtk::ListScrollFlags::empty(), None);
+                });
+                let lv = list_view.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+                    lv.scroll_to(pos, gtk::ListScrollFlags::empty(), None);
+                    glib::ControlFlow::Break
+                });
+            }
+            // Apply now if the row is already realized; otherwise the list view's
+            // factory rebinds it on scroll and applies the class then.
+            if let Some(outer) = crate::widgets::commit_list::find_row_outer(&list_view, commit_id) {
+                crate::widgets::commit_list::rebind_row(&outer, &obj, date_format);
+            }
+        }
+        true
+    }
+
+    /// True while the commit list still ends in a "load more" sentinel, i.e.
+    /// there is more history that has not been fetched yet.
+    fn commits_has_more(&self) -> bool {
+        let Some(store) = self.imp().commit_store.borrow().clone() else {
+            return false;
+        };
+        for i in 0..store.n_items() {
+            if let Some(item) = store.item(i) {
+                if let Ok(obj) = item.downcast::<crate::widgets::commit_object::CommitObject>() {
+                    if obj.is_load_more_sentinel() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Fetch another page of history so a pending tag jump can be completed.
+    /// Gives up (with a toast) once the whole history is loaded.
+    fn load_more_for_highlight(&self) {
+        let imp = self.imp();
+        if imp.pending_highlight.borrow().is_none() {
+            return;
+        }
+        if !self.commits_has_more() {
+            imp.pending_highlight.borrow_mut().take();
+            self.show_toast("That commit is not in the loaded history");
+            return;
+        }
+        self.load_more_commits();
+    }
+
+    /// Retry a pending tag jump after a page of history was appended, loading
+    /// yet another page if the target still is not in the list.
+    fn continue_pending_highlight(&self) {
+        let imp = self.imp();
+        let Some(commit_id) = imp.pending_highlight.borrow().clone() else {
+            return;
+        };
+        if self.highlight_commit(&commit_id) {
+            imp.pending_highlight.borrow_mut().take();
+        } else {
+            self.load_more_for_highlight();
+        }
     }
 
     fn on_commit_clicked(&self) {
@@ -2562,6 +2767,13 @@ impl GitpanelWindow {
             branches_tags_panel::update_section_header(tl, "Tags", tags.len());
             branches_tags_panel::apply_row_limit(tl, limit);
         }
+
+        // Remember where each tag points so a tag click can jump to its commit.
+        let targets: std::collections::HashMap<String, String> = tags
+            .iter()
+            .map(|t| (t.name.clone(), t.target_id.clone()))
+            .collect();
+        *imp.tag_targets.borrow_mut() = targets;
     }
 
     fn populate_stashes_data(&self, entries: &[StashEntry]) {
