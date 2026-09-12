@@ -309,15 +309,10 @@ mod imp {
         pub amend_check: gtk::CheckButton,
         pub allow_empty_check: gtk::CheckButton,
         pub fetch_btn: gtk::Button,
-        // Plain (origin) pull/push buttons. The dropdown "…from… / …to…"
-        // variants are exposed by a caret MenuButton grouped with these via a
-        // `.linked` box, mirroring a GtkSplitButton (gtk4 0.9 has no
-        // SplitButton binding, so we compose the equivalent from primitives).
-        pub pull_btn: gtk::Button,
-        pub push_btn: gtk::Button,
-        // `.linked` containers holding the button + caret, for layout/visibility.
-        pub pull_container: RefCell<Option<gtk::Box>>,
-        pub push_container: RefCell<Option<gtk::Box>>,
+        // Plain pull/push buttons, now `MenuButton`s whose click pops the
+        // pull/push dropdown directly (no separate caret).
+        pub pull_btn: gtk::MenuButton,
+        pub push_btn: gtk::MenuButton,
         // Branches/tags panel refs (set during setup_ui)
         pub branches_local_list: RefCell<Option<gtk::ListBox>>,
         pub branches_remote_list: RefCell<Option<gtk::ListBox>>,
@@ -402,16 +397,14 @@ mod imp {
                     .icon_name("view-refresh-symbolic")
                     .tooltip_text("Fetch")
                     .build(),
-                pull_btn: gtk::Button::builder()
+                pull_btn: gtk::MenuButton::builder()
                     .icon_name("go-down-symbolic")
                     .tooltip_text("Pull")
                     .build(),
-                push_btn: gtk::Button::builder()
+                push_btn: gtk::MenuButton::builder()
                     .icon_name("go-up-symbolic")
                     .tooltip_text("Push")
                     .build(),
-                pull_container: RefCell::new(None),
-                push_container: RefCell::new(None),
                 branches_local_list: RefCell::new(None),
                 branches_remote_list: RefCell::new(None),
                 tags_list: RefCell::new(None),
@@ -559,32 +552,14 @@ impl GitpanelWindow {
         imp.fetch_btn.connect_clicked(move |_| {
             win.on_fetch();
         });
-        let win = self.clone();
-        imp.pull_btn.connect_clicked(move |_| {
-            win.on_pull();
-        });
-        let win = self.clone();
-        imp.push_btn.connect_clicked(move |_| {
-            win.on_push(false);
-        });
 
-        // SplitButton-style controls: a plain (origin) pull/push button grouped
-        // with a caret MenuButton via a `.linked` box. The caret opens the
-        // "choose a remote" variants; Force Push / Force Push to… live there too.
+        // Pull/push are single `MenuButton`s: clicking the button itself pops the
+        // dropdown (no separate caret). The menu holds the plain Pull/Push plus
+        // the "…from / …to" and force variants.
         let pull_menu = gio::Menu::new();
         pull_menu.append(Some("Pull"), Some("win.pull"));
         pull_menu.append(Some("Pull from…"), Some("win.pull-from"));
-        let pull_caret = gtk::MenuButton::builder()
-            .icon_name("pan-down-symbolic")
-            .tooltip_text("More pull options")
-            .build();
-        pull_caret.set_menu_model(Some(&pull_menu));
-        pull_caret.add_css_class("flat");
-        let pull_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        pull_container.add_css_class("linked");
-        pull_container.append(&imp.pull_btn);
-        pull_container.append(&pull_caret);
-        *imp.pull_container.borrow_mut() = Some(pull_container.clone());
+        imp.pull_btn.set_menu_model(Some(&pull_menu));
 
         let push_menu = gio::Menu::new();
         push_menu.append(Some("Push"), Some("win.push"));
@@ -593,17 +568,7 @@ impl GitpanelWindow {
         push_menu.append(Some("Force Push"), Some("win.force-push"));
         push_menu.append(Some("Force Push to…"), Some("win.force-push-to"));
         push_menu.append(Some("Force Push to all remotes…"), Some("win.force-push-all"));
-        let push_caret = gtk::MenuButton::builder()
-            .icon_name("pan-down-symbolic")
-            .tooltip_text("More push options")
-            .build();
-        push_caret.set_menu_model(Some(&push_menu));
-        push_caret.add_css_class("flat");
-        let push_container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        push_container.add_css_class("linked");
-        push_container.append(&imp.push_btn);
-        push_container.append(&push_caret);
-        *imp.push_container.borrow_mut() = Some(push_container.clone());
+        imp.push_btn.set_menu_model(Some(&push_menu));
 
         // Content header right: toggle right sidebar (always visible)
         let toggle_right_panel = gtk::ToggleButton::builder()
@@ -977,18 +942,8 @@ impl GitpanelWindow {
         imp.pull_btn.add_css_class("flat");
         imp.push_btn.add_css_class("flat");
         bottom_left.append(&imp.fetch_btn);
-        bottom_left.append(
-            imp.pull_container
-                .borrow()
-                .as_ref()
-                .expect("pull_container set"),
-        );
-        bottom_left.append(
-            imp.push_container
-                .borrow()
-                .as_ref()
-                .expect("push_container set"),
-        );
+        bottom_left.append(&imp.pull_btn);
+        bottom_left.append(&imp.push_btn);
 
         // Center: ViewSwitcher (wide) + compact icon-only toggles (narrow)
         let view_switcher = adw::ViewSwitcher::new();
@@ -1265,16 +1220,8 @@ impl GitpanelWindow {
         // Move fetch/pull/push from the bottom bar into a single "Sync"
         // header MenuButton so the bottom bar isn't crowded on narrow widths.
         bp_narrow.add_setter(&imp.fetch_btn, "visible", Some(&false.to_value()));
-        bp_narrow.add_setter(
-            imp.pull_container.borrow().as_ref().unwrap(),
-            "visible",
-            Some(&false.to_value()),
-        );
-        bp_narrow.add_setter(
-            imp.push_container.borrow().as_ref().unwrap(),
-            "visible",
-            Some(&false.to_value()),
-        );
+        bp_narrow.add_setter(&imp.pull_btn, "visible", Some(&false.to_value()));
+        bp_narrow.add_setter(&imp.push_btn, "visible", Some(&false.to_value()));
         bp_narrow.add_setter(&sync_btn, "visible", Some(&true.to_value()));
         // Hide commit-extras buttons on narrow — keep the row from overflowing.
         bp_narrow.add_setter(&changes_refs.template_btn, "visible", Some(&false.to_value()));
@@ -2910,12 +2857,8 @@ impl GitpanelWindow {
     fn set_remote_buttons_sensitive(&self, sensitive: bool) {
         let imp = self.imp();
         imp.fetch_btn.set_sensitive(sensitive);
-        if let Some(c) = imp.pull_container.borrow().as_ref() {
-            c.set_sensitive(sensitive);
-        }
-        if let Some(c) = imp.push_container.borrow().as_ref() {
-            c.set_sensitive(sensitive);
-        }
+        imp.pull_btn.set_sensitive(sensitive);
+        imp.push_btn.set_sensitive(sensitive);
     }
 
     /// Run a git operation in a background thread with UI feedback.
