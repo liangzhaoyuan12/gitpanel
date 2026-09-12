@@ -398,11 +398,11 @@ mod imp {
                     .tooltip_text("Fetch")
                     .build(),
                 pull_btn: gtk::MenuButton::builder()
-                    .icon_name("go-down-symbolic")
+                    .icon_name("folder-download-symbolic")
                     .tooltip_text("Pull")
                     .build(),
                 push_btn: gtk::MenuButton::builder()
-                    .icon_name("go-up-symbolic")
+                    .icon_name("software-update-available-symbolic")
                     .tooltip_text("Push")
                     .build(),
                 branches_local_list: RefCell::new(None),
