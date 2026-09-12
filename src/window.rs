@@ -140,7 +140,7 @@ fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> 
 enum RemoteOp {
     Fetch,
     Pull,
-    Push { force: bool },
+    Push { force: bool, tags: bool },
 }
 
 /// Walk the realized children of a ListView and return the outer Box whose
@@ -218,7 +218,9 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     remote_submenu.append(Some("Pull from…"), Some("win.pull-from"));
     remote_submenu.append(Some("Push"), Some("win.push"));
     remote_submenu.append(Some("Push to…"), Some("win.push-to"));
+    remote_submenu.append(Some("Force Push"), Some("win.force-push"));
     remote_submenu.append(Some("Force Push to…"), Some("win.force-push-to"));
+    remote_submenu.append(Some("Push to all remotes…"), Some("win.push-all"));
 
     repo_section.append_submenu(Some("Remote"), &remote_submenu);
     repo_section.append(Some("Manage Remotes…"), Some("win.remotes"));
@@ -586,6 +588,7 @@ impl GitpanelWindow {
         push_menu.append(Some("Push to…"), Some("win.push-to"));
         push_menu.append(Some("Force Push"), Some("win.force-push"));
         push_menu.append(Some("Force Push to…"), Some("win.force-push-to"));
+        push_menu.append(Some("Push to all remotes…"), Some("win.push-all"));
         let push_caret = gtk::MenuButton::builder()
             .icon_name("pan-down-symbolic")
             .tooltip_text("More push options")
@@ -630,6 +633,7 @@ impl GitpanelWindow {
             ("Pull from…", "win.pull-from", "go-down-symbolic"),
             ("Push to…", "win.push-to", "go-up-symbolic"),
             ("Force Push to…", "win.force-push-to", "go-up-symbolic"),
+            ("Push to all remotes…", "win.push-all", "go-up-symbolic"),
         ] {
             let row = gtk::Button::builder()
                 .css_classes(["flat"])
@@ -1442,7 +1446,7 @@ impl GitpanelWindow {
         let force_push_action = gio::SimpleAction::new("force-push", None);
         let window = self.clone();
         force_push_action.connect_activate(move |_, _| {
-            window.show_force_push_dialog();
+            window.on_push(true);
         });
         self.add_action(&force_push_action);
 
@@ -1525,6 +1529,14 @@ impl GitpanelWindow {
             window.on_push_to(true);
         });
         self.add_action(&force_push_to_action);
+
+        // Push to all remotes
+        let push_all_action = gio::SimpleAction::new("push-all", None);
+        let window = self.clone();
+        push_all_action.connect_activate(move |_, _| {
+            window.show_push_all_dialog();
+        });
+        self.add_action(&push_all_action);
 
         // Show commits page
         let show_commits_action = gio::SimpleAction::new("show-commits", None);
@@ -2956,13 +2968,148 @@ impl GitpanelWindow {
     }
 
     fn on_push(&self, force: bool) {
+        self.show_push_dialog(force);
+    }
+
+    /// Ask the user whether to also push tags, then push the current branch to
+    /// `origin`. The `force` flag shows a destructive warning and uses `--force`.
+    fn show_push_dialog(&self, force: bool) {
+        let title = if force { "Force Push?" } else { "Push to origin" };
+        let body = if force {
+            Some(
+                "This will overwrite the remote branch. This action cannot be undone and may cause others to lose work.",
+            )
+        } else {
+            None
+        };
+        let dialog = adw::AlertDialog::new(Some(title), body);
+
+        let tags_check = gtk::CheckButton::builder()
+            .label("Also push tags (--tags)")
+            .halign(gtk::Align::Start)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        dialog.set_extra_child(Some(&tags_check));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("push", if force { "Force Push" } else { "Push" });
+        if force {
+            dialog.set_response_appearance("push", adw::ResponseAppearance::Destructive);
+        } else {
+            dialog.set_response_appearance("push", adw::ResponseAppearance::Suggested);
+        }
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |d, response| {
+            if response == "push" {
+                let tags = tags_check.is_active();
+                d.close();
+                win.run_push_origin(force, tags);
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Push the current branch to `origin`, optionally with `--force` and/or
+    /// `--tags`.
+    fn run_push_origin(&self, force: bool, tags: bool) {
         self.run_git_op("Push", move |path| {
-            let mut args = vec!["push", "-u", "origin", "HEAD"];
+            let mut args: Vec<&str> = vec!["push", "-u", "origin", "HEAD"];
             if force {
                 args.insert(1, "--force");
             }
-            run_git_cmd(path, &args)
-                .map(|_| if force { "Force push complete".to_string() } else { "Push complete".to_string() })
+            if tags {
+                args.push("--tags");
+            }
+            run_git_cmd(path, &args).map(|_| {
+                let mut msg = if force {
+                    "Force push complete".to_string()
+                } else {
+                    "Push complete".to_string()
+                };
+                if tags {
+                    msg.push_str(" (with tags)");
+                }
+                msg
+            })
+        });
+    }
+
+    /// Ask the user whether to also push tags, then push the current branch to
+    /// every configured remote.
+    fn show_push_all_dialog(&self) {
+        let dialog = adw::AlertDialog::new(
+            Some("Push to all remotes"),
+            Some("Push the current branch to every configured remote."),
+        );
+
+        let tags_check = gtk::CheckButton::builder()
+            .label("Also push tags (--tags)")
+            .halign(gtk::Align::Start)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        dialog.set_extra_child(Some(&tags_check));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("push", "Push");
+        dialog.set_response_appearance("push", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |d, response| {
+            if response == "push" {
+                let tags = tags_check.is_active();
+                d.close();
+                win.run_push_all(tags);
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Push the current branch to every configured remote, optionally with
+    /// `--tags`. Remotes are no longer assumed to be a single `origin`.
+    fn run_push_all(&self, tags: bool) {
+        let Some(path) = self.repo_path_string() else {
+            self.show_toast("No repository selected");
+            return;
+        };
+        let repo = match GitRepo::open(&path) {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Push", &format!("{:#}", e));
+                return;
+            }
+        };
+        let remotes = match repo.remotes() {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Push", &format!("{:#}", e));
+                return;
+            }
+        };
+        if remotes.is_empty() {
+            self.show_toast("No remotes configured");
+            return;
+        }
+        let names: Vec<String> = remotes.iter().map(|r| r.name.clone()).collect();
+        self.run_git_op("Push", move |path| {
+            for name in &names {
+                let mut args: Vec<&str> = vec!["push", "-u", name.as_str(), "HEAD"];
+                if tags {
+                    args.push("--tags");
+                }
+                run_git_cmd(path, &args)?;
+            }
+            Ok(format!(
+                "Pushed to {} remote(s){}",
+                names.len(),
+                if tags { " (with tags)" } else { "" }
+            ))
         });
     }
 
@@ -2978,7 +3125,7 @@ impl GitpanelWindow {
 
     /// Push to a specific remote chosen by the user.
     fn on_push_to(&self, force: bool) {
-        self.open_remote_picker(RemoteOp::Push { force });
+        self.open_remote_picker(RemoteOp::Push { force, tags: false });
     }
 
     /// Pop up a dialog listing every configured remote so the user can choose
@@ -3028,7 +3175,27 @@ impl GitpanelWindow {
             }
             list.append(&row);
         }
-        dialog.set_extra_child(Some(&list));
+
+        // For push operations, let the user choose whether to also push tags.
+        let tags_check = if matches!(op, RemoteOp::Push { .. }) {
+            let c = gtk::CheckButton::builder()
+                .label("Also push tags (--tags)")
+                .halign(gtk::Align::Start)
+                .margin_top(6)
+                .build();
+            Some(c)
+        } else {
+            None
+        };
+
+        if let Some(tags_check) = &tags_check {
+            let boxed = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            boxed.append(&list);
+            boxed.append(tags_check);
+            dialog.set_extra_child(Some(&boxed));
+        } else {
+            dialog.set_extra_child(Some(&list));
+        }
         dialog.add_response("cancel", "Cancel");
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -3036,12 +3203,15 @@ impl GitpanelWindow {
         dialog.present(Some(self));
 
         let win = self.clone();
+        let tags_check = tags_check.clone();
         list.connect_row_activated(move |_, row| {
             let idx = row.index();
             if let Some(r) = remotes.get(idx as usize) {
                 let name = r.name.clone();
+                let force = matches!(op, RemoteOp::Push { force: true, .. });
+                let tags = tags_check.as_ref().map(|c| c.is_active()).unwrap_or(false);
                 dialog.close();
-                win.run_remote_op(op, &name);
+                win.run_remote_op(RemoteOp::Push { force, tags }, &name);
             }
         });
     }
@@ -3074,43 +3244,30 @@ impl GitpanelWindow {
                     )
                 });
             }
-            RemoteOp::Push { force } => {
+            RemoteOp::Push { force, tags } => {
                 let remote = remote.to_string();
                 self.run_git_op("Push", move |path| {
                     let mut args: Vec<&str> = vec!["push", "-u", remote.as_str(), "HEAD"];
                     if force {
                         args.insert(1, "--force");
                     }
+                    if tags {
+                        args.push("--tags");
+                    }
                     run_git_cmd(path, &args).map(|_| {
-                        if force {
+                        let mut msg = if force {
                             format!("Force pushed to {}", remote)
                         } else {
                             format!("Pushed to {}", remote)
+                        };
+                        if tags {
+                            msg.push_str(" (with tags)");
                         }
+                        msg
                     })
                 });
             }
         }
-    }
-
-    fn show_force_push_dialog(&self) {
-        let dialog = adw::AlertDialog::new(
-            Some("Force Push?"),
-            Some("This will overwrite the remote branch. This action cannot be undone and may cause others to lose work."),
-        );
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("force-push", "Force Push");
-        dialog.set_response_appearance("force-push", adw::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-
-        let win = self.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "force-push" {
-                win.on_push(true);
-            }
-        });
-        dialog.present(Some(self));
     }
 
     fn refresh_after_remote_op(&self) {
@@ -5172,7 +5329,20 @@ mod tests {
         let remote = repo_section
             .item_link(0, gio::MENU_LINK_SUBMENU)
             .expect("Remote is a submenu");
-        assert_eq!(labels(&remote), vec!["Fetch", "Pull", "Push"]);
+        assert_eq!(
+            labels(&remote),
+            vec![
+                "Fetch",
+                "Fetch from…",
+                "Pull",
+                "Pull from…",
+                "Push",
+                "Push to…",
+                "Force Push",
+                "Force Push to…",
+                "Push to all remotes…",
+            ]
+        );
 
         let tools = repo_section
             .item_link(2, gio::MENU_LINK_SUBMENU)
