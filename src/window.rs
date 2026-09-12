@@ -218,9 +218,10 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     remote_submenu.append(Some("Pull from…"), Some("win.pull-from"));
     remote_submenu.append(Some("Push"), Some("win.push"));
     remote_submenu.append(Some("Push to…"), Some("win.push-to"));
+    remote_submenu.append(Some("Push to all remotes…"), Some("win.push-all"));
     remote_submenu.append(Some("Force Push"), Some("win.force-push"));
     remote_submenu.append(Some("Force Push to…"), Some("win.force-push-to"));
-    remote_submenu.append(Some("Push to all remotes…"), Some("win.push-all"));
+    remote_submenu.append(Some("Force Push to all remotes…"), Some("win.force-push-all"));
 
     repo_section.append_submenu(Some("Remote"), &remote_submenu);
     repo_section.append(Some("Manage Remotes…"), Some("win.remotes"));
@@ -571,6 +572,7 @@ impl GitpanelWindow {
         // with a caret MenuButton via a `.linked` box. The caret opens the
         // "choose a remote" variants; Force Push / Force Push to… live there too.
         let pull_menu = gio::Menu::new();
+        pull_menu.append(Some("Pull"), Some("win.pull"));
         pull_menu.append(Some("Pull from…"), Some("win.pull-from"));
         let pull_caret = gtk::MenuButton::builder()
             .icon_name("pan-down-symbolic")
@@ -585,10 +587,12 @@ impl GitpanelWindow {
         *imp.pull_container.borrow_mut() = Some(pull_container.clone());
 
         let push_menu = gio::Menu::new();
+        push_menu.append(Some("Push"), Some("win.push"));
         push_menu.append(Some("Push to…"), Some("win.push-to"));
+        push_menu.append(Some("Push to all remotes…"), Some("win.push-all"));
         push_menu.append(Some("Force Push"), Some("win.force-push"));
         push_menu.append(Some("Force Push to…"), Some("win.force-push-to"));
-        push_menu.append(Some("Push to all remotes…"), Some("win.push-all"));
+        push_menu.append(Some("Force Push to all remotes…"), Some("win.force-push-all"));
         let push_caret = gtk::MenuButton::builder()
             .icon_name("pan-down-symbolic")
             .tooltip_text("More push options")
@@ -634,6 +638,7 @@ impl GitpanelWindow {
             ("Push to…", "win.push-to", "go-up-symbolic"),
             ("Force Push to…", "win.force-push-to", "go-up-symbolic"),
             ("Push to all remotes…", "win.push-all", "go-up-symbolic"),
+            ("Force Push to all remotes…", "win.force-push-all", "go-up-symbolic"),
         ] {
             let row = gtk::Button::builder()
                 .css_classes(["flat"])
@@ -1537,6 +1542,14 @@ impl GitpanelWindow {
             window.show_push_all_dialog();
         });
         self.add_action(&push_all_action);
+
+        // Force push to all remotes
+        let force_push_all_action = gio::SimpleAction::new("force-push-all", None);
+        let window = self.clone();
+        force_push_all_action.connect_activate(move |_, _| {
+            window.show_force_push_all_dialog();
+        });
+        self.add_action(&force_push_all_action);
 
         // Show commits page
         let show_commits_action = gio::SimpleAction::new("show-commits", None);
@@ -3107,6 +3120,86 @@ impl GitpanelWindow {
             }
             Ok(format!(
                 "Pushed to {} remote(s){}",
+                names.len(),
+                if tags { " (with tags)" } else { "" }
+            ))
+        });
+    }
+
+    /// Force-push the current branch to every configured remote. Wrapped in a
+    /// destructive confirmation because `--force` rewrites remote history on all
+    /// remotes at once.
+    fn show_force_push_all_dialog(&self) {
+        let dialog = adw::AlertDialog::new(
+            Some("Force Push to all remotes"),
+            Some(
+                "Force-push the current branch to every configured remote, overwriting remote history. This cannot be undone and may cause others to lose work.",
+            ),
+        );
+
+        let tags_check = gtk::CheckButton::builder()
+            .label("Also push tags (--tags)")
+            .halign(gtk::Align::Start)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        dialog.set_extra_child(Some(&tags_check));
+
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("push", "Force Push");
+        dialog.set_response_appearance("push", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |d, response| {
+            if response == "push" {
+                let tags = tags_check.is_active();
+                d.close();
+                win.run_force_push_all(tags);
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Force-push the current branch to every configured remote, optionally
+    /// with `--tags`. Mirrors `run_push_all` but inserts `--force` before the
+    /// refspec.
+    fn run_force_push_all(&self, tags: bool) {
+        let Some(path) = self.repo_path_string() else {
+            self.show_toast("No repository selected");
+            return;
+        };
+        let repo = match GitRepo::open(&path) {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Push", &format!("{:#}", e));
+                return;
+            }
+        };
+        let remotes = match repo.remotes() {
+            Ok(r) => r,
+            Err(e) => {
+                self.show_error_dialog("Push", &format!("{:#}", e));
+                return;
+            }
+        };
+        if remotes.is_empty() {
+            self.show_toast("No remotes configured");
+            return;
+        }
+        let names: Vec<String> = remotes.iter().map(|r| r.name.clone()).collect();
+        self.run_git_op("Force Push", move |path| {
+            for name in &names {
+                let mut args: Vec<&str> = vec!["push", "-u", name.as_str(), "HEAD"];
+                args.insert(1, "--force");
+                if tags {
+                    args.push("--tags");
+                }
+                run_git_cmd(path, &args)?;
+            }
+            Ok(format!(
+                "Force-pushed to {} remote(s){}",
                 names.len(),
                 if tags { " (with tags)" } else { "" }
             ))
