@@ -934,6 +934,12 @@ impl GitpanelWindow {
             win.on_unstage_all();
         });
 
+        // Connect Trash All button (move every change to the system Trash)
+        let win = self.clone();
+        changes_refs.trash_all_btn.connect_clicked(move |_| {
+            win.on_trash_all();
+        });
+
         // Row activation: ListView fires connect_activate(idx) on double-click /
         // Enter. Look up the bound row widget and toggle its diff revealer.
         let win = self.clone();
@@ -2584,6 +2590,71 @@ impl GitpanelWindow {
                         win.imp().undo_stack.borrow_mut().push(
                             UndoableOp::Discard(file_path.clone(), saved_content),
                         );
+                    }
+                    drop(repo_ref);
+                    win.refresh_staging();
+                }
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Move every changed file to the system Trash (safe rollback) after confirming.
+    fn on_trash_all(&self) {
+        let change_count = {
+            let repo_ref = self.imp().repo.borrow();
+            match &*repo_ref {
+                Some(repo) => repo
+                    .status(true)
+                    .map(|s| s.staged.len() + s.unstaged.len() + s.untracked.len())
+                    .unwrap_or(0),
+                None => 0,
+            }
+        };
+        if change_count == 0 {
+            return;
+        }
+
+        let dialog = adw::AlertDialog::new(
+            Some("Move All Changes to Trash?"),
+            Some(
+                "Every modified, new, and deleted file will be moved to the system Trash \
+                 (recoverable), and the working tree will be restored to a clean state.",
+            ),
+        );
+        dialog.set_body_use_markup(true);
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("trash", "Move to Trash");
+        dialog.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "trash" {
+                let repo_ref = win.imp().repo.borrow();
+                if let Some(ref repo) = *repo_ref {
+                    match repo.trash_all_changes() {
+                        Ok(res) => {
+                            if res.failures.is_empty() {
+                                win.show_toast(&format!(
+                                    "Moved {} file(s) to Trash; working tree is clean",
+                                    res.trashed
+                                ));
+                            } else {
+                                let names: Vec<String> =
+                                    res.failures.iter().map(|(p, _)| p.clone()).collect();
+                                win.show_toast(&format!(
+                                    "Moved {} file(s) to Trash; {} could not be trashed (kept): {}",
+                                    res.trashed,
+                                    res.failures.len(),
+                                    names.join(", ")
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            win.show_toast(&format!("Failed: {}", e));
+                        }
                     }
                     drop(repo_ref);
                     win.refresh_staging();

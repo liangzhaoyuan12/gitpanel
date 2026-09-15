@@ -484,6 +484,7 @@ dependencies = [
  "cairo-rs",
  "chrono",
  "dirs",
+ "gio",
  "git2",
  "gtk4",
  "libadwaita",

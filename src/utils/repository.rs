@@ -1,8 +1,23 @@
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
+use gio::prelude::*;
 use git2::{BranchType, Repository, StatusOptions};
 
 use crate::model::*;
+
+/// Summary of a `trash_all_changes` run.
+#[derive(Debug, Default, Clone)]
+pub struct TrashAllResult {
+    /// Number of files successfully moved to the system Trash.
+    pub trashed: usize,
+    /// Number of tracked files successfully restored to a clean state.
+    pub restored: usize,
+    /// Paths that could not be moved to Trash, with the error reason.
+    /// These files are left untouched so no work is lost.
+    pub failures: Vec<(String, String)>,
+}
 
 pub struct GitRepo {
     repo: Repository,
@@ -423,6 +438,81 @@ impl GitRepo {
             return false;
         };
         self.repo.extract_signature(&oid, None).is_ok()
+    }
+
+    /// Move every changed file (modified, new/untracked, deleted) to the system
+    /// Trash, then restore the working tree to a clean state. This is a *safe*
+    /// rollback: the user's current versions sit in the OS recycle bin and can
+    /// be recovered, while the repository returns to HEAD.
+    ///
+    /// Files that cannot be trashed are deliberately left alone (not restored)
+    /// so their contents are never lost.
+    pub fn trash_all_changes(&self) -> Result<TrashAllResult> {
+        let mut result = TrashAllResult::default();
+
+        let status = self.status(true)?;
+        let workdir = self.path().to_path_buf();
+
+        let mut tracked: HashSet<String> = HashSet::new();
+        for f in status.staged.iter().chain(status.unstaged.iter()) {
+            tracked.insert(f.path.clone());
+        }
+        let untracked: HashSet<String> = status.untracked.iter().cloned().collect();
+
+        // Tracked paths whose working-tree version should be restored from HEAD
+        // after trashing.
+        let mut to_restore: Vec<String> = Vec::new();
+
+        // --- Untracked files: just move to Trash (nothing to restore) ---
+        for p in &untracked {
+            if tracked.contains(p) {
+                continue; // extremely unlikely; treated as tracked below
+            }
+            let full = workdir.join(p);
+            if full.exists() {
+                match gio::File::for_path(&full).trash(None::<&gio::Cancellable>) {
+                    Ok(()) => result.trashed += 1,
+                    Err(e) => result.failures.push((p.clone(), e.to_string())),
+                }
+            }
+        }
+
+        // --- Tracked files: trash the current version, then restore from HEAD ---
+        for p in &tracked {
+            let full = workdir.join(p);
+            if full.exists() {
+                match gio::File::for_path(&full).trash(None::<&gio::Cancellable>) {
+                    Ok(()) => {
+                        result.trashed += 1;
+                        to_restore.push(p.clone());
+                    }
+                    Err(e) => {
+                        // Could not trash -> keep the file, do NOT overwrite it.
+                        result.failures.push((p.clone(), e.to_string()));
+                    }
+                }
+            } else {
+                // Deleted in the working tree (no file to trash) -> restore from HEAD.
+                to_restore.push(p.clone());
+            }
+        }
+
+        if !to_restore.is_empty() {
+            // Drop any staged changes so the index matches HEAD, then check out
+            // each path to its HEAD version. `unstage_all` may fail on an unborn
+            // HEAD; that only matters when there are tracked changes, which is
+            // rare there, and the failure is non-fatal for the rest.
+            let _ = self.unstage_all();
+            for p in &to_restore {
+                if let Err(e) = self.discard_file(p) {
+                    result.failures.push((p.clone(), format!("restore failed: {e}")));
+                } else {
+                    result.restored += 1;
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 

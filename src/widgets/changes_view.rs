@@ -22,6 +22,7 @@ pub struct ChangesViewRefs {
     pub store: gio::ListStore,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
+    pub trash_all_btn: gtk::Button,
     /// Optional extras (commit-prefix template + co-author trailer).
     /// Hidden on narrow widths to make room for the commit button.
     pub template_btn: gtk::MenuButton,
@@ -94,6 +95,13 @@ pub fn build_changes_view(
         .css_classes(["flat", "caption"])
         .build();
     action_row.append(&unstage_all_btn);
+
+    let trash_all_btn = gtk::Button::builder()
+        .label("Trash All")
+        .css_classes(["flat", "caption"])
+        .tooltip_text("Move all changes to Trash (safe rollback)")
+        .build();
+    action_row.append(&trash_all_btn);
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -191,6 +199,7 @@ pub fn build_changes_view(
         store,
         stage_all_btn,
         unstage_all_btn,
+        trash_all_btn,
         template_btn,
         coauthor_btn,
     };
