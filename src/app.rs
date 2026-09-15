@@ -18,6 +18,32 @@ fn present_window(app: &adw::Application) -> GitpanelWindow {
             label.gp-ind-yellow { color: #e5a50a; }
             label.gp-ind-blue { color: #3584e4; }
             label.gp-ind-green { color: #26a269; }
+            /* Remote-tracking ref marker (`origin/main`) on commit rows and in
+               the graph's label column. */
+            frame.gp-remote-badge {
+                border-radius: 999px;
+                border: 1px solid alpha(@accent_color, 0.45);
+                background-color: alpha(@accent_color, 0.14);
+                padding: 0 4px;
+                min-height: 0;
+            }
+            frame.gp-remote-badge label {
+                color: @accent_color;
+                padding: 0 2px;
+            }
+            /* Local branch marker (`local/main`) — same pill, different colour so
+               a local branch is never mistaken for a remote-tracking one. */
+            frame.gp-local-badge {
+                border-radius: 999px;
+                border: 1px solid alpha(#26a269, 0.45);
+                background-color: alpha(#26a269, 0.14);
+                padding: 0 4px;
+                min-height: 0;
+            }
+            frame.gp-local-badge label {
+                color: #26a269;
+                padding: 0 2px;
+            }
             /* Highlight a commit row when its tag is clicked in the sidebar. */
             .gp-commit-row.gp-tag-highlight {
                 background-color: alpha(@accent_color, 0.22);

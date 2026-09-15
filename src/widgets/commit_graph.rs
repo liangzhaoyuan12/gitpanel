@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use gtk::cairo;
 
-use crate::model::CommitInfo;
+use crate::model::{CommitInfo, RefBadge};
 
 const LANE_WIDTH: f64 = 16.0;
 const DOT_RADIUS: f64 = 4.0;
@@ -31,9 +31,20 @@ pub struct GraphRow {
     pub num_active_lanes: usize,
     pub summary: String,
     pub short_id: String,
+    /// Ref badges sitting on this commit (`local/main`, `origin/main`).
+    pub ref_badges: Vec<RefBadge>,
 }
 
 pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
+    compute_graph_with_refs(commits, &HashMap::new())
+}
+
+/// Same as [`compute_graph`] but also decorates each row with the refs pointing
+/// at it, so the graph can mark where every local branch and remote currently is.
+pub fn compute_graph_with_refs(
+    commits: &[CommitInfo],
+    ref_badges: &HashMap<String, Vec<RefBadge>>,
+) -> Vec<GraphRow> {
     if commits.is_empty() {
         return Vec::new();
     }
@@ -124,6 +135,7 @@ pub fn compute_graph(commits: &[CommitInfo]) -> Vec<GraphRow> {
             num_active_lanes: num_active,
             summary: commit.summary.clone(),
             short_id: commit.short_id.clone(),
+            ref_badges: ref_badges.get(&commit.id).cloned().unwrap_or_default(),
         });
     }
 
@@ -190,6 +202,22 @@ fn draw_graph_row(cr: &cairo::Context, row: &GraphRow, height: f64, all_rows: &[
     cr.set_source_rgb(r, g, b);
     cr.arc(commit_x, mid_y, DOT_RADIUS, 0.0, 2.0 * std::f64::consts::PI);
     let _ = cr.fill();
+
+    // Ref marker: a hollow ring around the dot marks a commit that some ref
+    // points at — the graph-side counterpart of the `local/main` / `origin/main`
+    // badges in the commits list.
+    if !row.ref_badges.is_empty() {
+        cr.set_source_rgb(r, g, b);
+        cr.set_line_width(1.5);
+        cr.arc(
+            commit_x,
+            mid_y,
+            DOT_RADIUS + 2.5,
+            0.0,
+            2.0 * std::f64::consts::PI,
+        );
+        let _ = cr.stroke();
+    }
 }
 
 fn lane_x(lane: usize) -> f64 {
@@ -228,7 +256,11 @@ pub fn export_to_png(
         cr.select_font_face("Monospace", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         cr.set_font_size(12.0);
         cr.move_to(graph_width + 8.0, y + ROW_HEIGHT / 2.0 + 4.0);
-        let line = format!("{}  {}", row.short_id, row.summary);
+        let mut line = format!("{}  {}", row.short_id, row.summary);
+        if !row.ref_badges.is_empty() {
+            let labels: Vec<&str> = row.ref_badges.iter().map(|b| b.label.as_str()).collect();
+            line.push_str(&format!("  [{}]", labels.join(", ")));
+        }
         let truncated: String = line.chars().take(120).collect();
         cr.show_text(&truncated)?;
     }

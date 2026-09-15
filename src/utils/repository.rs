@@ -75,6 +75,12 @@ impl GitRepo {
         head.shorthand().map(String::from)
     }
 
+    /// Commit HEAD points at, or `None` on an unborn HEAD.
+    pub fn head_id(&self) -> Option<String> {
+        let head = self.repo.head().ok()?;
+        head.target().map(|oid| oid.to_string())
+    }
+
     pub fn ahead_behind(&self) -> Result<(usize, usize)> {
         let head = self.repo.head()?;
         let local_oid = head.target().context("HEAD has no target")?;
@@ -102,6 +108,46 @@ impl GitRepo {
         let mut revwalk = self.repo.revwalk()?;
         revwalk.push_head()?;
         revwalk.set_sorting(git2::Sort::TIME)?;
+
+        let mut commits = Vec::new();
+
+        for (i, oid) in revwalk.enumerate() {
+            if i < skip {
+                continue;
+            }
+            if commits.len() >= max_count {
+                break;
+            }
+
+            let oid = oid?;
+            let commit = self.repo.find_commit(oid)?;
+            commits.push(commit_to_info_lite(&commit));
+        }
+
+        Ok(commits)
+    }
+
+    /// Load a page of commits across *every* ref, skipping the first `skip`.
+    ///
+    /// `log_page` walks only HEAD's ancestors, which hides commits that exist
+    /// on a remote but not locally — exactly the case a multi-remote repo hits
+    /// on every fetch. This walk adds `refs/heads/*` and `refs/remotes/*` so
+    /// those commits get a row of their own (VS Code's graph does the same).
+    ///
+    /// Topological sorting is on purpose: the commits list pages with `skip`,
+    /// and a time-only sort can shuffle same-second commits between two calls,
+    /// which would duplicate or drop rows while scrolling.
+    ///
+    /// Kept separate from `log_page` because callers that must stay inside
+    /// HEAD's history — the rebase editor, file history — rely on that.
+    pub fn log_all_page(&self, skip: usize, max_count: usize) -> Result<Vec<CommitInfo>> {
+        let mut revwalk = self.repo.revwalk()?;
+        // An unborn HEAD (fresh `git init`) is not an error here: the globs may
+        // still contribute refs, and an empty revwalk simply yields nothing.
+        let _ = revwalk.push_head();
+        revwalk.push_glob("refs/heads/*")?;
+        revwalk.push_glob("refs/remotes/*")?;
+        revwalk.set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)?;
 
         let mut commits = Vec::new();
 
@@ -236,6 +282,39 @@ impl GitRepo {
         }
 
         Ok(commits)
+    }
+
+    /// Every local branch with the commit it points at, so the commit list can
+    /// label a commit with the local branches sitting on it (`local/main`).
+    ///
+    /// `branches()` cannot be reused for this: `BranchInfo` carries no commit id
+    /// and only computes ahead/behind for the checked-out branch.
+    ///
+    /// Ordered HEAD's branch first, then by name, so a commit's badges do not
+    /// shuffle between reloads.
+    pub fn local_branch_positions(&self) -> Result<Vec<LocalRefPos>> {
+        let mut out: Vec<LocalRefPos> = Vec::new();
+
+        for branch in self.repo.branches(Some(BranchType::Local))? {
+            let (branch, _) = branch?;
+            let Some(name) = branch.name()? else { continue };
+            let Some(oid) = branch.get().target() else {
+                continue;
+            };
+            // `is_head()` is git's own answer to "is this the checked-out
+            // branch" — comparing oids instead would mark every branch pointing
+            // at the same commit as HEAD.
+            let is_head = branch.is_head();
+            out.push(LocalRefPos {
+                branch: name.to_string(),
+                label: format!("local/{name}"),
+                commit_id: oid.to_string(),
+                is_head,
+            });
+        }
+
+        out.sort_by(|a, b| (b.is_head, &a.branch).cmp(&(a.is_head, &b.branch)));
+        Ok(out)
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {

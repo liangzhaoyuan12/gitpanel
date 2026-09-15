@@ -9,8 +9,8 @@ use chrono::TimeZone;
 use gtk::gio;
 
 use super::commit_object::CommitObject;
+use crate::model::{CommitInfo, DiffFile, RefBadge, RefKind};
 use crate::utils::config::DateFormat;
-use crate::model::{CommitInfo, DiffFile};
 
 /// Marker CSS class applied to each row's outer Box. Handlers walk up the
 /// widget tree from a button to find the row this way (same trick as the
@@ -90,17 +90,41 @@ pub fn build_commit_list_view(
     }
 }
 
+/// Everything a commit row needs beyond the commit itself.
+///
+/// Grouped into one struct so the two store-populating calls stay readable and
+/// under clippy's argument limit.
+pub struct RowDecor<'a> {
+    pub tags_map: &'a HashMap<String, Vec<String>>,
+    /// Ref badges per commit id (`local/main`, `origin/main`).
+    pub badge_map: &'a HashMap<String, Vec<RefBadge>>,
+    /// Commit HEAD is on; decides which row gets the "edit message" affordance.
+    pub head_id: Option<&'a str>,
+    /// Unpushed commits from the top of the list.
+    pub ahead: usize,
+}
+
+impl<'a> RowDecor<'a> {
+    fn object_for(&self, c: &CommitInfo, idx: usize) -> CommitObject {
+        let tags = self.tags_map.get(&c.id).cloned().unwrap_or_default();
+        // The all-refs walk puts commits that exist only on a remote first when
+        // they are newer, so HEAD is identified by id — not by being row 0.
+        let is_head = self.head_id == Some(c.id.as_str());
+        let obj = CommitObject::from_info(c, tags, is_head, idx < self.ahead);
+        obj.set_ref_badges(self.badge_map.get(&c.id).cloned().unwrap_or_default());
+        obj
+    }
+}
+
 pub fn populate_commit_store(
     store: &gio::ListStore,
     commits: &[CommitInfo],
-    tags_map: &HashMap<String, Vec<String>>,
-    ahead: usize,
+    decor: &RowDecor<'_>,
     has_more: bool,
 ) {
     let mut items: Vec<CommitObject> = Vec::with_capacity(commits.len() + 1);
     for (idx, c) in commits.iter().enumerate() {
-        let tags = tags_map.get(&c.id).cloned().unwrap_or_default();
-        items.push(CommitObject::from_info(c, tags, idx == 0, idx < ahead));
+        items.push(decor.object_for(c, idx));
     }
     if has_more {
         items.push(CommitObject::load_more_sentinel());
@@ -111,21 +135,68 @@ pub fn populate_commit_store(
 pub fn append_commits_to_store(
     store: &gio::ListStore,
     new_commits: &[CommitInfo],
-    tags_map: &HashMap<String, Vec<String>>,
-    ahead: usize,
+    decor: &RowDecor<'_>,
     offset: usize,
     has_more: bool,
 ) {
     remove_load_more_sentinel(store);
     for (i, c) in new_commits.iter().enumerate() {
-        let global_idx = offset + i;
-        let tags = tags_map.get(&c.id).cloned().unwrap_or_default();
-        let obj = CommitObject::from_info(c, tags, global_idx == 0, global_idx < ahead);
-        store.append(&obj);
+        store.append(&decor.object_for(c, offset + i));
     }
     if has_more {
         store.append(&CommitObject::load_more_sentinel());
     }
+}
+
+/// Re-apply ref decorations to every commit already in the store.
+///
+/// Fetching only moves remote refs — the commit ids do not change, so
+/// `populate_commit_store`'s change guard would skip the rebuild and the badges
+/// would keep pointing at stale positions. Returns the ids whose badges
+/// changed so the caller can rebind just those rows.
+pub fn apply_ref_badges(
+    store: &gio::ListStore,
+    badge_map: &HashMap<String, Vec<RefBadge>>,
+) -> Vec<String> {
+    let mut changed = Vec::new();
+    for i in 0..store.n_items() {
+        let Some(obj) = store.item(i).and_then(|o| o.downcast::<CommitObject>().ok()) else {
+            continue;
+        };
+        if obj.is_load_more_sentinel() {
+            continue;
+        }
+        let id = obj.id();
+        let next = badge_map.get(&id).cloned().unwrap_or_default();
+        if next != obj.ref_badges() {
+            obj.set_ref_badges(next);
+            changed.push(id);
+        }
+    }
+    changed
+}
+
+/// Small pill showing a ref sitting on a commit (`local/main`, `origin/main`).
+///
+/// Local and remote markers are styled differently, and each carries a tooltip
+/// spelling out the divergence (`origin/main` alone cannot say how far off it
+/// is). Shared by the commits list, the "Remotes:" strip and the graph's label
+/// column so all three read the same way.
+pub fn build_ref_badge(badge: &RefBadge) -> gtk::Frame {
+    let label = gtk::Label::builder()
+        .label(&badge.label)
+        .css_classes(["caption", "monospace"])
+        .valign(gtk::Align::Center)
+        .build();
+    let frame = gtk::Frame::new(None);
+    frame.set_child(Some(&label));
+    frame.add_css_class(match badge.kind {
+        RefKind::Local => "gp-local-badge",
+        RefKind::Remote => "gp-remote-badge",
+    });
+    frame.set_margin_start(2);
+    frame.set_tooltip_text(Some(&badge.tooltip));
+    frame
 }
 
 /// Mark commits as signed from a background lookup's results.
@@ -541,6 +612,11 @@ fn bind_row(outer: &gtk::Box, obj: &CommitObject, date_format: DateFormat) {
         msg_row.append(&frame);
     }
 
+    // Ref badges sitting on this commit: `local/main`, `origin/main`.
+    for badge in obj.ref_badges() {
+        msg_row.append(&build_ref_badge(&badge));
+    }
+
     // Detail visibility + file list — populated lazily; window.rs sets
     // files via CommitObject and re-binds by toggling expanded.
     widgets.detail_revealer.set_reveal_child(obj.expanded());
@@ -728,6 +804,7 @@ mod tests {
 
     use serial_test::serial;
 
+    use crate::model::RemoteRefPos;
     use crate::test_support;
 
     fn sample_commit() -> CommitInfo {
@@ -896,6 +973,114 @@ mod tests {
         });
 
         assert_eq!(children, 3, "two file rows plus the overflow note");
+    }
+
+    /// Every ref sitting on a commit gets its own pill — a local branch and a
+    /// remote branch on the same commit produce two markers, not one merged one,
+    /// and the two kinds are styled differently.
+    #[test]
+    #[serial]
+    fn ref_badges_render_one_pill_per_ref() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (texts, remote_styled, local_styled) = test_support::on_gtk_thread(|| {
+            let outer = build_row_template(
+                Rc::new(|| {}),
+                Rc::new(|_| {}),
+                Rc::new(|_, _| {}),
+                Rc::new(std::cell::Cell::new(10u32)),
+            );
+            let obj = CommitObject::from_info(&sample_commit(), vec!["v1".into()], true, false);
+            obj.set_ref_badges(vec![
+                RefBadge::local("main"),
+                RefBadge::local("dev"),
+                RefBadge::remote(&RemoteRefPos {
+                    remote: "origin".into(),
+                    branch: "main".into(),
+                    label: "origin/main".into(),
+                    commit_id: "abc".into(),
+                    ahead: 2,
+                    behind: 0,
+                    is_tracking: true,
+                }),
+            ]);
+            rebind_row(&outer, &obj, DateFormat::Iso);
+
+            let msg_row = row_widgets(&outer)
+                .map(|w| w.msg_row.clone())
+                .expect("msg row");
+            // children: message label, the "v1" tag frame, then the ref pills.
+            let mut texts = Vec::new();
+            let mut remote_styled = 0;
+            let mut local_styled = 0;
+            let mut child = msg_row.first_child();
+            while let Some(c) = child {
+                if let Ok(f) = c.clone().downcast::<gtk::Frame>() {
+                    let is_remote = f.has_css_class("gp-remote-badge");
+                    let is_local = f.has_css_class("gp-local-badge");
+                    if is_remote || is_local {
+                        assert!(
+                            f.tooltip_text().is_some(),
+                            "ref pills must explain themselves on hover"
+                        );
+                        remote_styled += usize::from(is_remote);
+                        local_styled += usize::from(is_local);
+                        if let Some(l) = f
+                            .child()
+                            .and_then(|w| w.downcast::<gtk::Label>().ok())
+                        {
+                            texts.push(l.text().to_string());
+                        }
+                    }
+                }
+                child = c.next_sibling();
+            }
+            (texts, remote_styled, local_styled)
+        });
+
+        assert_eq!(
+            texts,
+            vec![
+                "local/main".to_string(),
+                "local/dev".to_string(),
+                "origin/main".to_string(),
+            ]
+        );
+        assert_eq!(local_styled, 2, "local pills get their own class");
+        assert_eq!(remote_styled, 1, "remote pills stay visually distinct");
+    }
+
+    /// A fetch moves only remote refs — no commit id changes — so the badges are
+    /// re-applied in place onto the existing rows.
+    #[test]
+    #[serial]
+    fn apply_ref_badges_reports_only_rows_that_moved() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (changed, after) = test_support::on_gtk_thread(|| {
+            let store = gio::ListStore::new::<CommitObject>();
+            let head = CommitObject::from_info(&sample_commit(), vec![], true, false);
+            let head_id = head.id();
+            store.append(&head);
+
+            let mut map: HashMap<String, Vec<RefBadge>> = HashMap::new();
+            map.insert(head_id.clone(), vec![RefBadge::local("main")]);
+            let changed = apply_ref_badges(&store, &map);
+            let after = head.ref_badges();
+
+            // Re-applying the same map must be a no-op.
+            assert!(apply_ref_badges(&store, &map).is_empty());
+            (changed, after)
+        });
+
+        assert_eq!(changed.len(), 1);
+        assert_eq!(after, vec![RefBadge::local("main")]);
     }
 
     /// Expanding a commit mutates its `CommitObject` in place, which

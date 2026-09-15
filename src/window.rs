@@ -7,7 +7,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use crate::model::{cap_diff_cache, CommitInfo, DiffFile, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
+use crate::model::{cap_diff_cache, CommitInfo, DiffFile, LocalRefPos, RefBadge, RemoteRefPos, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
 
 /// Upper bound on per-cache diff memory (~5 MB) before trailing entries are dropped.
 const DIFF_CACHE_MAX_BYTES: usize = 5 * 1024 * 1024;
@@ -20,6 +20,13 @@ use crate::utils::undo::{UndoStack, UndoableOp};
 struct BackgroundRepoData {
     commits: Vec<CommitInfo>,
     tags_map: HashMap<String, Vec<String>>,
+    /// Where every remote-tracking ref currently sits, relative to HEAD.
+    remote_positions: Vec<RemoteRefPos>,
+    /// Every local branch and the commit it points at.
+    local_positions: Vec<LocalRefPos>,
+    /// Commit HEAD is on. The commits list is decorated by id, not by row
+    /// position: with the all-refs walk a newer remote-only commit can be row 0.
+    head_id: Option<String>,
     status: Option<RepoStatus>,
     branches: Vec<crate::model::BranchInfo>,
     tags: Vec<crate::model::TagInfo>,
@@ -70,12 +77,30 @@ fn hash_commits(commits: &[CommitInfo]) -> u64 {
     hasher.finish()
 }
 
-fn hash_graph_input(commits: &[CommitInfo]) -> u64 {
+fn hash_graph_input(commits: &[CommitInfo], remote_refs: &HashMap<String, Vec<RefBadge>>) -> u64 {
     let mut hasher = DefaultHasher::new();
     for c in commits {
         c.id.hash(&mut hasher);
         for p in &c.parent_ids {
             p.hash(&mut hasher);
+        }
+    }
+    // Remote markers are part of the graph: a fetch that only moves remote refs
+    // must invalidate the cached render even though no commit id changed.
+    hash_remote_refs(remote_refs).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Hash of the ref badges currently applied to the commit list/graph.
+fn hash_remote_refs(remote_refs: &HashMap<String, Vec<RefBadge>>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut keys: Vec<&String> = remote_refs.keys().collect();
+    keys.sort();
+    for k in keys {
+        k.hash(&mut hasher);
+        for badge in &remote_refs[k] {
+            badge.label.hash(&mut hasher);
+            (badge.kind as u8).hash(&mut hasher);
         }
     }
     hasher.finish()
@@ -292,6 +317,12 @@ mod imp {
         pub workspace_root: RefCell<Option<std::path::PathBuf>>,
 
         pub commits: RefCell<Vec<CommitInfo>>,
+        /// Where each remote currently sits, from the last repo load.
+        pub remote_positions: RefCell<Vec<RemoteRefPos>>,
+        /// Every local branch and the commit it points at.
+        pub local_positions: RefCell<Vec<LocalRefPos>>,
+        /// Commit HEAD is on, so rows can be flagged by id rather than position.
+        pub head_commit_id: RefCell<Option<String>>,
         pub selected_commit_id: RefCell<Option<String>>,
         /// Hash of last status to skip redundant UI updates.
         pub last_status_hash: Cell<u64>,
@@ -339,6 +370,8 @@ mod imp {
         pub commit_date_format: Rc<Cell<DateFormat>>,
         pub commit_files_limit: Rc<Cell<u32>>,
         pub view_stack: adw::ViewStack,
+        /// Compact "where is each remote" strip above the commits list.
+        pub remote_status_box: gtk::Box,
         pub branch_label: gtk::Label,
         pub ahead_label: gtk::Label,
         pub behind_label: gtk::Label,
@@ -394,6 +427,9 @@ mod imp {
                 workspace_root: RefCell::new(None),
 
                 commits: RefCell::new(Vec::new()),
+                remote_positions: RefCell::new(Vec::new()),
+                local_positions: RefCell::new(Vec::new()),
+                head_commit_id: RefCell::new(None),
                 selected_commit_id: RefCell::new(None),
                 last_status_hash: Cell::new(0),
                 last_workspace_hash: Cell::new(0),
@@ -422,6 +458,15 @@ mod imp {
                 commit_date_format: Rc::new(Cell::new(DateFormat::European)),
                 commit_files_limit: Rc::new(Cell::new(10)),
                 view_stack: adw::ViewStack::new(),
+                remote_status_box: gtk::Box::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .spacing(6)
+                    .margin_start(8)
+                    .margin_end(8)
+                    .margin_top(4)
+                    .margin_bottom(4)
+                    .visible(false)
+                    .build(),
                 branch_label: gtk::Label::new(Some("main")),
                 ahead_label: gtk::Label::new(Some("▲ 0")),
                 behind_label: gtk::Label::new(Some("▼ 0")),
@@ -762,6 +807,8 @@ impl GitpanelWindow {
             .sync_create()
             .build();
         commits_page.append(&search_bar);
+        // One chip per remote showing where that remote currently is.
+        commits_page.append(&imp.remote_status_box);
 
         // Connect commit search filter
         let win = self.clone();
@@ -1775,6 +1822,9 @@ impl GitpanelWindow {
             let is_merging = repo.is_merging();
             let is_rebasing = repo.is_rebasing();
             let is_bisecting = repo.is_bisecting();
+            let remote_positions = repo.remote_positions().unwrap_or_default();
+            let local_positions = repo.local_branch_positions().unwrap_or_default();
+            let head_id = repo.head_id();
 
             // Run independent heavy operations in parallel
             let path2 = path.clone();
@@ -1784,7 +1834,9 @@ impl GitpanelWindow {
                 let Ok(repo) = GitRepo::open(&path2) else {
                     return (Vec::new(), HashMap::new(), Vec::new());
                 };
-                let commits = repo.log(COMMIT_PAGE_SIZE).unwrap_or_default();
+                // All refs, not just HEAD's ancestors: commits that only exist on
+                // a remote get a row of their own, like VS Code's graph.
+                let commits = repo.log_all_page(0, COMMIT_PAGE_SIZE).unwrap_or_default();
                 let tags_map = repo.tags_by_commit().unwrap_or_default();
                 let tags = repo.tags().unwrap_or_default();
                 (commits, tags_map, tags)
@@ -1808,6 +1860,9 @@ impl GitpanelWindow {
             tx.send_blocking(BackgroundRepoData {
                 commits,
                 tags_map,
+                remote_positions,
+                local_positions,
+                head_id,
                 status,
                 branches,
                 tags,
@@ -1840,6 +1895,10 @@ impl GitpanelWindow {
 
                 // Load commits (clear first so offset=0 for full rebuild)
                 imp.commits.borrow_mut().clear();
+                *imp.remote_positions.borrow_mut() = data.remote_positions;
+                *imp.local_positions.borrow_mut() = data.local_positions;
+                *imp.head_commit_id.borrow_mut() = data.head_id;
+                win.update_remote_status_bar();
                 win.populate_commit_list(&data.commits, data.ahead, &data.tags_map);
                 *imp.commits.borrow_mut() = data.commits;
 
@@ -1886,6 +1945,67 @@ impl GitpanelWindow {
         });
     }
 
+    /// Refresh the "where is each remote" strip above the commits list.
+    ///
+    /// With a single remote the `▲/▼` counters already told the whole story;
+    /// with several remotes each one has its own position, so they get a chip
+    /// each here and a marker on the commit they point at.
+    fn update_remote_status_bar(&self) {
+        let imp = self.imp();
+        let strip = &imp.remote_status_box;
+        while let Some(child) = strip.first_child() {
+            strip.remove(&child);
+        }
+
+        let positions = imp.remote_positions.borrow();
+        if positions.is_empty() {
+            strip.set_visible(false);
+            return;
+        }
+
+        let tracking: Vec<&RemoteRefPos> = positions.iter().filter(|p| p.is_tracking).collect();
+        if tracking.is_empty() {
+            let mut names: Vec<&str> = positions.iter().map(|p| p.remote.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            let note = gtk::Label::builder()
+                .label(format!(
+                    "No remote branch for the checked-out branch (remotes: {})",
+                    names.join(", ")
+                ))
+                .css_classes(["caption", "dim-label"])
+                .xalign(0.0)
+                .build();
+            strip.append(&note);
+            strip.set_visible(true);
+            return;
+        }
+
+        let caption = gtk::Label::builder()
+            .label("Remotes:")
+            .css_classes(["caption", "dim-label"])
+            .build();
+        strip.append(&caption);
+        for pos in tracking {
+            let chip = crate::widgets::commit_list::build_ref_badge(&RefBadge::remote(pos));
+            strip.append(&chip);
+        }
+        strip.set_visible(true);
+    }
+
+    /// Ref badges (local branches + remote branches) for the given commit ids.
+    fn ref_badge_map(
+        &self,
+        ids: &[String],
+    ) -> HashMap<String, Vec<RefBadge>> {
+        let imp = self.imp();
+        crate::utils::remote::ref_badge_map(
+            &imp.remote_positions.borrow(),
+            &imp.local_positions.borrow(),
+            ids,
+        )
+    }
+
     fn populate_commit_list(
         &self,
         commits: &[CommitInfo],
@@ -1894,7 +2014,12 @@ impl GitpanelWindow {
     ) {
         let imp = self.imp();
 
-        let new_hash = hash_commits(commits);
+        let ids: Vec<String> = commits.iter().map(|c| c.id.clone()).collect();
+        let remote_map = self.ref_badge_map(&ids);
+
+        // The hash covers the ref badges too: a fetch that only moves remote
+        // refs must repaint the rows even though no commit id changed.
+        let new_hash = hash_commits(commits) ^ hash_remote_refs(&remote_map);
         if new_hash == imp.last_commits_hash.get() {
             return;
         }
@@ -1902,7 +2027,14 @@ impl GitpanelWindow {
 
         let Some(store) = imp.commit_store.borrow().clone() else { return };
         let has_more = commits.len() >= COMMIT_PAGE_SIZE;
-        crate::widgets::commit_list::populate_commit_store(&store, commits, tags_map, ahead, has_more);
+        let head_id = imp.head_commit_id.borrow().clone();
+        let decor = crate::widgets::commit_list::RowDecor {
+            tags_map,
+            badge_map: &remote_map,
+            head_id: head_id.as_deref(),
+            ahead,
+        };
+        crate::widgets::commit_list::populate_commit_store(&store, commits, &decor, has_more);
 
         // Keep a tag-click highlight alive across a commit-list rebuild.
         if let Some(id) = imp.highlighted_commit_id.borrow().clone() {
@@ -1979,7 +2111,7 @@ impl GitpanelWindow {
         let (tx, rx) = async_channel::bounded::<(Vec<CommitInfo>, HashMap<String, Vec<String>>)>(1);
         std::thread::spawn(move || {
             let Ok(repo) = GitRepo::open(&path) else { return };
-            let commits = repo.log_page(skip, COMMIT_PAGE_SIZE).unwrap_or_default();
+            let commits = repo.log_all_page(skip, COMMIT_PAGE_SIZE).unwrap_or_default();
             let tags_map = repo.tags_by_commit().unwrap_or_default();
             let _ = tx.send_blocking((commits, tags_map));
         });
@@ -2003,17 +2135,44 @@ impl GitpanelWindow {
             let offset = imp.commits_loaded_count.get();
             let has_more = new_commits.len() >= COMMIT_PAGE_SIZE;
 
+            let new_count = new_commits.len();
+            let new_ids: Vec<String> = new_commits.iter().map(|c| c.id.clone()).collect();
+
+            // Ref badges are resolved against *all* loaded commits: a tip that
+            // only shows up in this page stops being pinned onto HEAD.
+            let mut all_ids: Vec<String> =
+                imp.commits.borrow().iter().map(|c| c.id.clone()).collect();
+            all_ids.extend(new_ids.iter().cloned());
+            let remote_map = win.ref_badge_map(&all_ids);
+
+            let head_id = imp.head_commit_id.borrow().clone();
+            let decor = crate::widgets::commit_list::RowDecor {
+                tags_map: &tags_map,
+                badge_map: &remote_map,
+                head_id: head_id.as_deref(),
+                ahead,
+            };
             crate::widgets::commit_list::append_commits_to_store(
                 &store,
                 &new_commits,
-                &tags_map,
-                ahead,
+                &decor,
                 offset,
                 has_more,
             );
-            imp.commits_loaded_count.set(offset + new_commits.len());
-            let new_ids: Vec<String> = new_commits.iter().map(|c| c.id.clone()).collect();
+            // Re-resolve badges on already-loaded rows (the old HEAD pin may
+            // have moved onto a commit in this page).
+            for id in crate::widgets::commit_list::apply_ref_badges(&store, &remote_map) {
+                let obj = (0..store.n_items())
+                    .filter_map(|i| store.item(i))
+                    .filter_map(|o| o.downcast::<crate::widgets::commit_object::CommitObject>().ok())
+                    .find(|o| o.id() == id);
+                if let Some(obj) = obj {
+                    win.rebind_commit_row(&id, &obj);
+                }
+            }
+
             imp.commits.borrow_mut().extend(new_commits);
+            imp.commits_loaded_count.set(offset + new_count);
             win.spawn_signature_batch(new_ids);
 
             imp.loading_more.set(false);
@@ -3522,6 +3681,8 @@ impl GitpanelWindow {
         // Force commit list rebuild by resetting hash (push changes unpushed indicators)
         self.imp().last_commits_hash.set(0);
         self.imp().last_status_hash.set(0);
+        // Remote refs moved (or new commits arrived), so the graph is stale too.
+        self.imp().last_graph_hash.set(0);
         // Re-open repo since the background thread may have changed state
         let path = self.repo_path_string();
         if let Some(path) = path {
@@ -3953,6 +4114,8 @@ impl GitpanelWindow {
             self.show_toast("Nothing to export");
             return;
         }
+        let ids: Vec<String> = commits.iter().map(|c| c.id.clone()).collect();
+        let remote_map = self.ref_badge_map(&ids);
 
         let dialog = gtk::FileDialog::builder()
             .title("Export graph as PNG")
@@ -3964,7 +4127,8 @@ impl GitpanelWindow {
         dialog.save(Some(self), gio::Cancellable::NONE, move |result| {
             let Ok(file) = result else { return };
             let Some(path) = file.path() else { return };
-            let rows = crate::widgets::commit_graph::compute_graph(&commits);
+            let rows =
+                crate::widgets::commit_graph::compute_graph_with_refs(&commits, &remote_map);
             match crate::widgets::commit_graph::export_to_png(&rows, &path) {
                 Ok(()) => win.show_toast(&format!("Graph saved: {}", path.display())),
                 Err(e) => win.show_error_dialog("Export Failed", &format!("{}", e)),
@@ -5290,7 +5454,10 @@ impl GitpanelWindow {
             return;
         }
 
-        let new_hash = hash_graph_input(&commits);
+        let ids: Vec<String> = commits.iter().map(|c| c.id.clone()).collect();
+        let remote_map = self.ref_badge_map(&ids);
+
+        let new_hash = hash_graph_input(&commits, &remote_map);
         if new_hash == self.imp().last_graph_hash.get() {
             return;
         }
@@ -5314,7 +5481,7 @@ impl GitpanelWindow {
         // Compute graph in background
         let (tx, rx) = async_channel::bounded::<Vec<crate::widgets::commit_graph::GraphRow>>(1);
         std::thread::spawn(move || {
-            let rows = crate::widgets::commit_graph::compute_graph(&commits);
+            let rows = crate::widgets::commit_graph::compute_graph_with_refs(&commits, &remote_map);
             let _ = tx.send_blocking(rows);
         });
 
@@ -5348,14 +5515,21 @@ impl GitpanelWindow {
                     if i >= GRAPH_LABEL_CAP {
                         break;
                     }
+                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                    line.set_height_request(32);
                     let label = gtk::Label::builder()
                         .label(format!("{} {}", row.short_id, row.summary))
                         .xalign(0.0)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .css_classes(["caption"])
-                        .height_request(32)
+                        .hexpand(true)
                         .build();
-                    labels_box.append(&label);
+                    line.append(&label);
+                    // Ref badges, mirroring the commits list pills.
+                    for badge in &row.ref_badges {
+                        line.append(&crate::widgets::commit_list::build_ref_badge(badge));
+                    }
+                    labels_box.append(&line);
                 }
                 if rows.len() > GRAPH_LABEL_CAP {
                     let footer = gtk::Label::builder()
@@ -5586,9 +5760,10 @@ mod tests {
                 "Pull from…",
                 "Push",
                 "Push to…",
+                "Push to all remotes…",
                 "Force Push",
                 "Force Push to…",
-                "Push to all remotes…",
+                "Force Push to all remotes…",
             ]
         );
 

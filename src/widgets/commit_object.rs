@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use adw::subclass::prelude::*;
 use gtk::glib;
 
-use crate::model::{CommitInfo, DiffFile, Signature};
+use crate::model::{CommitInfo, DiffFile, RefBadge, Signature};
 
 mod imp {
     use super::*;
@@ -20,6 +20,7 @@ mod imp {
         pub time_unix: Cell<i64>,
         pub parent_ids: RefCell<Vec<String>>,
         pub tags: RefCell<Vec<String>>,
+        pub ref_badges: RefCell<Vec<RefBadge>>,
         pub files: RefCell<Vec<DiffFile>>,
         pub is_signed: Cell<bool>,
         pub is_head: Cell<bool>,
@@ -44,6 +45,7 @@ mod imp {
                 time_unix: Cell::new(0),
                 parent_ids: RefCell::new(Vec::new()),
                 tags: RefCell::new(Vec::new()),
+                ref_badges: RefCell::new(Vec::new()),
                 files: RefCell::new(Vec::new()),
                 is_signed: Cell::new(false),
                 is_head: Cell::new(false),
@@ -122,6 +124,14 @@ impl CommitObject {
     }
     pub fn tags(&self) -> Vec<String> {
         self.imp().tags.borrow().clone()
+    }
+    /// Ref badges sitting on this commit — local branches and remote-tracking
+    /// refs, e.g. `local/main`, `origin/main`.
+    pub fn ref_badges(&self) -> Vec<RefBadge> {
+        self.imp().ref_badges.borrow().clone()
+    }
+    pub fn set_ref_badges(&self, badges: Vec<RefBadge>) {
+        *self.imp().ref_badges.borrow_mut() = badges;
     }
     pub fn files(&self) -> Vec<DiffFile> {
         self.imp().files.borrow().clone()
