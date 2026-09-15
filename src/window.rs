@@ -135,6 +135,7 @@ use crate::widgets::header_chrome;
 use crate::widgets::preferences_dialog;
 use crate::widgets::rebase_editor;
 use crate::widgets::repo_tree;
+use crate::widgets::log_viewer;
 
 const COMMIT_PAGE_SIZE: usize = 50;
 
@@ -299,6 +300,7 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
 
     let app_section = gio::Menu::new();
     app_section.append(Some("Preferences"), Some("win.preferences"));
+    app_section.append(Some("Logs"), Some("win.logs"));
     app_section.append(Some("About Gitpanel"), Some("win.about"));
     menu.append_section(None, &app_section);
 
@@ -1688,6 +1690,14 @@ impl GitpanelWindow {
             about.present(Some(&window));
         });
         self.add_action(&about_action);
+
+        // Logs viewer
+        let logs_action = gio::SimpleAction::new("logs", None);
+        let window = self.clone();
+        logs_action.connect_activate(move |_, _| {
+            window.show_log_viewer_dialog();
+        });
+        self.add_action(&logs_action);
 
         // Undo
         let undo_action = gio::SimpleAction::new("undo", None);
@@ -4192,6 +4202,12 @@ impl GitpanelWindow {
         }
     }
 
+    /// Open the log viewer dialog (entry point for the "Logs" hamburger item).
+    fn show_log_viewer_dialog(&self) {
+        let dialog = log_viewer::build_log_viewer_dialog();
+        dialog.present(Some(self));
+    }
+
     fn show_remotes_dialog(&self) {
         let repo_ref = self.imp().repo.borrow();
         let Some(ref repo) = *repo_ref else {
@@ -5724,7 +5740,7 @@ mod tests {
         );
         assert_eq!(
             labels(&section(&menu, 2)),
-            vec!["Preferences", "About Gitpanel"]
+            vec!["Preferences", "Logs", "About Gitpanel"]
         );
     }
 

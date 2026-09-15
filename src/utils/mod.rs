@@ -24,3 +24,4 @@ pub mod worktrees;
 pub mod config;
 pub mod undo;
 pub mod external_editor;
+pub mod logging;

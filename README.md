@@ -201,6 +201,21 @@ Core is a standalone library with no UI dependencies, designed for pluggable fro
 | `GP_HEIGHT` | Initial window height in pixels (default 800) |
 | `GP_SIMULATE_FLATPAK` | Set to `1` to behave as the Flatpak build does ("Open with" goes through the desktop portal) |
 
+## Logging
+
+Gitpanel is privacy-first — logs never leave the machine. They are written to a
+size-rotating file in your data directory:
+`~/.local/share/io.github.liangzhaoyuan12/logs/gitpanel.log` (plus
+`gitpanel.log.1` … `gitpanel.log.5` backups of 2 MiB each). Every
+`tracing` call in the code is captured there.
+
+| Variable | Effect |
+|---|---|
+| `GP_LOG_DIR` | Override the log directory |
+| `GP_LOG_LEVEL` | Minimum level: `trace` / `debug` / `info` / `warn` / `error` |
+| `GP_LOG_STDOUT` | Set to `1` to also mirror logs to stdout (useful when running from a terminal) |
+| `RUST_LOG` | Standard `tracing` filter; takes precedence over `GP_LOG_LEVEL` when set |
+
 ## Requirements
 
 - Rust 1.70+
