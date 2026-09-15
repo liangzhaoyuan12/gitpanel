@@ -357,6 +357,7 @@ mod imp {
         pub toast_overlay: adw::ToastOverlay,
         // Widget refs
         pub repo_list_box: gtk::ListBox,
+        pub tree_state: RefCell<repo_tree::TreeState>,
         pub commit_list_view: RefCell<Option<gtk::ListView>>,
         pub commit_store: RefCell<Option<gio::ListStore>>,
         pub commit_filter: RefCell<Option<gtk::CustomFilter>>,
@@ -450,6 +451,7 @@ mod imp {
                 inner_split: RefCell::new(None),
                 toast_overlay: adw::ToastOverlay::new(),
                 repo_list_box: gtk::ListBox::new(),
+                tree_state: RefCell::new(repo_tree::TreeState::default()),
                 commit_list_view: RefCell::new(None),
                 commit_store: RefCell::new(None),
                 commit_filter: RefCell::new(None),
@@ -761,11 +763,21 @@ impl GitpanelWindow {
             .build();
         imp.repo_list_box.set_placeholder(Some(&placeholder));
 
-        // Connect repo selection
+        // Connect row activation: folders toggle expand, git repos open
         let win = self.clone();
-        imp.repo_list_box.connect_row_selected(move |_, row| {
-            if let Some(row) = row {
-                win.select_repo(row.index() as usize);
+        imp.repo_list_box.connect_row_activated(move |_, row| {
+            let path_str = row.widget_name().to_string();
+            // Check if this is a folder (not selectable = folder)
+            if !row.is_selectable() {
+                // Toggle expand/collapse
+                win.imp().tree_state.borrow_mut().toggle(&path_str);
+                // Re-render the list
+                let entries = win.imp().workspace_entries.borrow().clone();
+                let tree_state = win.imp().tree_state.borrow().clone();
+                repo_tree::populate_repo_list(&win.imp().repo_list_box, &entries, &tree_state);
+            } else {
+                // Git repo: select it
+                win.select_repo_by_path(&path_str);
             }
         });
 
@@ -1742,21 +1754,25 @@ impl GitpanelWindow {
                     .unwrap_or_else(|| path.to_string_lossy().to_string());
                 self.imp().sidebar_title_label.set_label(&folder_name);
 
-                repo_tree::populate_repo_list(&self.imp().repo_list_box, &entries);
+                // Populate the list with tree expansion
+                let tree_state = self.imp().tree_state.borrow().clone();
+                repo_tree::populate_repo_list(&self.imp().repo_list_box, &entries, &tree_state);
 
                 // Save to recent workspaces
                 self.imp().config.borrow_mut().add_recent_workspace(&path.to_string_lossy());
                 self.rebuild_hamburger_menu();
 
+                // Auto-select if only one git repo at top level
                 let auto_select = entries.len() == 1 && entries[0].is_git_repo;
                 *self.imp().workspace_entries.borrow_mut() = entries;
                 *self.imp().workspace_root.borrow_mut() = Some(path.to_path_buf());
 
                 if auto_select {
-                    self.select_repo(0);
-                    // Select first row visually
-                    if let Some(row) = self.imp().repo_list_box.row_at_index(0) {
-                        self.imp().repo_list_box.select_row(Some(&row));
+                    if let Some(repo_path) = self.imp().workspace_entries.borrow()[0]
+                        .path
+                        .to_str()
+                    {
+                        self.select_repo_by_path(repo_path);
                     }
                 }
             }
@@ -1772,23 +1788,11 @@ impl GitpanelWindow {
         }
     }
 
-    /// Select a repo from the workspace tree by index.
-    fn select_repo(&self, index: usize) {
-        let entries = self.imp().workspace_entries.borrow();
-        let Some(entry) = entries.get(index) else {
-            return;
-        };
-
-        if !entry.is_git_repo {
-            return;
-        }
-
-        let path = entry.path.to_string_lossy().to_string();
-        drop(entries);
-
-        match GitRepo::open(&path) {
+    /// Select a repo from the workspace tree by path.
+    fn select_repo_by_path(&self, path_str: &str) {
+        match GitRepo::open(path_str) {
             Ok(repo) => {
-                tracing::info!("Selected repo: {}", path);
+                tracing::info!("Selected repo: {}", path_str);
                 self.load_repo_data(&repo);
                 *self.imp().repo.borrow_mut() = Some(repo);
                 // On narrow widths the sidebar is shown as an overlay — hide
@@ -2787,18 +2791,23 @@ impl GitpanelWindow {
         };
 
         let mut entries = imp.workspace_entries.borrow_mut();
-        let Some(idx) = entries.iter().position(|e| e.path.to_string_lossy() == path_str) else {
+        let Some(entry) = workspace::find_entry_by_path_mut(&mut entries, std::path::Path::new(path_str)) else {
             return;
         };
-        entries[idx].indicator = Some(new_indicator);
+        entry.indicator = Some(new_indicator);
         let entries_clone = entries.clone();
         drop(entries);
 
-        let selected_idx = imp.repo_list_box.selected_row().map(|r| r.index());
-        repo_tree::populate_repo_list(&imp.repo_list_box, &entries_clone);
-        if let Some(i) = selected_idx {
-            if let Some(row) = imp.repo_list_box.row_at_index(i) {
-                imp.repo_list_box.select_row(Some(&row));
+        // Re-render list with updated indicators
+        let tree_state = imp.tree_state.borrow().clone();
+        let selected_path = imp.repo.borrow().as_ref().map(|r| r.path().to_string_lossy().to_string());
+        repo_tree::populate_repo_list(&imp.repo_list_box, &entries_clone, &tree_state);
+        // Restore selection
+        if let Some(ref p) = selected_path {
+            if let Some(idx) = repo_tree::find_row_index_for_path(&imp.repo_list_box, p) {
+                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
+                    imp.repo_list_box.select_row(Some(&row));
+                }
             }
         }
         // Reset workspace hash so throttled scan doesn't immediately override
@@ -4745,13 +4754,23 @@ impl GitpanelWindow {
                 if result.workspace_hash != imp.last_workspace_hash.get() {
                     imp.last_workspace_hash.set(result.workspace_hash);
                     imp.workspace_idle_streak.set(0);
-                    let selected_idx =
-                        imp.repo_list_box.selected_row().map(|r| r.index());
-                    repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries);
+
+                    // Remember selected repo path before rebuild
+                    let selected_path = imp.repo.borrow().as_ref().map(|r| {
+                        r.path().to_string_lossy().to_string()
+                    });
+
+                    // Re-render list
+                    let tree_state = imp.tree_state.borrow().clone();
+                    repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries, &tree_state);
                     *imp.workspace_entries.borrow_mut() = new_entries;
-                    if let Some(idx) = selected_idx {
-                        if let Some(row) = imp.repo_list_box.row_at_index(idx) {
-                            imp.repo_list_box.select_row(Some(&row));
+
+                    // Re-select previously selected repo
+                    if let Some(ref path_str) = selected_path {
+                        if let Some(idx) = repo_tree::find_row_index_for_path(&imp.repo_list_box, path_str) {
+                            if let Some(row) = imp.repo_list_box.row_at_index(idx) {
+                                imp.repo_list_box.select_row(Some(&row));
+                            }
                         }
                     }
                 } else {

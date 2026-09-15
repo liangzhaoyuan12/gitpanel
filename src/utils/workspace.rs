@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::utils::repository::GitRepo;
-
 #[derive(Debug, Clone)]
 pub struct RepoIndicator {
     pub is_dirty: bool,
@@ -19,9 +18,37 @@ pub struct WorkspaceEntry {
     pub path: PathBuf,
     pub is_git_repo: bool,
     pub indicator: Option<RepoIndicator>,
+    /// Sub-entries (folders and nested git repos). Empty for leaves.
+    pub children: Vec<WorkspaceEntry>,
 }
 
-/// Scan a workspace directory for git repositories (1 level deep).
+/// Find an entry (or its parent folder) by path, recursively.
+pub fn find_entry_by_path<'a>(entries: &'a [WorkspaceEntry], path: &Path) -> Option<&'a WorkspaceEntry> {
+    for entry in entries {
+        if entry.path == path {
+            return Some(entry);
+        }
+        if let Some(found) = find_entry_by_path(&entry.children, path) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Find a mutable entry by path, recursively.
+pub fn find_entry_by_path_mut<'a>(entries: &'a mut [WorkspaceEntry], path: &Path) -> Option<&'a mut WorkspaceEntry> {
+    for entry in entries.iter_mut() {
+        if entry.path == path {
+            return Some(entry);
+        }
+        if let Some(found) = find_entry_by_path_mut(&mut entry.children, path) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Scan a workspace directory for git repositories recursively (up to 5 levels deep).
 /// If root itself is a git repo, returns a single entry for backward compat.
 pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
     // Check if root itself is a git repo
@@ -35,90 +62,136 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
             path: root.to_path_buf(),
             is_git_repo: true,
             indicator,
+            children: Vec::new(),
         }]);
     }
 
-    let mut dirs: Vec<(String, PathBuf, bool)> = Vec::new();
+    let mut entries = scan_dir_recursive(root, 0, 5)?;
 
-    let read_dir = std::fs::read_dir(root)?;
+    // Compute indicators in parallel for all git repos
+    let mut git_paths: Vec<(usize, Vec<usize>, PathBuf)> = Vec::new();
+    collect_git_paths(&entries, &[], &mut git_paths);
+
+    if !git_paths.is_empty() {
+        let indicators: Vec<(Vec<usize>, Option<RepoIndicator>)> = if git_paths.len() <= 1 {
+            git_paths
+                .into_iter()
+                .map(|(_, idx, path)| (idx, compute_indicator(&path)))
+                .collect()
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let num_threads = git_paths.len().min(8);
+            let chunks: Vec<Vec<(Vec<usize>, PathBuf)>> = {
+                let chunk_size = git_paths.len().div_ceil(num_threads);
+                git_paths
+                    .into_iter()
+                    .map(|(_, idx, path)| (idx, path))
+                    .collect::<Vec<_>>()
+                    .chunks(chunk_size)
+                    .map(|c| c.to_vec())
+                    .collect()
+            };
+
+            for chunk in chunks {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    for (idx, path) in chunk {
+                        let indicator = compute_indicator(&path);
+                        let _ = tx.send((idx, indicator));
+                    }
+                });
+            }
+            drop(tx);
+
+            rx.into_iter().collect()
+        };
+
+        // Apply indicators to entries using index paths
+        for (idx_path, indicator) in indicators {
+            if let Some(entry) = get_entry_by_index_path_mut(&mut entries, &idx_path) {
+                entry.indicator = indicator;
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Scan a directory recursively, building a tree of entries.
+fn scan_dir_recursive(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<WorkspaceEntry>> {
+    let mut entries: Vec<WorkspaceEntry> = Vec::new();
+    let read_dir = std::fs::read_dir(dir)?;
+
     for entry in read_dir {
         let entry = entry?;
         let path = entry.path();
-
         if !path.is_dir() {
             continue;
         }
 
         let name = entry.file_name().to_string_lossy().to_string();
-
-        // Skip hidden dirs
         if name.starts_with('.') {
             continue;
         }
 
         let is_git_repo = path.join(".git").exists();
-        dirs.push((name, path, is_git_repo));
-    }
 
-    // Compute indicators in parallel for git repos
-    let git_paths: Vec<(usize, PathBuf)> = dirs
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, _, is_git))| *is_git)
-        .map(|(i, (_, path, _))| (i, path.clone()))
-        .collect();
-
-    let indicators: Vec<(usize, Option<RepoIndicator>)> = if git_paths.len() <= 1 {
-        // No point in parallelizing for 0-1 repos
-        git_paths
-            .into_iter()
-            .map(|(i, path)| (i, compute_indicator(&path)))
-            .collect()
-    } else {
-        // Parallel indicator computation
-        let (tx, rx) = std::sync::mpsc::channel();
-        let num_threads = git_paths.len().min(8);
-        let chunks: Vec<Vec<(usize, PathBuf)>> = {
-            let chunk_size = git_paths.len().div_ceil(num_threads);
-            git_paths.chunks(chunk_size).map(|c| c.to_vec()).collect()
+        let children = if !is_git_repo && depth < max_depth {
+            scan_dir_recursive(&path, depth + 1, max_depth).unwrap_or_default()
+        } else {
+            Vec::new()
         };
 
-        for chunk in chunks {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                for (i, path) in chunk {
-                    let indicator = compute_indicator(&path);
-                    let _ = tx.send((i, indicator));
-                }
-            });
-        }
-        drop(tx);
-
-        rx.into_iter().collect()
-    };
-
-    let mut indicator_map: Vec<Option<RepoIndicator>> = vec![None; dirs.len()];
-    for (i, indicator) in indicators {
-        indicator_map[i] = indicator;
-    }
-
-    let mut entries: Vec<WorkspaceEntry> = dirs
-        .into_iter()
-        .enumerate()
-        .map(|(i, (name, path, is_git_repo))| WorkspaceEntry {
+        entries.push(WorkspaceEntry {
             name,
             path,
             is_git_repo,
-            indicator: indicator_map[i].take(),
-        })
-        .collect();
+            indicator: None,
+            children,
+        });
+    }
 
+    // Sort: git repos first, then alphabetically
     entries.sort_by(|a, b| {
-        // Git repos first, then alphabetically
-        b.is_git_repo.cmp(&a.is_git_repo).then(a.name.cmp(&b.name))
+        b.is_git_repo
+            .cmp(&a.is_git_repo)
+            .then(a.name.cmp(&b.name))
     });
 
     Ok(entries)
+}
+
+/// Collect paths to all git repos in the tree, with their index paths.
+fn collect_git_paths(
+    entries: &[WorkspaceEntry],
+    parent_idx: &[usize],
+    out: &mut Vec<(usize, Vec<usize>, PathBuf)>,
+) {
+    for (i, entry) in entries.iter().enumerate() {
+        let mut idx_path = parent_idx.to_vec();
+        idx_path.push(i);
+        if entry.is_git_repo {
+            out.push((i, idx_path.clone(), entry.path.clone()));
+        }
+        collect_git_paths(&entry.children, &idx_path, out);
+    }
+}
+
+/// Get a mutable reference to an entry by its index path (sequence of child indices).
+fn get_entry_by_index_path_mut<'a>(
+    entries: &'a mut [WorkspaceEntry],
+    idx_path: &[usize],
+) -> Option<&'a mut WorkspaceEntry> {
+    if idx_path.is_empty() {
+        return None;
+    }
+    let (first, rest) = idx_path.split_first()?;
+    let entry = entries.get_mut(*first)?;
+    if rest.is_empty() {
+        Some(entry)
+    } else {
+        get_entry_by_index_path_mut(&mut entry.children, rest)
+    }
 }
 
 /// Quick status check: dirty + ahead + branch name.
