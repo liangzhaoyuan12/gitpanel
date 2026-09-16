@@ -22,3 +22,4 @@ pub mod remotes_dialog;
 pub mod branch_compare_dialog;
 pub mod word_diff;
 pub mod log_viewer;
+pub mod license_dialog;

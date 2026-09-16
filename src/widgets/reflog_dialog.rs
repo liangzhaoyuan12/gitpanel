@@ -1,12 +1,13 @@
 use adw::glib;
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::model::ReflogEntry;
 
 /// Build a dialog showing the HEAD reflog.
 pub fn build_reflog_dialog(entries: &[ReflogEntry]) -> adw::Dialog {
     let dialog = adw::Dialog::builder()
-        .title("Reflog")
+        .title(i18n::t(Key::reflog_title))
         .content_width(720)
         .content_height(520)
         .build();
@@ -18,7 +19,7 @@ pub fn build_reflog_dialog(entries: &[ReflogEntry]) -> adw::Dialog {
     if entries.is_empty() {
         let empty = adw::StatusPage::builder()
             .icon_name("emblem-system-symbolic")
-            .title("No reflog entries")
+            .title(i18n::t(Key::reflog_no_entries))
             .description("This repository has no reflog history yet.")
             .build();
         toolbar_view.set_content(Some(&empty));

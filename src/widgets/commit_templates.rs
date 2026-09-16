@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use crate::i18n::{self, Key};
 
 const CONVENTIONAL_PREFIXES: &[(&str, &str)] = &[
     ("feat: ", "A new feature"),
@@ -92,7 +93,7 @@ where
     let menu_btn = gtk::MenuButton::builder()
         .icon_name("system-users-symbolic")
         .css_classes(["flat", "circular"])
-        .tooltip_text("Add Co-Author")
+        .tooltip_text(i18n::t(Key::template_add_coauthor))
         .valign(gtk::Align::Center)
         .build();
 
@@ -105,7 +106,7 @@ where
     content.set_width_request(280);
 
     let title = gtk::Label::builder()
-        .label("Add Co-Author")
+        .label(i18n::t(Key::template_add_coauthor))
         .css_classes(["heading"])
         .xalign(0.0)
         .build();
@@ -122,7 +123,7 @@ where
     content.append(&email_entry);
 
     let add_btn = gtk::Button::builder()
-        .label("Add Trailer")
+        .label(i18n::t(Key::template_add_trailer))
         .css_classes(["suggested-action"])
         .sensitive(false)
         .build();

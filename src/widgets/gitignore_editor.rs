@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use crate::i18n::{self, Key};
 
 /// Build a .gitignore editor dialog.
 /// `content` is the current .gitignore text.
@@ -18,7 +19,7 @@ where
     // Header bar with Save button
     let header = adw::HeaderBar::new();
     let save_btn = gtk::Button::builder()
-        .label("Save")
+        .label(i18n::t(Key::gitignore_save))
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&save_btn);

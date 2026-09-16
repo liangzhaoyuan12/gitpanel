@@ -1,6 +1,7 @@
 use adw::prelude::*;
 use adw::glib;
 
+use crate::i18n::{self, Key};
 use crate::model::CommitInfo;
 
 /// Build a dialog showing the commit history for a single file.
@@ -26,7 +27,7 @@ where
     if commits.is_empty() {
         let empty = adw::StatusPage::builder()
             .icon_name("document-open-recent-symbolic")
-            .title("No history")
+            .title(i18n::t(Key::file_history_no_history))
             .description("This file has no commit history in the current branch.")
             .build();
         toolbar_view.set_content(Some(&empty));
@@ -58,7 +59,7 @@ where
 
         let restore_btn = gtk::Button::builder()
             .icon_name("edit-undo-symbolic")
-            .tooltip_text("Restore file from this commit")
+            .tooltip_text(i18n::t(Key::file_history_restore))
             .css_classes(["flat"])
             .valign(gtk::Align::Center)
             .build();

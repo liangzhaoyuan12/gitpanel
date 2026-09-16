@@ -1,6 +1,7 @@
 use adw::prelude::*;
 use gtk::glib;
 
+use crate::i18n::{self, Key};
 use crate::model::{BranchInfo, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo};
 
 /// Build a collapsible section: clickable header that toggles list visibility.
@@ -79,7 +80,7 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
 
     // Search
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Filter…")
+        .placeholder_text(i18n::t(Key::filter_placeholder))
         .margin_start(8)
         .margin_end(8)
         .margin_top(8)
@@ -94,12 +95,12 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
 
     let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    let local_list = build_collapsible_section(&inner, "Local", true);
-    let remote_list = build_collapsible_section(&inner, "Remote", false);
-    let tags_list = build_collapsible_section(&inner, "Tags", false);
-    let stashes_list = build_collapsible_section(&inner, "Stashes", false);
-    let submodules_list = build_collapsible_section(&inner, "Submodules", false);
-    let worktrees_list = build_collapsible_section(&inner, "Worktrees", false);
+    let local_list = build_collapsible_section(&inner, i18n::t(Key::branches_local), true);
+    let remote_list = build_collapsible_section(&inner, i18n::t(Key::branches_remote), false);
+    let tags_list = build_collapsible_section(&inner, i18n::t(Key::tags_section), false);
+    let stashes_list = build_collapsible_section(&inner, i18n::t(Key::stashes_section), false);
+    let submodules_list = build_collapsible_section(&inner, i18n::t(Key::submodules_section), false);
+    let worktrees_list = build_collapsible_section(&inner, i18n::t(Key::worktrees_section), false);
 
     scrolled.set_child(Some(&inner));
     panel.append(&scrolled);
@@ -110,7 +111,7 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let cb_icon = gtk::Image::from_icon_name("list-add-symbolic");
     cb_inner.append(&cb_icon);
     let cb_label = gtk::Label::builder()
-        .label("New branch")
+        .label(i18n::t(Key::new_branch))
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
     cb_inner.append(&cb_label);
@@ -118,7 +119,7 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
     let create_branch_btn = gtk::Button::builder()
         .child(&cb_inner)
         .css_classes(["suggested-action", "pill"])
-        .tooltip_text("Create branch from HEAD")
+        .tooltip_text(i18n::t(Key::new_branch_tooltip))
         .margin_start(8)
         .margin_end(8)
         .margin_top(4)
@@ -249,7 +250,7 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
         .activatable(true)
         .build();
     toggle_row.set_widget_name(SHOW_MORE_ROW);
-    let collapsed_text = format!("Show all ({} more)", overflow_rows.len());
+    let collapsed_text = crate::i18n::FmtKey::show_all_n(overflow_rows.len()).render();
     let label = gtk::Label::builder()
         .label(&collapsed_text)
         .css_classes(["caption", "dim-label"])
@@ -284,7 +285,7 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
         for r in rows.iter() {
             r.set_visible(currently_hidden);
         }
-        label.set_label(if currently_hidden { "Show less" } else { &collapsed });
+        label.set_label(if currently_hidden { i18n::t(Key::show_less) } else { &collapsed });
     });
     unsafe {
         list.set_data(TOGGLE_HANDLER_KEY, handler);
@@ -460,7 +461,7 @@ where
         let apply_btn = gtk::Button::builder()
             .icon_name("go-up-symbolic")
             .css_classes(["flat", "circular"])
-            .tooltip_text("Apply")
+            .tooltip_text(i18n::t(Key::stash_apply))
             .valign(gtk::Align::Center)
             .build();
         let idx = entry.index;
@@ -473,7 +474,7 @@ where
         let drop_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
             .css_classes(["flat", "circular"])
-            .tooltip_text("Drop")
+            .tooltip_text(i18n::t(Key::stash_drop))
             .valign(gtk::Align::Center)
             .build();
         let idx = entry.index;
@@ -532,7 +533,7 @@ where
 
         if !sm.is_initialized {
             let init_label = gtk::Label::builder()
-                .label("not init")
+                .label(i18n::t(Key::not_init))
                 .css_classes(["caption", "dim-label"])
                 .build();
             row_box.append(&init_label);
@@ -541,7 +542,7 @@ where
         let update_btn = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
             .css_classes(["flat", "circular"])
-            .tooltip_text("Update")
+            .tooltip_text(i18n::t(Key::stash_update))
             .valign(gtk::Align::Center)
             .build();
         let on_update_clone = on_update.clone();
@@ -604,7 +605,7 @@ where
             let open_btn = gtk::Button::builder()
                 .icon_name("document-open-symbolic")
                 .css_classes(["flat", "circular"])
-                .tooltip_text("Open")
+                .tooltip_text(i18n::t(Key::submodule_open))
                 .valign(gtk::Align::Center)
                 .build();
             let on_open_clone = on_open.clone();

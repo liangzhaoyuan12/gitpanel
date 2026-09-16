@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use crate::i18n::{self, Key};
 
 /// Build a clone dialog. `on_clone` is called with (url, destination_dir).
 pub fn build_clone_dialog<F>(on_clone: F) -> adw::Dialog
@@ -6,7 +7,7 @@ where
     F: Fn(String, String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title("Clone Repository")
+        .title(i18n::t(Key::clone_title))
         .content_width(520)
         .content_height(320)
         .build();
@@ -24,7 +25,7 @@ where
     let group = adw::PreferencesGroup::new();
 
     let url_row = adw::EntryRow::builder()
-        .title("Repository URL")
+        .title(i18n::t(Key::clone_url))
         .build();
     group.add(&url_row);
 
@@ -32,7 +33,7 @@ where
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let dest_row = adw::EntryRow::builder()
-        .title("Destination folder")
+        .title(i18n::t(Key::clone_dest))
         .text(&home)
         .build();
     group.add(&dest_row);
@@ -40,7 +41,7 @@ where
     content.append(&group);
 
     let hint = gtk::Label::builder()
-        .label("The repository will be cloned into a new folder named after the repo inside the destination.")
+        .label(i18n::t(Key::clone_desc))
         .wrap(true)
         .xalign(0.0)
         .css_classes(["dim-label", "caption"])
@@ -48,7 +49,7 @@ where
     content.append(&hint);
 
     let clone_btn = gtk::Button::builder()
-        .label("Clone")
+        .label(i18n::t(Key::clone_btn))
         .css_classes(["suggested-action", "pill"])
         .halign(gtk::Align::End)
         .sensitive(false)

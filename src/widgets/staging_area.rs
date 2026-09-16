@@ -1,5 +1,6 @@
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::model::{FileStatus, FileStatusKind};
 
 /// Buttons returned so window.rs can connect signals to them.
@@ -25,10 +26,10 @@ pub fn build_staging_panel(
 
     // === Unstaged Changes ===
     let stage_all_btn = gtk::Button::builder()
-        .label("Stage All")
+        .label(i18n::t(Key::stage_all))
         .css_classes(["flat"])
         .build();
-    let unstaged_section = build_section("Unstaged Changes", &stage_all_btn, unstaged_list);
+    let unstaged_section = build_section(i18n::t(Key::unstaged_changes), &stage_all_btn, unstaged_list);
     unstaged_section.set_vexpand(true);
     container.append(&unstaged_section);
 
@@ -36,10 +37,10 @@ pub fn build_staging_panel(
 
     // === Staged Changes ===
     let unstage_all_btn = gtk::Button::builder()
-        .label("Unstage All")
+        .label(i18n::t(Key::unstage_all))
         .css_classes(["flat"])
         .build();
-    let staged_section = build_section("Staged Changes", &unstage_all_btn, staged_list);
+    let staged_section = build_section(i18n::t(Key::staged_changes), &unstage_all_btn, staged_list);
     staged_section.set_vexpand(true);
     container.append(&staged_section);
 
@@ -64,7 +65,7 @@ pub fn build_staging_panel(
     overlay.set_child(Some(commit_entry));
 
     let placeholder_label = gtk::Label::builder()
-        .label("Commit message")
+        .label(i18n::t(Key::commit_message_placeholder))
         .css_classes(["dim-label"])
         .xalign(0.0)
         .yalign(0.0)
@@ -82,7 +83,7 @@ pub fn build_staging_panel(
     commit_box.append(&overlay);
 
     let commit_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    commit_button.set_label("Commit");
+    commit_button.set_label(i18n::t(Key::commit_btn));
     commit_button.add_css_class("suggested-action");
     commit_button.add_css_class("pill");
     commit_button.set_hexpand(true);
@@ -131,7 +132,7 @@ fn build_section(title: &str, action_btn: &gtk::Button, list_box: &gtk::ListBox)
     list_box.add_css_class("navigation-sidebar");
 
     let placeholder = gtk::Label::builder()
-        .label("No changes")
+        .label(i18n::t(Key::no_changes))
         .css_classes(["dim-label"])
         .margin_top(16)
         .margin_bottom(16)
@@ -221,7 +222,7 @@ fn create_file_row(path: &str, status: FileStatusKind, kind: RowKind) -> gtk::Li
             let stage_btn = gtk::Button::builder()
                 .icon_name("list-add-symbolic")
                 .css_classes(["flat", "circular"])
-                .tooltip_text("Stage file")
+                .tooltip_text(i18n::t(Key::stage_file))
                 .valign(gtk::Align::Center)
                 .build();
             stage_btn.set_widget_name("stage-file");
@@ -230,7 +231,7 @@ fn create_file_row(path: &str, status: FileStatusKind, kind: RowKind) -> gtk::Li
             let discard_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .css_classes(["flat", "circular"])
-                .tooltip_text("Discard changes")
+                .tooltip_text(i18n::t(Key::discard_tooltip))
                 .valign(gtk::Align::Center)
                 .build();
             discard_btn.set_widget_name("discard-file");
@@ -240,7 +241,7 @@ fn create_file_row(path: &str, status: FileStatusKind, kind: RowKind) -> gtk::Li
             let unstage_btn = gtk::Button::builder()
                 .icon_name("list-remove-symbolic")
                 .css_classes(["flat", "circular"])
-                .tooltip_text("Unstage file")
+                .tooltip_text(i18n::t(Key::unstage_file))
                 .valign(gtk::Align::Center)
                 .build();
             unstage_btn.set_widget_name("unstage-file");

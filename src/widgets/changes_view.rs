@@ -7,6 +7,7 @@ use crate::model::{DiffFile, DiffLineKind, FileStatusKind, RepoStatus};
 
 use super::changed_file_object::ChangedFileObject;
 use super::syntax;
+use crate::i18n::{self, Key};
 
 /// Per-row button callback: `(file_path, button_name)`.
 pub type RowButtonCallback = Rc<dyn Fn(&str, &str)>;
@@ -61,7 +62,7 @@ pub fn build_changes_view(
     overlay.set_child(Some(commit_entry));
 
     let placeholder_label = gtk::Label::builder()
-        .label("Commit message")
+        .label(i18n::t(Key::commit_message_placeholder))
         .css_classes(["dim-label"])
         .xalign(0.0)
         .yalign(0.0)
@@ -85,21 +86,21 @@ pub fn build_changes_view(
     let action_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
 
     let stage_all_btn = gtk::Button::builder()
-        .label("Stage All")
+        .label(i18n::t(Key::stage_all))
         .css_classes(["flat", "caption"])
         .build();
     action_row.append(&stage_all_btn);
 
     let unstage_all_btn = gtk::Button::builder()
-        .label("Unstage All")
+        .label(i18n::t(Key::unstage_all))
         .css_classes(["flat", "caption"])
         .build();
     action_row.append(&unstage_all_btn);
 
     let trash_all_btn = gtk::Button::builder()
-        .label("Trash All")
+        .label(i18n::t(Key::trash_all))
         .css_classes(["flat", "caption"])
-        .tooltip_text("Move all changes to Trash (safe rollback)")
+        .tooltip_text(i18n::t(Key::trash_all_tooltip))
         .build();
     action_row.append(&trash_all_btn);
 
@@ -126,7 +127,7 @@ pub fn build_changes_view(
     allow_empty_check.set_tooltip_text(Some("Allow commit when no files are staged"));
     action_row.append(allow_empty_check);
 
-    commit_button.set_label("Commit");
+    commit_button.set_label(i18n::t(Key::commit_btn));
     commit_button.add_css_class("suggested-action");
     commit_button.add_css_class("pill");
     action_row.append(commit_button);
@@ -140,7 +141,7 @@ pub fn build_changes_view(
     let lists_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let header = gtk::Label::builder()
-        .label("Changes")
+        .label(i18n::t(Key::changes))
         .css_classes(["heading"])
         .xalign(0.0)
         .margin_start(8)
@@ -157,7 +158,7 @@ pub fn build_changes_view(
 
     // Empty-state label shown when the store has no items.
     let placeholder = gtk::Label::builder()
-        .label("No changes")
+        .label(i18n::t(Key::no_changes))
         .css_classes(["dim-label"])
         .margin_top(12)
         .margin_bottom(12)
@@ -291,9 +292,9 @@ pub fn populate_file_lists(
     let unstaged_count = files.iter().filter(|f| !f.is_staged).count();
     let staged_count = files.iter().filter(|f| f.is_staged).count();
     let label = if staged_count == 0 && unstaged_count == 0 {
-        "Changes".to_string()
+        i18n::t(Key::changes).to_string()
     } else {
-        format!("Changes — {} staged / {} unstaged", staged_count, unstaged_count)
+        crate::i18n::FmtKey::commit_files_staged_unstaged(staged_count, unstaged_count).render()
     };
     update_header_label(list_view, "changes-header", &label);
 
@@ -464,7 +465,7 @@ fn build_row_template() -> gtk::Box {
     let discard_btn = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
         .css_classes(["flat", "circular"])
-        .tooltip_text("Discard")
+        .tooltip_text(i18n::t(Key::discard))
         .valign(gtk::Align::Center)
         .build();
     discard_btn.set_widget_name("discard-file");
@@ -474,7 +475,7 @@ fn build_row_template() -> gtk::Box {
     let blame_btn = gtk::Button::builder()
         .icon_name("view-list-symbolic")
         .css_classes(["flat", "circular"])
-        .tooltip_text("Blame")
+        .tooltip_text(i18n::t(Key::blame))
         .valign(gtk::Align::Center)
         .build();
     blame_btn.set_widget_name("blame-file");
@@ -484,7 +485,7 @@ fn build_row_template() -> gtk::Box {
     let history_btn = gtk::Button::builder()
         .icon_name("document-open-recent-symbolic")
         .css_classes(["flat", "circular"])
-        .tooltip_text("File History")
+        .tooltip_text(i18n::t(Key::file_history))
         .valign(gtk::Align::Center)
         .build();
     history_btn.set_widget_name("history-file");
@@ -571,20 +572,20 @@ fn bind_row_widgets(outer: &gtk::Box, obj: &ChangedFileObject) {
     // Status icon — green check when staged, otherwise per-status glyph
     let (name, css, tooltip) = if is_staged {
         let kind = match status {
-            FileStatusKind::New => "Added",
-            FileStatusKind::Modified => "Modified",
-            FileStatusKind::Deleted => "Deleted",
-            FileStatusKind::Renamed => "Renamed",
-            FileStatusKind::Typechange => "Typechange",
+            FileStatusKind::New => i18n::t(Key::status_added),
+            FileStatusKind::Modified => i18n::t(Key::status_modified),
+            FileStatusKind::Deleted => i18n::t(Key::status_deleted),
+            FileStatusKind::Renamed => i18n::t(Key::status_renamed),
+            FileStatusKind::Typechange => i18n::t(Key::status_typechange),
         };
-        ("object-select-symbolic", "success", format!("Staged ({})", kind))
+        ("object-select-symbolic", "success", kind.to_string())
     } else {
         let (n, c, t) = match status {
-            FileStatusKind::New => ("list-add-symbolic", "success", "Added"),
-            FileStatusKind::Modified => ("document-edit-symbolic", "accent", "Modified"),
-            FileStatusKind::Deleted => ("list-remove-symbolic", "error", "Deleted"),
-            FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", "Renamed"),
-            FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", "Typechange"),
+            FileStatusKind::New => ("list-add-symbolic", "success", i18n::t(Key::status_added)),
+            FileStatusKind::Modified => ("document-edit-symbolic", "accent", i18n::t(Key::status_modified)),
+            FileStatusKind::Deleted => ("list-remove-symbolic", "error", i18n::t(Key::status_deleted)),
+            FileStatusKind::Renamed => ("edit-find-replace-symbolic", "accent", i18n::t(Key::status_renamed)),
+            FileStatusKind::Typechange => ("dialog-warning-symbolic", "warning", i18n::t(Key::status_typechange)),
         };
         (n, c, t.to_string())
     };
@@ -935,9 +936,9 @@ pub fn populate_hunk_actions(
     if num_hunks > 1 {
         for i in 0..num_hunks {
             let label = if is_staged {
-                format!("Unstage Hunk {}", i + 1)
+                crate::i18n::FmtKey::unstage_hunk_n(i + 1).render()
             } else {
-                format!("Stage Hunk {}", i + 1)
+                crate::i18n::FmtKey::stage_hunk_n(i + 1).render()
             };
             let btn = gtk::Button::builder()
                 .label(&label)
@@ -955,7 +956,7 @@ pub fn populate_hunk_actions(
 
     // "Select Lines" toggle — opens line-level selection UI
     let select_lines_btn = gtk::Button::builder()
-        .label("Select Lines")
+        .label(i18n::t(Key::select_lines))
         .css_classes(["flat", "caption"])
         .build();
     select_lines_btn.set_widget_name("select-lines-btn");
@@ -975,7 +976,7 @@ pub fn populate_hunk_actions(
 
     // "Stage Selected Lines" button (hidden initially)
     let stage_lines_btn = gtk::Button::builder()
-        .label(if is_staged { "Unstage Selected Lines" } else { "Stage Selected Lines" })
+        .label(if is_staged { i18n::t(Key::unstage_selected_lines) } else { i18n::t(Key::stage_selected_lines) })
         .css_classes(["suggested-action", "caption"])
         .margin_start(4)
         .margin_top(4)
@@ -994,7 +995,7 @@ pub fn populate_hunk_actions(
             let visible = !selectors.is_visible();
             selectors.set_visible(visible);
             stage_btn.set_visible(visible);
-            btn.set_label(if visible { "Hide Lines" } else { "Select Lines" });
+            btn.set_label(if visible { i18n::t(Key::hide_lines) } else { i18n::t(Key::select_lines) });
         });
     }
 }

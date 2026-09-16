@@ -1,5 +1,6 @@
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::model::{RebaseAction, RebaseEntry};
 
 /// Build an interactive rebase editor dialog.
@@ -14,7 +15,7 @@ where
     F: Fn(Vec<RebaseEntry>, String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title("Interactive Rebase")
+        .title(i18n::t(Key::rebase_title))
         .content_width(600)
         .content_height(500)
         .build();
@@ -23,7 +24,7 @@ where
 
     let header = adw::HeaderBar::new();
     let execute_btn = gtk::Button::builder()
-        .label("Start Rebase")
+        .label(i18n::t(Key::rebase_start))
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&execute_btn);

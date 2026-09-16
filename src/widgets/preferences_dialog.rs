@@ -3,6 +3,7 @@ use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::i18n::{self, Key, Language};
 use crate::utils::config::{AppConfig, DateFormat};
 use crate::utils::external_editor::{self, DetectedEditor};
 
@@ -23,7 +24,7 @@ fn fill_editor_combo(
     detected: &[DetectedEditor],
     current: Option<&str>,
 ) {
-    let mut labels: Vec<String> = vec!["Not configured".to_string()];
+    let mut labels: Vec<String> = vec![i18n::t(Key::pref_not_configured).to_string()];
     let mut mapping: Vec<EditorChoice> = vec![EditorChoice::Unset];
 
     for editor in detected {
@@ -31,7 +32,7 @@ fn fill_editor_combo(
         mapping.push(EditorChoice::Detected(editor.command.clone()));
     }
 
-    labels.push("Custom command…".to_string());
+    labels.push(i18n::t(Key::pref_custom_command_option).to_string());
     mapping.push(EditorChoice::Custom);
 
     let selected = match current {
@@ -72,13 +73,30 @@ where
 
     // === General page ===
     let page = adw::PreferencesPage::builder()
-        .title("General")
+        .title(i18n::t(Key::pref_general))
         .icon_name("preferences-system-symbolic")
         .build();
 
+    // --- Language group ---
+    let lang_group = adw::PreferencesGroup::builder()
+        .title(i18n::t(Key::pref_language))
+        .build();
+    let lang_model = gtk::StringList::new(&[
+        i18n::t(Key::pref_lang_system),
+        i18n::t(Key::pref_lang_zh_cn),
+        i18n::t(Key::pref_lang_en),
+    ]);
+    let lang_row = adw::ComboRow::builder()
+        .title(i18n::t(Key::pref_language))
+        .model(&lang_model)
+        .selected(config.language.index())
+        .build();
+    lang_group.add(&lang_row);
+    page.add(&lang_group);
+
     // --- Display group ---
     let display_group = adw::PreferencesGroup::builder()
-        .title("Display")
+        .title(i18n::t(Key::pref_display))
         .build();
 
     // Date format combo
@@ -88,7 +106,7 @@ where
         &format!("American ({})", DateFormat::American.label()),
     ]);
     let date_row = adw::ComboRow::builder()
-        .title("Date Format")
+        .title(i18n::t(Key::pref_date_format))
         .model(&date_format_model)
         .selected(config.date_format.index())
         .build();
@@ -104,8 +122,8 @@ where
         0.0,
     );
     let files_limit_row = adw::SpinRow::builder()
-        .title("Commit files limit")
-        .subtitle("0 = show all files")
+        .title(i18n::t(Key::pref_commit_files_limit))
+        .subtitle(i18n::t(Key::pref_commit_files_limit_sub))
         .adjustment(&files_limit_adj)
         .build();
     display_group.add(&files_limit_row);
@@ -120,8 +138,8 @@ where
         0.0,
     );
     let sidebar_limit_row = adw::SpinRow::builder()
-        .title("Sidebar items limit")
-        .subtitle("0 = show all items per section")
+        .title(i18n::t(Key::pref_sidebar_items_limit))
+        .subtitle(i18n::t(Key::pref_sidebar_items_limit_sub))
         .adjustment(&sidebar_limit_adj)
         .build();
     display_group.add(&sidebar_limit_row);
@@ -130,7 +148,7 @@ where
 
     // --- Updates group ---
     let updates_group = adw::PreferencesGroup::builder()
-        .title("Updates")
+        .title(i18n::t(Key::pref_updates))
         .build();
 
     // Refresh interval spin
@@ -143,16 +161,16 @@ where
         0.0,
     );
     let spin_row = adw::SpinRow::builder()
-        .title("Auto-refresh interval (seconds)")
-        .subtitle("0 = disabled")
+        .title(i18n::t(Key::pref_auto_refresh))
+        .subtitle(i18n::t(Key::pref_auto_refresh_sub))
         .adjustment(&adj)
         .build();
     updates_group.add(&spin_row);
 
     // Refresh Now button
     let refresh_row = adw::ActionRow::builder()
-        .title("Refresh Now")
-        .subtitle("Force an immediate refresh")
+        .title(i18n::t(Key::pref_refresh_now))
+        .subtitle(i18n::t(Key::pref_refresh_now_sub))
         .activatable(true)
         .build();
     let refresh_icon = gtk::Image::from_icon_name("view-refresh-symbolic");
@@ -162,17 +180,19 @@ where
 
     // --- External tools group ---
     let tools_group = adw::PreferencesGroup::builder()
-        .title("External Tools")
-        .description("Open the current repository in an editor or IDE")
+        .title(i18n::t(Key::pref_external_tools))
+        .description(i18n::t(Key::pref_external_tools_desc))
         .build();
 
     // The Flatpak build cannot see or start host applications, so there is
     // nothing to pick from — the desktop portal asks the host instead.
     let sandboxed = external_editor::in_flatpak();
 
-    let editor_row = adw::ComboRow::builder().title("Open with").build();
+    let editor_row = adw::ComboRow::builder()
+        .title(i18n::t(Key::pref_open_with))
+        .build();
     let custom_row = adw::EntryRow::builder()
-        .title("Custom command")
+        .title(i18n::t(Key::pref_custom_command))
         .show_apply_button(true)
         .build();
     custom_row.set_text(config.external_editor.as_deref().unwrap_or(""));
@@ -183,8 +203,8 @@ where
     if sandboxed {
         tools_group.add(
             &adw::ActionRow::builder()
-                .title("Open with")
-                .subtitle("Asks the system which application to use")
+                .title(i18n::t(Key::pref_open_with))
+                .subtitle(i18n::t(Key::pref_open_with_sub))
                 .build(),
         );
     } else {
@@ -249,6 +269,7 @@ where
         let editor_row = editor_row.clone();
         let custom_row = custom_row.clone();
         let choices = choices.clone();
+        let lang_row = lang_row.clone();
         let recent = config.recent_workspaces.clone();
         // Sandboxed builds show no editor picker, so the combo sits at "Not
         // configured" and would otherwise wipe a command set outside Flatpak.
@@ -271,6 +292,7 @@ where
                     _ => None,
                 }
             },
+            language: Language::from_index(lang_row.selected()),
         }
     };
 
@@ -303,6 +325,16 @@ where
         let build_config = build_config.clone();
         sidebar_limit_row.connect_value_notify(move |_| {
             on_changed(build_config());
+        });
+    }
+
+    {
+        let on_changed = on_changed.clone();
+        let build_config = build_config.clone();
+        lang_row.connect_selected_notify(move |_| {
+            let cfg = build_config();
+            i18n::set_language(cfg.language);
+            on_changed(cfg);
         });
     }
 
@@ -395,7 +427,7 @@ mod tests {
         if !test_support::gtk_available() {
             return;
         }
-        assert!(titles_with_sandbox(false).contains(&"External Tools".to_string()));
+        assert!(titles_with_sandbox(false).contains(&i18n::t(crate::i18n::Key::pref_external_tools).to_string()));
     }
 
     /// Count `AdwEntryRow`s — the custom-command field is the only one in this
@@ -438,7 +470,7 @@ mod tests {
         }
         // The group stays — the portal is still reachable from the menu — but
         // there is nothing to configure, so the custom-command field is gone.
-        assert!(titles_with_sandbox(true).contains(&"External Tools".to_string()));
+        assert!(titles_with_sandbox(true).contains(&i18n::t(crate::i18n::Key::pref_external_tools).to_string()));
         assert_eq!(entry_rows_with_sandbox(true), 0);
         assert_eq!(entry_rows_with_sandbox(false), 1);
     }

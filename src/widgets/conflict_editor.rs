@@ -1,5 +1,6 @@
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::utils::conflict::ConflictChunk;
 
 /// Build a 3-way merge conflict editor dialog.
@@ -24,7 +25,7 @@ where
     // Header bar
     let header = adw::HeaderBar::new();
     let resolve_btn = gtk::Button::builder()
-        .label("Mark Resolved")
+        .label(i18n::t(Key::conflict_mark_resolved))
         .css_classes(["suggested-action"])
         .build();
     header.pack_end(&resolve_btn);
@@ -71,13 +72,13 @@ where
     actions_bar.append(&info);
 
     let accept_ours_all = gtk::Button::builder()
-        .label("Accept All Ours")
+        .label(i18n::t(Key::conflict_accept_ours))
         .css_classes(["flat"])
         .build();
     actions_bar.append(&accept_ours_all);
 
     let accept_theirs_all = gtk::Button::builder()
-        .label("Accept All Theirs")
+        .label(i18n::t(Key::conflict_accept_theirs))
         .css_classes(["flat"])
         .build();
     actions_bar.append(&accept_theirs_all);

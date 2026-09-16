@@ -2,6 +2,7 @@ use adw::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::i18n::{self, Key};
 use crate::model::RemoteInfo;
 
 pub enum RemoteAction {
@@ -18,7 +19,7 @@ where
     F: Fn(RemoteAction) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title("Remotes")
+        .title(i18n::t(Key::remotes_title))
         .content_width(560)
         .content_height(480)
         .build();
@@ -37,12 +38,12 @@ where
 
     // Existing remotes
     let existing_group = adw::PreferencesGroup::builder()
-        .title("Existing Remotes")
+        .title(i18n::t(Key::remotes_existing))
         .build();
 
     if remotes.is_empty() {
         let empty = gtk::Label::builder()
-            .label("No remotes configured")
+            .label(i18n::t(Key::remotes_no_configured))
             .css_classes(["dim-label"])
             .xalign(0.0)
             .build();
@@ -56,7 +57,7 @@ where
 
             let edit_btn = gtk::Button::builder()
                 .icon_name("document-edit-symbolic")
-                .tooltip_text("Edit URL")
+                .tooltip_text(i18n::t(Key::remotes_edit_url))
                 .css_classes(["flat"])
                 .valign(gtk::Align::Center)
                 .build();
@@ -196,15 +197,15 @@ where
 
     // Add new remote
     let add_group = adw::PreferencesGroup::builder()
-        .title("Add Remote")
+        .title(i18n::t(Key::remotes_add))
         .build();
-    let name_row = adw::EntryRow::builder().title("Name").build();
-    let url_row = adw::EntryRow::builder().title("URL").build();
+    let name_row = adw::EntryRow::builder().title(i18n::t(Key::remotes_name)).build();
+    let url_row = adw::EntryRow::builder().title(i18n::t(Key::remotes_url)).build();
     add_group.add(&name_row);
     add_group.add(&url_row);
 
     let add_btn = gtk::Button::builder()
-        .label("Add")
+        .label(i18n::t(Key::remotes_add))
         .css_classes(["suggested-action", "pill"])
         .halign(gtk::Align::End)
         .sensitive(false)

@@ -7,6 +7,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::i18n::{self, Key};
 use crate::model::{cap_diff_cache, CommitInfo, DiffFile, LocalRefPos, RefBadge, RemoteRefPos, RepoStatus, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo};
 
 /// Upper bound on per-cache diff memory (~5 MB) before trailing entries are dropped.
@@ -127,6 +128,7 @@ use crate::widgets::blame_view;
 use crate::widgets::conflict_editor;
 use crate::widgets::file_history_dialog;
 use crate::widgets::clone_dialog;
+use crate::widgets::license_dialog;
 use crate::widgets::reflog_dialog;
 use crate::widgets::remotes_dialog;
 use crate::widgets::branch_compare_dialog;
@@ -258,13 +260,13 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     }
     if recent_submenu.n_items() > 0 {
         let section = gio::Menu::new();
-        section.append_submenu(Some("Recent"), &recent_submenu);
+        section.append_submenu(Some(i18n::t(Key::menu_recent)), &recent_submenu);
         menu.append_section(None, &section);
     }
 
     let open_section = gio::Menu::new();
     open_section.append(Some(editor_label), Some("win.open-in-editor"));
-    open_section.append(Some("Clone Repository…"), Some("win.clone-repo"));
+    open_section.append(Some(i18n::t(Key::menu_clone_repo)), Some("win.clone-repo"));
     menu.append_section(None, &open_section);
 
     let repo_section = gio::Menu::new();
@@ -272,36 +274,37 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
     // Remote operations are also on Ctrl+Shift+{F,L,P} and the bottom bar;
     // they stay in the menu so mobile widths, where the bar collapses, keep them.
     let remote_submenu = gio::Menu::new();
-    remote_submenu.append(Some("Fetch"), Some("win.fetch"));
-    remote_submenu.append(Some("Fetch from…"), Some("win.fetch-from"));
-    remote_submenu.append(Some("Pull"), Some("win.pull"));
-    remote_submenu.append(Some("Pull from…"), Some("win.pull-from"));
-    remote_submenu.append(Some("Push"), Some("win.push"));
-    remote_submenu.append(Some("Push to…"), Some("win.push-to"));
-    remote_submenu.append(Some("Push to all remotes…"), Some("win.push-all"));
-    remote_submenu.append(Some("Force Push"), Some("win.force-push"));
-    remote_submenu.append(Some("Force Push to…"), Some("win.force-push-to"));
-    remote_submenu.append(Some("Force Push to all remotes…"), Some("win.force-push-all"));
+    remote_submenu.append(Some(i18n::t(Key::menu_fetch)), Some("win.fetch"));
+    remote_submenu.append(Some(i18n::t(Key::menu_fetch_from)), Some("win.fetch-from"));
+    remote_submenu.append(Some(i18n::t(Key::menu_pull)), Some("win.pull"));
+    remote_submenu.append(Some(i18n::t(Key::menu_pull_from)), Some("win.pull-from"));
+    remote_submenu.append(Some(i18n::t(Key::menu_push)), Some("win.push"));
+    remote_submenu.append(Some(i18n::t(Key::menu_push_to)), Some("win.push-to"));
+    remote_submenu.append(Some(i18n::t(Key::menu_push_all)), Some("win.push-all"));
+    remote_submenu.append(Some(i18n::t(Key::menu_force_push)), Some("win.force-push"));
+    remote_submenu.append(Some(i18n::t(Key::menu_force_push_to)), Some("win.force-push-to"));
+    remote_submenu.append(Some(i18n::t(Key::menu_force_push_all)), Some("win.force-push-all"));
 
-    repo_section.append_submenu(Some("Remote"), &remote_submenu);
-    repo_section.append(Some("Manage Remotes…"), Some("win.remotes"));
+    repo_section.append_submenu(Some(i18n::t(Key::menu_remote)), &remote_submenu);
+    repo_section.append(Some(i18n::t(Key::menu_manage_remotes)), Some("win.remotes"));
 
     let tools_submenu = gio::Menu::new();
-    tools_submenu.append(Some("Stash"), Some("win.stash-save"));
-    tools_submenu.append(Some("Compare Branches…"), Some("win.branch-compare"));
-    tools_submenu.append(Some("Reflog"), Some("win.reflog"));
-    tools_submenu.append(Some("Start Bisect…"), Some("win.bisect-start"));
-    tools_submenu.append(Some("Apply Patch…"), Some("win.apply-patch"));
-    tools_submenu.append(Some("Edit .gitignore"), Some("win.edit-gitignore"));
-    tools_submenu.append(Some("Export Graph as PNG…"), Some("win.export-graph"));
-    repo_section.append_submenu(Some("Tools"), &tools_submenu);
+    tools_submenu.append(Some(i18n::t(Key::menu_stash)), Some("win.stash-save"));
+    tools_submenu.append(Some(i18n::t(Key::menu_compare_branches)), Some("win.branch-compare"));
+    tools_submenu.append(Some(i18n::t(Key::menu_reflog)), Some("win.reflog"));
+    tools_submenu.append(Some(i18n::t(Key::menu_bisect)), Some("win.bisect-start"));
+    tools_submenu.append(Some(i18n::t(Key::menu_apply_patch)), Some("win.apply-patch"));
+    tools_submenu.append(Some(i18n::t(Key::menu_edit_gitignore)), Some("win.edit-gitignore"));
+    tools_submenu.append(Some(i18n::t(Key::menu_export_graph)), Some("win.export-graph"));
+    tools_submenu.append(Some(i18n::t(Key::menu_add_license)), Some("win.add-license"));
+    repo_section.append_submenu(Some(i18n::t(Key::menu_tools)), &tools_submenu);
 
     menu.append_section(None, &repo_section);
 
     let app_section = gio::Menu::new();
-    app_section.append(Some("Preferences"), Some("win.preferences"));
-    app_section.append(Some("Logs"), Some("win.logs"));
-    app_section.append(Some("About Gitpanel"), Some("win.about"));
+    app_section.append(Some(i18n::t(Key::menu_preferences)), Some("win.preferences"));
+    app_section.append(Some(i18n::t(Key::menu_logs)), Some("win.logs"));
+    app_section.append(Some(i18n::t(Key::menu_about)), Some("win.about"));
     menu.append_section(None, &app_section);
 
     menu
@@ -477,29 +480,29 @@ mod imp {
                 commit_entry: gtk::TextView::new(),
                 commit_button: gtk::Button::new(),
                 search_entry: gtk::SearchEntry::builder()
-                    .placeholder_text("Search commits")
+                    .placeholder_text(i18n::t(Key::btn_search_commits))
                     .margin_start(8)
                     .margin_end(8)
                     .margin_top(8)
                     .margin_bottom(4)
                     .build(),
                 amend_check: gtk::CheckButton::builder()
-                    .label("Amend")
+                    .label(i18n::t(Key::amend))
                     .build(),
                 allow_empty_check: gtk::CheckButton::builder()
-                    .label("Allow empty")
+                    .label(i18n::t(Key::allow_empty))
                     .build(),
                 fetch_btn: gtk::Button::builder()
                     .icon_name("view-refresh-symbolic")
-                    .tooltip_text("Fetch")
+                    .tooltip_text(i18n::t(Key::btn_fetch))
                     .build(),
                 pull_btn: gtk::MenuButton::builder()
                     .icon_name("folder-download-symbolic")
-                    .tooltip_text("Pull")
+                    .tooltip_text(i18n::t(Key::btn_pull))
                     .build(),
                 push_btn: gtk::MenuButton::builder()
                     .icon_name("software-update-available-symbolic")
-                    .tooltip_text("Push")
+                    .tooltip_text(i18n::t(Key::btn_push))
                     .build(),
                 branches_local_list: RefCell::new(None),
                 branches_remote_list: RefCell::new(None),
@@ -518,8 +521,8 @@ mod imp {
                     .ellipsize(gtk::pango::EllipsizeMode::End)
                     .build(),
                 sidebar_repo_name_label: gtk::Label::builder()
-                    .label("")
-                    .css_classes(["caption"])
+                    .label(i18n::t(Key::bisect_good))
+                                        .css_classes(["flat"])
                     .xalign(0.0)
                     .build(),
                 sidebar_status_label: gtk::Label::builder()
@@ -529,7 +532,7 @@ mod imp {
                     .build(),
                 menu_btn: gtk::MenuButton::builder()
                     .icon_name("open-menu-symbolic")
-                    .tooltip_text("Menu")
+                    .tooltip_text(i18n::t(Key::btn_menu))
                     .build(),
                 commits_loaded_count: Cell::new(0),
                 undo_stack: RefCell::new(UndoStack::default()),
@@ -630,7 +633,7 @@ impl GitpanelWindow {
         // Content header left: toggle repo tree
         let toggle_repo_tree = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
-            .tooltip_text("Toggle Repository Tree")
+            .tooltip_text(i18n::t(Key::btn_toggle_tree))
             .active(true)
             .build();
         content_header.pack_start(&toggle_repo_tree);
@@ -639,7 +642,7 @@ impl GitpanelWindow {
         // sidebar header and the content header — see `sync_header_chrome`.
         let open_button = gtk::Button::builder()
             .icon_name("folder-open-symbolic")
-            .tooltip_text("Open Workspace / Repository")
+            .tooltip_text(i18n::t(Key::btn_open_workspace))
             .build();
         open_button.set_action_name(Some("win.open-repo"));
 
@@ -671,7 +674,7 @@ impl GitpanelWindow {
         // Content header right: toggle right sidebar (always visible)
         let toggle_right_panel = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Toggle Branches/Tags Panel")
+            .tooltip_text(i18n::t(Key::btn_toggle_branches))
             .active(true)
             .build();
         content_header.pack_end(&toggle_right_panel);
@@ -679,7 +682,7 @@ impl GitpanelWindow {
         // Content header right: search toggle (always visible)
         let search_toggle = gtk::ToggleButton::builder()
             .icon_name("system-search-symbolic")
-            .tooltip_text("Search Commits (Ctrl+F)")
+            .tooltip_text(i18n::t(Key::btn_search_commits))
             .build();
         content_header.pack_end(&search_toggle);
 
@@ -718,7 +721,7 @@ impl GitpanelWindow {
         sync_popover.set_child(Some(&sync_box));
         let sync_btn = gtk::MenuButton::builder()
             .icon_name("vertical-arrows-none-symbolic")
-            .tooltip_text("Sync (Fetch / Pull / Push)")
+            .tooltip_text(i18n::t(Key::btn_sync))
             .popover(&sync_popover)
             .visible(false)
             .build();
@@ -729,7 +732,7 @@ impl GitpanelWindow {
 
         // Content header right: branch label
         let branch_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        imp.branch_label.set_label("—");
+        imp.branch_label.set_label(i18n::t(Key::branch_label_default));
         branch_content.append(&gtk::Image::builder()
             .icon_name("branch-fork-symbolic")
             .pixel_size(16)
@@ -756,7 +759,7 @@ impl GitpanelWindow {
         imp.repo_list_box.add_css_class("navigation-sidebar");
 
         let placeholder = gtk::Label::builder()
-            .label("Open a folder to browse repos")
+            .label(i18n::t(Key::open_folder_hint))
             .css_classes(["dim-label"])
             .margin_top(24)
             .margin_bottom(24)
@@ -877,7 +880,7 @@ impl GitpanelWindow {
             );
 
             let commits_placeholder = gtk::Label::builder()
-                .label("No commits yet")
+                .label(i18n::t(Key::no_commits_yet))
                 .css_classes(["dim-label"])
                 .build();
             // The empty-state placeholder swaps with the *scroll window*, never
@@ -986,7 +989,7 @@ impl GitpanelWindow {
             .hexpand(true)
             .build();
         let graph_placeholder = gtk::Label::builder()
-            .label("Select a repository to view the graph")
+            .label(i18n::t(Key::select_repo_hint))
             .css_classes(["dim-label"])
             .margin_top(24)
             .build();
@@ -1041,7 +1044,7 @@ impl GitpanelWindow {
         // Left: stash (flat button)
         let stash_btn = gtk::Button::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text("Stash (Ctrl+Z)")
+            .tooltip_text(i18n::t(Key::btn_stash))
             .css_classes(["flat"])
             .build();
         stash_btn.set_action_name(Some("win.stash-save"));
@@ -1126,7 +1129,7 @@ impl GitpanelWindow {
         right_header.set_show_start_title_buttons(false);
         right_header.set_show_end_title_buttons(true);
         let right_title = gtk::Label::builder()
-            .label("Branches & Tags")
+            .label(i18n::t(Key::branches_and_tags))
             .css_classes(["heading"])
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
@@ -1136,7 +1139,7 @@ impl GitpanelWindow {
         // the overlay without hitting the window-close X by accident.
         let right_close_btn = gtk::Button::builder()
             .icon_name("go-previous-symbolic")
-            .tooltip_text("Close panel")
+            .tooltip_text(i18n::t(Key::close_panel))
             .visible(false)
             .build();
         right_header.pack_start(&right_close_btn);
@@ -1424,7 +1427,7 @@ impl GitpanelWindow {
         let window = self.clone();
         action.connect_activate(move |_, _| {
             let dialog = gtk::FileDialog::builder()
-                .title("Open Workspace / Repository")
+                .title(i18n::t(Key::btn_open_workspace))
                 .modal(true)
                 .build();
             let win = window.clone();
@@ -1740,6 +1743,14 @@ impl GitpanelWindow {
             window.open_gitignore_editor();
         });
         self.add_action(&gitignore_action);
+
+        // Add License
+        let license_action = gio::SimpleAction::new("add-license", None);
+        let window = self.clone();
+        license_action.connect_activate(move |_, _| {
+            window.show_license_dialog();
+        });
+        self.add_action(&license_action);
     }
 
     /// Open a workspace folder (or single repo).
@@ -2002,7 +2013,7 @@ impl GitpanelWindow {
         }
 
         let caption = gtk::Label::builder()
-            .label("Remotes:")
+            .label(i18n::t(Key::remotes_label))
             .css_classes(["caption", "dim-label"])
             .build();
         strip.append(&caption);
@@ -3183,8 +3194,8 @@ impl GitpanelWindow {
             buttons.append(&bad_btn);
 
             let skip_btn = gtk::Button::builder()
-                .label("Skip")
-                .css_classes(["pill"])
+                .label(i18n::t(Key::bisect_skip))
+                                    .css_classes(["flat"])
                 .build();
             let win = self.clone();
             skip_btn.connect_clicked(move |_| {
@@ -4045,7 +4056,7 @@ impl GitpanelWindow {
         let default_name = format!("{}.patch", &sha[..7.min(sha.len())]);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Save patch as")
+            .title(i18n::t(Key::save_patch_as))
             .modal(true)
             .initial_name(&default_name)
             .build();
@@ -4076,7 +4087,7 @@ impl GitpanelWindow {
         let default_name = format!("archive-{}.tar.gz", short);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Export archive")
+            .title(i18n::t(Key::export_archive))
             .modal(true)
             .initial_name(&default_name)
             .build();
@@ -4126,15 +4137,15 @@ impl GitpanelWindow {
         }
 
         let dialog = adw::Dialog::builder()
-            .title("Start Bisect")
+            .title(i18n::t(Key::bisect_start_title))
             .content_width(420)
             .build();
 
         let toolbar_view = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
         let start_btn = gtk::Button::builder()
-            .label("Start")
-            .css_classes(["suggested-action"])
+            .label(i18n::t(Key::bisect_start_btn))
+                            .css_classes(["suggested-action"])
             .build();
         header.pack_end(&start_btn);
         toolbar_view.add_top_bar(&header);
@@ -4146,7 +4157,7 @@ impl GitpanelWindow {
         body.set_margin_bottom(12);
 
         let hint = gtk::Label::builder()
-            .label("Mark a known-bad commit (defaults to HEAD) and a known-good ancestor. Git will then check out the middle commit.")
+            .label(i18n::t(Key::bisect_desc))
             .wrap(true)
             .xalign(0.0)
             .css_classes(["caption", "dim-label"])
@@ -4154,7 +4165,7 @@ impl GitpanelWindow {
         body.append(&hint);
 
         let bad_label = gtk::Label::builder()
-            .label("Bad ref (broken)")
+            .label(i18n::t(Key::bisect_bad_ref))
             .xalign(0.0)
             .build();
         body.append(&bad_label);
@@ -4164,7 +4175,7 @@ impl GitpanelWindow {
         body.append(&bad_entry);
 
         let good_label = gtk::Label::builder()
-            .label("Good ref (works)")
+            .label(i18n::t(Key::bisect_good_ref))
             .xalign(0.0)
             .build();
         body.append(&good_label);
@@ -4208,7 +4219,7 @@ impl GitpanelWindow {
         let remote_map = self.ref_badge_map(&ids);
 
         let dialog = gtk::FileDialog::builder()
-            .title("Export graph as PNG")
+            .title(i18n::t(Key::export_graph_title))
             .modal(true)
             .initial_name("branch-graph.png")
             .build();
@@ -4233,7 +4244,7 @@ impl GitpanelWindow {
         };
 
         let dialog = gtk::FileDialog::builder()
-            .title("Select patch file to apply")
+            .title(i18n::t(Key::select_patch_file))
             .modal(true)
             .build();
 
@@ -4505,6 +4516,28 @@ impl GitpanelWindow {
                     }
                     Err(e) => win.show_toast(&format!("Error: {}", e)),
                 }
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Show the Add License dialog and write the selected LICENSE file to the
+    /// project root.
+    fn show_license_dialog(&self) {
+        let Some(repo_path) = self.repo_path_string() else {
+            self.show_toast("No repository is open");
+            return;
+        };
+
+        let win = self.clone();
+        let dialog = license_dialog::build_license_dialog(move |license_text| {
+            let license_path = std::path::Path::new(&repo_path).join("LICENSE");
+            match std::fs::write(&license_path, &license_text) {
+                Ok(()) => {
+                    win.show_toast("LICENSE file created");
+                    win.trigger_background_refresh();
+                }
+                Err(e) => win.show_toast(&format!("Error writing LICENSE: {}", e)),
             }
         });
         dialog.present(Some(self));
@@ -4817,7 +4850,7 @@ impl GitpanelWindow {
         content.set_width_request(300);
 
         let header = gtk::Label::builder()
-            .label("Stash List")
+            .label(i18n::t(Key::stash_list))
             .css_classes(["heading"])
             .xalign(0.0)
             .build();
@@ -4885,7 +4918,7 @@ impl GitpanelWindow {
                     }
                     _ => {
                         let empty = gtk::Label::builder()
-                            .label("No stashes")
+                            .label(i18n::t(Key::no_stashes))
                             .css_classes(["dim-label"])
                             .margin_top(12)
                             .margin_bottom(12)
@@ -4897,7 +4930,7 @@ impl GitpanelWindow {
         } else {
             drop(repo_ref);
             let empty = gtk::Label::builder()
-                .label("No repository selected")
+                .label(i18n::t(Key::no_repo_selected))
                 .css_classes(["dim-label"])
                 .margin_top(12)
                 .margin_bottom(12)
@@ -5000,7 +5033,7 @@ impl GitpanelWindow {
 
             // Copy Message
             let copy_msg_btn = gtk::Button::builder()
-                .label("Copy Message")
+                .label(i18n::t(Key::copy_message))
                 .css_classes(["flat"])
                 .build();
             let msg_clone = message.clone();
@@ -5017,7 +5050,7 @@ impl GitpanelWindow {
 
             // Checkout commit (detached HEAD)
             let checkout_btn = gtk::Button::builder()
-                .label("Checkout This Commit")
+                .label(i18n::t(Key::checkout_this_commit))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5039,7 +5072,7 @@ impl GitpanelWindow {
 
             // Cherry-pick
             let cherry_pick_btn = gtk::Button::builder()
-                .label("Cherry-pick")
+                .label(i18n::t(Key::cherry_pick))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5057,7 +5090,7 @@ impl GitpanelWindow {
 
             // Revert
             let revert_btn = gtk::Button::builder()
-                .label("Revert Commit")
+                .label(i18n::t(Key::revert_commit))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5075,7 +5108,7 @@ impl GitpanelWindow {
 
             // Reset Soft
             let reset_soft_btn = gtk::Button::builder()
-                .label("Reset Soft to Here")
+                .label(i18n::t(Key::reset_soft))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5089,7 +5122,7 @@ impl GitpanelWindow {
 
             // Reset Mixed
             let reset_mixed_btn = gtk::Button::builder()
-                .label("Reset Mixed to Here")
+                .label(i18n::t(Key::reset_mixed))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5103,7 +5136,7 @@ impl GitpanelWindow {
 
             // Reset Hard
             let reset_hard_btn = gtk::Button::builder()
-                .label("Reset Hard to Here")
+                .label(i18n::t(Key::reset_hard))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5117,7 +5150,7 @@ impl GitpanelWindow {
 
             // Create Tag
             let create_tag_btn = gtk::Button::builder()
-                .label("Create Tag…")
+                .label(i18n::t(Key::create_tag_ellipsis))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5131,7 +5164,7 @@ impl GitpanelWindow {
 
             // Export as Patch
             let export_patch_btn = gtk::Button::builder()
-                .label("Export as Patch…")
+                .label(i18n::t(Key::export_patch_ellipsis))
                 .css_classes(["flat"])
                 .build();
             let sha_clone = sha.clone();
@@ -5822,15 +5855,15 @@ mod tests {
         assert_eq!(menu.n_items(), 3);
         assert_eq!(
             labels(&section(&menu, 0)),
-            vec!["Open in Zed", "Clone Repository…"]
+            vec!["Open in Zed", i18n::t(Key::menu_clone_repo)]
         );
         assert_eq!(
             labels(&section(&menu, 1)),
-            vec!["Remote", "Manage Remotes…", "Tools"]
+            vec![i18n::t(Key::menu_remote), i18n::t(Key::menu_manage_remotes), i18n::t(Key::menu_tools)]
         );
         assert_eq!(
             labels(&section(&menu, 2)),
-            vec!["Preferences", "Logs", "About Gitpanel"]
+            vec![i18n::t(Key::menu_preferences), i18n::t(Key::menu_logs), i18n::t(Key::menu_about)]
         );
     }
 
@@ -5842,7 +5875,7 @@ mod tests {
         assert_eq!(menu.n_items(), 4);
 
         let recent_section = section(&menu, 0);
-        assert_eq!(labels(&recent_section), vec!["Recent"]);
+        assert_eq!(labels(&recent_section), vec![i18n::t(Key::menu_recent)]);
         let submenu = recent_section
             .item_link(0, gio::MENU_LINK_SUBMENU)
             .expect("Recent is a submenu");
@@ -5860,23 +5893,23 @@ mod tests {
         assert_eq!(
             labels(&remote),
             vec![
-                "Fetch",
-                "Fetch from…",
-                "Pull",
-                "Pull from…",
-                "Push",
-                "Push to…",
-                "Push to all remotes…",
-                "Force Push",
-                "Force Push to…",
-                "Force Push to all remotes…",
+                i18n::t(Key::menu_fetch),
+                i18n::t(Key::menu_fetch_from),
+                i18n::t(Key::menu_pull),
+                i18n::t(Key::menu_pull_from),
+                i18n::t(Key::menu_push),
+                i18n::t(Key::menu_push_to),
+                i18n::t(Key::menu_push_all),
+                i18n::t(Key::menu_force_push),
+                i18n::t(Key::menu_force_push_to),
+                i18n::t(Key::menu_force_push_all),
             ]
         );
 
         let tools = repo_section
             .item_link(2, gio::MENU_LINK_SUBMENU)
             .expect("Tools is a submenu");
-        assert!(labels(&tools).contains(&"Stash".to_string()));
-        assert_eq!(labels(&tools).len(), 7);
+        assert!(labels(&tools).contains(&i18n::t(Key::menu_stash).to_string()));
+        assert_eq!(labels(&tools).len(), 8);
     }
 }

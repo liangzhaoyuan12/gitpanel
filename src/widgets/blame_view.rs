@@ -1,5 +1,6 @@
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::model::BlameLine;
 
 /// Build a blame viewer dialog for a file.
@@ -8,7 +9,7 @@ where
     F: Fn(String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title(format!("Blame: {}", file_path))
+        .title(&format!("{}: {}", i18n::t(Key::blame), file_path))
         .content_width(800)
         .content_height(600)
         .build();

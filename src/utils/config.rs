@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::i18n::Language;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub date_format: DateFormat,
@@ -17,6 +19,9 @@ pub struct AppConfig {
     /// detected one are the same thing to everything downstream.
     #[serde(default)]
     pub external_editor: Option<String>,
+    /// UI language preference.
+    #[serde(default)]
+    pub language: Language,
 }
 
 fn default_commit_files_limit() -> u32 {
@@ -36,6 +41,7 @@ impl Default for AppConfig {
             sidebar_items_limit: default_sidebar_items_limit(),
             recent_workspaces: Vec::new(),
             external_editor: None,
+            language: Language::default(),
         }
     }
 }

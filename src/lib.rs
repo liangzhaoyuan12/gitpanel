@@ -7,9 +7,11 @@
 //   * `app`/`window` — application shell + main window
 //   * `main`   — binary entry point
 
+pub mod i18n;
 pub mod utils;
 pub mod model;
 pub mod widgets;
+pub mod generated;
 pub mod app;
 pub mod window;
 

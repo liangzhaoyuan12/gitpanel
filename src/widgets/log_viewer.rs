@@ -1,6 +1,7 @@
 use adw::glib;
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::utils::logging;
 
 /// Build a dialog that shows the current log file with a one-click copy button.
@@ -10,7 +11,7 @@ use crate::utils::logging;
 /// log to the clipboard and briefly relabels itself to confirm.
 pub fn build_log_viewer_dialog() -> adw::Dialog {
     let dialog = adw::Dialog::builder()
-        .title("Logs")
+        .title(i18n::t(Key::logs_title))
         .content_width(760)
         .content_height(560)
         .build();
@@ -21,7 +22,7 @@ pub fn build_log_viewer_dialog() -> adw::Dialog {
 
     // One-click copy of the entire log.
     let copy_btn = gtk::Button::builder()
-        .label("Copy")
+        .label(i18n::t(Key::logs_copy))
         .tooltip_text("Copy the log to the clipboard")
         .css_classes(["suggested-action"])
         .build();
@@ -59,10 +60,10 @@ pub fn build_log_viewer_dialog() -> adw::Dialog {
     let copy_text = text.clone();
     copy_btn.connect_clicked(move |btn| {
         btn.clipboard().set_text(&copy_text);
-        btn.set_label("Copied!");
+        btn.set_label(i18n::t(Key::logs_copied));
         let btn = btn.clone();
         glib::timeout_add_seconds_local_once(1, move || {
-            btn.set_label("Copy");
+            btn.set_label(i18n::t(Key::logs_copy));
         });
     });
 

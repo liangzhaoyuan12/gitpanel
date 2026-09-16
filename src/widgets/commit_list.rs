@@ -9,6 +9,7 @@ use chrono::TimeZone;
 use gtk::gio;
 
 use super::commit_object::CommitObject;
+use crate::i18n::{self, Key};
 use crate::model::{CommitInfo, DiffFile, RefBadge, RefKind};
 use crate::utils::config::DateFormat;
 
@@ -426,7 +427,7 @@ fn build_row_template(
 
     // === Sentinel row content (created hidden, shown by bind if needed) ===
     let sentinel_label = gtk::Label::builder()
-        .label("Load more commits...")
+        .label(i18n::t(Key::load_more_commits))
         .css_classes(["dim-label"])
         .margin_top(8)
         .margin_bottom(8)
@@ -647,7 +648,7 @@ fn populate_files_into_outer(outer: &gtk::Box, obj: &CommitObject) {
     let files = obj.files();
     if files.is_empty() {
         let empty = gtk::Label::builder()
-            .label("No file changes")
+            .label(i18n::t(Key::no_file_changes))
             .css_classes(["dim-label"])
             .xalign(0.0)
             .build();
@@ -721,7 +722,7 @@ fn build_file_row(file: &DiffFile, commit_id: &str, on_open: FileOpenCallback) -
     let header_btn = gtk::Button::builder()
         .child(&file_row)
         .css_classes(["flat"])
-        .tooltip_text("Show diff")
+        .tooltip_text(i18n::t(Key::show_diff))
         .build();
     let path = file.path.clone();
     let commit_id = commit_id.to_string();

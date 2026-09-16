@@ -1,6 +1,7 @@
 use adw::glib;
 use adw::prelude::*;
 
+use crate::i18n::{self, Key};
 use crate::model::BranchInfo;
 
 /// Build a branch compare dialog.
@@ -17,7 +18,7 @@ where
     F: Fn(String, String) + 'static,
 {
     let dialog = adw::Dialog::builder()
-        .title("Compare Branches")
+        .title(i18n::t(Key::compare_title))
         .content_width(720)
         .content_height(560)
         .build();
@@ -35,10 +36,10 @@ where
     let names: Vec<String> = branches.iter().map(|b| b.name.clone()).collect();
     let model = gtk::StringList::new(&names.iter().map(|s| s.as_str()).collect::<Vec<_>>());
 
-    let pick_group = adw::PreferencesGroup::builder().title("Refs").build();
+    let pick_group = adw::PreferencesGroup::builder().title(i18n::t(Key::compare_refs)).build();
 
     let base_row = adw::ComboRow::builder()
-        .title("Base (from)")
+        .title(i18n::t(Key::compare_base))
         .subtitle("Older state")
         .model(&model)
         .build();
@@ -50,7 +51,7 @@ where
     pick_group.add(&base_row);
 
     let target_row = adw::ComboRow::builder()
-        .title("Target (to)")
+        .title(i18n::t(Key::compare_target))
         .subtitle("Newer state")
         .model(&model)
         .build();
@@ -63,7 +64,7 @@ where
     content.append(&pick_group);
 
     let compare_btn = gtk::Button::builder()
-        .label("Compare")
+        .label(i18n::t(Key::compare_btn))
         .css_classes(["suggested-action", "pill"])
         .halign(gtk::Align::End)
         .build();
@@ -131,7 +132,7 @@ impl BranchCompareRefs {
 
         if files.is_empty() {
             let empty = gtk::Label::builder()
-                .label("No differences")
+                .label(i18n::t(Key::compare_no_diff))
                 .css_classes(["dim-label"])
                 .margin_top(16)
                 .margin_bottom(16)

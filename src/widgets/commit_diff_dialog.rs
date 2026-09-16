@@ -11,6 +11,7 @@ use adw::prelude::*;
 
 use crate::model::DiffFile;
 
+use crate::i18n::{self, Key};
 use super::diff_view;
 
 /// Handles the caller (and the tests) need after the dialog is built.
@@ -130,7 +131,7 @@ pub fn build_commit_diff_dialog(
 
     let view_toggle = gtk::ToggleButton::builder()
         .icon_name(split_icon_name())
-        .tooltip_text("Side-by-side")
+        .tooltip_text(i18n::t(Key::side_by_side))
         .active(true)
         .build();
     header.pack_end(&view_toggle);
