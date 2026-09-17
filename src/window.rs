@@ -521,8 +521,8 @@ mod imp {
                     .ellipsize(gtk::pango::EllipsizeMode::End)
                     .build(),
                 sidebar_repo_name_label: gtk::Label::builder()
-                    .label(i18n::t(Key::bisect_good))
-                                        .css_classes(["flat"])
+                    .label("")
+                    .css_classes(["flat"])
                     .xalign(0.0)
                     .build(),
                 sidebar_status_label: gtk::Label::builder()
