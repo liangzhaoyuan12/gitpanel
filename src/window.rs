@@ -658,17 +658,17 @@ impl GitpanelWindow {
         // dropdown (no separate caret). The menu holds the plain Pull/Push plus
         // the "…from / …to" and force variants.
         let pull_menu = gio::Menu::new();
-        pull_menu.append(Some("Pull"), Some("win.pull"));
-        pull_menu.append(Some("Pull from…"), Some("win.pull-from"));
+        pull_menu.append(Some(i18n::t(Key::menu_pull)), Some("win.pull"));
+        pull_menu.append(Some(i18n::t(Key::menu_pull_from)), Some("win.pull-from"));
         imp.pull_btn.set_menu_model(Some(&pull_menu));
 
         let push_menu = gio::Menu::new();
-        push_menu.append(Some("Push"), Some("win.push"));
-        push_menu.append(Some("Push to…"), Some("win.push-to"));
-        push_menu.append(Some("Push to all remotes…"), Some("win.push-all"));
-        push_menu.append(Some("Force Push"), Some("win.force-push"));
-        push_menu.append(Some("Force Push to…"), Some("win.force-push-to"));
-        push_menu.append(Some("Force Push to all remotes…"), Some("win.force-push-all"));
+        push_menu.append(Some(i18n::t(Key::menu_push)), Some("win.push"));
+        push_menu.append(Some(i18n::t(Key::menu_push_to)), Some("win.push-to"));
+        push_menu.append(Some(i18n::t(Key::menu_push_all)), Some("win.push-all"));
+        push_menu.append(Some(i18n::t(Key::menu_force_push)), Some("win.force-push"));
+        push_menu.append(Some(i18n::t(Key::menu_force_push_to)), Some("win.force-push-to"));
+        push_menu.append(Some(i18n::t(Key::menu_force_push_all)), Some("win.force-push-all"));
         imp.push_btn.set_menu_model(Some(&push_menu));
 
         // Content header right: toggle right sidebar (always visible)
@@ -696,15 +696,15 @@ impl GitpanelWindow {
         sync_box.set_margin_start(6);
         sync_box.set_margin_end(6);
         for (label, action, icon) in [
-            ("Fetch", "win.fetch", "view-refresh-symbolic"),
-            ("Pull", "win.pull", "go-down-symbolic"),
-            ("Push", "win.push", "go-up-symbolic"),
-            ("Fetch from…", "win.fetch-from", "view-refresh-symbolic"),
-            ("Pull from…", "win.pull-from", "go-down-symbolic"),
-            ("Push to…", "win.push-to", "go-up-symbolic"),
-            ("Force Push to…", "win.force-push-to", "go-up-symbolic"),
-            ("Push to all remotes…", "win.push-all", "go-up-symbolic"),
-            ("Force Push to all remotes…", "win.force-push-all", "go-up-symbolic"),
+            (i18n::t(Key::menu_fetch), "win.fetch", "view-refresh-symbolic"),
+            (i18n::t(Key::menu_pull), "win.pull", "go-down-symbolic"),
+            (i18n::t(Key::menu_push), "win.push", "go-up-symbolic"),
+            (i18n::t(Key::menu_fetch_from), "win.fetch-from", "view-refresh-symbolic"),
+            (i18n::t(Key::menu_pull_from), "win.pull-from", "go-down-symbolic"),
+            (i18n::t(Key::menu_push_to), "win.push-to", "go-up-symbolic"),
+            (i18n::t(Key::menu_force_push_to), "win.force-push-to", "go-up-symbolic"),
+            (i18n::t(Key::menu_push_all), "win.push-all", "go-up-symbolic"),
+            (i18n::t(Key::menu_force_push_all), "win.force-push-all", "go-up-symbolic"),
         ] {
             let row = gtk::Button::builder()
                 .css_classes(["flat"])
