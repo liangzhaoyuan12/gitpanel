@@ -267,6 +267,9 @@ pub enum Key {
     // === Toast / status ===
     toast_push_rejected,
     toast_remote_has_new,
+
+    // === Binary file ===
+    binary_diff_not_supported,
 }
 
 /// Format strings — runtime interpolation. Call `fmt_t(FmtKey::Xxx(...))`.
@@ -605,6 +608,8 @@ static EN: std::sync::LazyLock<HashMap<Key, &'static str>> = std::sync::LazyLock
     m.insert(Key::toast_push_rejected, "Push Rejected");
     m.insert(Key::toast_remote_has_new, "Remote has new commits. Pull first, then push again.");
 
+    m.insert(Key::binary_diff_not_supported, "Binary diff is not supported");
+
     m
 });
 
@@ -839,6 +844,8 @@ static ZH_CN: std::sync::LazyLock<HashMap<Key, &'static str>> =
 
         m.insert(Key::toast_push_rejected, "推送被拒绝");
         m.insert(Key::toast_remote_has_new, "远程仓库有新提交。请先拉取再推送。");
+
+        m.insert(Key::binary_diff_not_supported, "不支持显示二进制文件差异");
 
         m
     });

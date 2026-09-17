@@ -234,6 +234,18 @@ fn commit_position(list_view: &gtk::ListView, commit_id: &str) -> Option<u32> {
     None
 }
 
+/// Walk up from `widget` to find the nearest ancestor `ScrolledWindow`.
+fn find_ancestor_scrolled(widget: &impl IsA<gtk::Widget>) -> Option<gtk::ScrolledWindow> {
+    let mut cur = widget.upcast_ref().parent();
+    while let Some(w) = cur {
+        if let Ok(sw) = w.clone().downcast::<gtk::ScrolledWindow>() {
+            return Some(sw);
+        }
+        cur = w.parent();
+    }
+    None
+}
+
 /// Build the primary (hamburger) menu.
 ///
 /// Grouped into sections so the popover reads as four short blocks instead of
@@ -2812,6 +2824,9 @@ impl GitpanelWindow {
         // Re-render list with updated indicators
         let tree_state = imp.tree_state.borrow().clone();
         let selected_path = imp.repo.borrow().as_ref().map(|r| r.path().to_string_lossy().to_string());
+        // Save scroll position — populate_repo_list clears all children, which
+        // resets the ScrolledWindow's adjustment to 0.
+        let scroll_pos = find_ancestor_scrolled(&imp.repo_list_box).map(|sw| sw.vadjustment().value());
         repo_tree::populate_repo_list(&imp.repo_list_box, &entries_clone, &tree_state);
         // Restore selection
         if let Some(ref p) = selected_path {
@@ -2819,6 +2834,12 @@ impl GitpanelWindow {
                 if let Some(row) = imp.repo_list_box.row_at_index(idx) {
                     imp.repo_list_box.select_row(Some(&row));
                 }
+            }
+        }
+        // Restore scroll position
+        if let Some(pos) = scroll_pos {
+            if let Some(sw) = find_ancestor_scrolled(&imp.repo_list_box) {
+                sw.vadjustment().set_value(pos);
             }
         }
         // Reset workspace hash so throttled scan doesn't immediately override
@@ -2885,8 +2906,16 @@ impl GitpanelWindow {
         let store = imp.changed_file_store.borrow().clone();
         let list_view = imp.changed_file_list.borrow().clone();
         if let (Some(store), Some(list_view)) = (store, list_view) {
+            // Save scroll position before full store replacement
+            let scroll_pos = find_ancestor_scrolled(&list_view).map(|sw| sw.vadjustment().value());
             let files = changes_view::collect_changed_files(status);
             changes_view::populate_file_lists(&store, &files, &list_view);
+            // Restore scroll position
+            if let Some(pos) = scroll_pos {
+                if let Some(sw) = find_ancestor_scrolled(&list_view) {
+                    sw.vadjustment().set_value(pos);
+                }
+            }
         }
     }
 
@@ -4795,6 +4824,8 @@ impl GitpanelWindow {
 
                     // Re-render list
                     let tree_state = imp.tree_state.borrow().clone();
+                    // Save scroll position — populate_repo_list clears all children
+                    let scroll_pos = find_ancestor_scrolled(&imp.repo_list_box).map(|sw| sw.vadjustment().value());
                     repo_tree::populate_repo_list(&imp.repo_list_box, &new_entries, &tree_state);
                     *imp.workspace_entries.borrow_mut() = new_entries;
 
@@ -4804,6 +4835,12 @@ impl GitpanelWindow {
                             if let Some(row) = imp.repo_list_box.row_at_index(idx) {
                                 imp.repo_list_box.select_row(Some(&row));
                             }
+                        }
+                    }
+                    // Restore scroll position
+                    if let Some(pos) = scroll_pos {
+                        if let Some(sw) = find_ancestor_scrolled(&imp.repo_list_box) {
+                            sw.vadjustment().set_value(pos);
                         }
                     }
                 } else {

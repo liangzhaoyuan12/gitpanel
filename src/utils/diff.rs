@@ -36,6 +36,7 @@ impl GitRepo {
                 insertions,
                 deletions: 0,
             },
+            is_binary: false,
         })
     }
 
@@ -119,10 +120,12 @@ fn parse_diff(diff: &git2::Diff<'_>) -> Result<Vec<DiffFile>> {
         let file = if files.last().map(|f| f.path == path).unwrap_or(false) {
             files.last_mut().unwrap()
         } else {
+            let is_binary = delta.flags().contains(git2::DiffFlags::BINARY);
             files.push(DiffFile {
                 path: path.clone(),
                 hunks: Vec::new(),
                 stats: DiffStats::default(),
+                is_binary,
             });
             files.last_mut().unwrap()
         };

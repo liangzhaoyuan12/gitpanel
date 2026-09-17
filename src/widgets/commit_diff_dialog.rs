@@ -324,6 +324,7 @@ mod tests {
                     insertions: 1,
                     deletions: 0,
                 },
+                is_binary: false,
             })
             .collect()
     }

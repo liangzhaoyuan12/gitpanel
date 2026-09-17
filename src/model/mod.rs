@@ -59,6 +59,8 @@ pub struct DiffFile {
     pub path: String,
     pub hunks: Vec<DiffHunk>,
     pub stats: DiffStats,
+    #[serde(default)]
+    pub is_binary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

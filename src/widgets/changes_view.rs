@@ -740,6 +740,16 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     let buffer = textview.buffer();
     buffer.set_text("");
 
+    // Handle binary files — show a message instead of trying to render binary diff
+    if file.is_binary {
+        use crate::i18n::{self, Key};
+        let mut iter = buffer.end_iter();
+        let msg = i18n::t(Key::binary_diff_not_supported);
+        buffer.insert(&mut iter, msg);
+        textview.set_height_request(24);
+        return;
+    }
+
     let is_dark = adw::StyleManager::default().is_dark();
 
     // Setup diff tags (recreate on each render to handle theme changes)

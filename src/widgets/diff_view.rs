@@ -90,6 +90,17 @@ pub fn render_unified(buffer: &gtk::TextBuffer, files: &[DiffFile]) {
         buffer.insert(&mut iter, &text);
         buffer.apply_tag_by_name("file-header", &buffer.iter_at_offset(s), &iter);
 
+        // Binary file — show message instead of empty diff
+        if file.is_binary {
+            use crate::i18n::{self, Key};
+            let s = iter.offset();
+            buffer.insert(&mut iter, i18n::t(Key::binary_diff_not_supported));
+            buffer.insert(&mut iter, "\n");
+            buffer.apply_tag_by_name("file-header", &buffer.iter_at_offset(s), &iter);
+            buffer.insert(&mut iter, "\n");
+            continue;
+        }
+
         for hunk in &file.hunks {
             let s = iter.offset();
             buffer.insert(&mut iter, &hunk.header);
@@ -155,6 +166,25 @@ pub fn render_side_by_side(
         let rs = right_iter.offset();
         right_buffer.insert(&mut right_iter, &header);
         right_buffer.apply_tag_by_name("file-header", &right_buffer.iter_at_offset(rs), &right_iter);
+
+        // Binary file — show message on both sides
+        if file.is_binary {
+            use crate::i18n::{self, Key};
+            let msg = i18n::t(Key::binary_diff_not_supported);
+            let ls = left_iter.offset();
+            left_buffer.insert(&mut left_iter, &msg);
+            left_buffer.insert(&mut left_iter, "\n");
+            left_buffer.apply_tag_by_name("file-header", &left_buffer.iter_at_offset(ls), &left_iter);
+
+            let rs = right_iter.offset();
+            right_buffer.insert(&mut right_iter, &msg);
+            right_buffer.insert(&mut right_iter, "\n");
+            right_buffer.apply_tag_by_name("file-header", &right_buffer.iter_at_offset(rs), &right_iter);
+
+            left_buffer.insert(&mut left_iter, "\n");
+            right_buffer.insert(&mut right_iter, "\n");
+            continue;
+        }
 
         for hunk in &file.hunks {
             // Hunk header
