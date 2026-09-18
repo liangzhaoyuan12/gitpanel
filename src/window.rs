@@ -2913,33 +2913,18 @@ impl GitpanelWindow {
             return;
         };
         entry.indicator = Some(new_indicator);
-        let entries_clone = entries.clone();
+        let indicator = entry.indicator.clone();
         drop(entries);
 
-        // Re-render list with updated indicators
-        let tree_state = imp.tree_state.borrow().clone();
-        let selected_path = imp.repo.borrow().as_ref().map(|r| r.path().to_string_lossy().to_string());
-        // Save scroll position — populate_repo_list clears all children, which
-        // resets the ScrolledWindow's adjustment to 0.
-        let scroll_pos = find_ancestor_scrolled(&imp.repo_list_box).map(|sw| sw.vadjustment().value());
-        repo_tree::populate_repo_list(&imp.repo_list_box, &entries_clone, &tree_state);
-        // Restore selection
-        if let Some(ref p) = selected_path {
-            if let Some(idx) = repo_tree::find_row_index_for_path(&imp.repo_list_box, p) {
-                if let Some(row) = imp.repo_list_box.row_at_index(idx) {
-                    imp.repo_list_box.select_row(Some(&row));
-                }
-            }
-        }
-        // Restore scroll position
-        if let Some(pos) = scroll_pos {
-            if let Some(sw) = find_ancestor_scrolled(&imp.repo_list_box) {
-                sw.vadjustment().set_value(pos);
-            }
-        }
-        // Reset workspace hash so throttled scan doesn't immediately override
-        imp.last_workspace_hash.set(0);
-        imp.workspace_idle_streak.set(0);
+        // Update only this row's indicator widgets in-place — no full
+        // list rebuild, so scroll position and tree state are preserved.
+        repo_tree::update_indicator_in_place(&imp.repo_list_box, path_str, &indicator);
+        // NOTE: Do NOT reset last_workspace_hash here. The in-place update
+        // already changed workspace_entries, so the next background scan will
+        // naturally detect the hash mismatch and do a full rebuild (with
+        // proper re-selection). Resetting the hash here forces an immediate
+        // full rebuild on the next tick, which can lose the row selection
+        // because ListBox clears its selection when all children are removed.
     }
 
     fn update_sidebar_status(&self, repo_name: &str, status: Option<&RepoStatus>) {

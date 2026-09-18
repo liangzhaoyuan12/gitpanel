@@ -85,6 +85,7 @@ fn create_repo_row(entry: &WorkspaceEntry, depth: usize, expanded: bool) -> gtk:
                 .css_classes(["caption", class])
                 .build();
             dirty.set_tooltip_text(Some(tooltip));
+            dirty.set_widget_name("repo-indicator-dirty");
             top.append(&dirty);
         }
         if indicator.ahead > 0 {
@@ -93,6 +94,7 @@ fn create_repo_row(entry: &WorkspaceEntry, depth: usize, expanded: bool) -> gtk:
                 .css_classes(["caption", "gp-ind-green"])
                 .build();
             ahead.set_tooltip_text(Some(&format!("{} unpushed commit(s)", indicator.ahead)));
+            ahead.set_widget_name("repo-indicator-ahead");
             top.append(&ahead);
         }
     }
@@ -108,6 +110,7 @@ fn create_repo_row(entry: &WorkspaceEntry, depth: usize, expanded: bool) -> gtk:
                 .css_classes(["caption", "dim-label"])
                 .margin_start(22)
                 .build();
+            branch_label.set_widget_name("repo-branch-label");
             row_box.append(&branch_label);
         }
     }
@@ -165,4 +168,110 @@ pub fn find_row_index_for_path(list_box: &gtk::ListBox, path: &str) -> Option<i3
         i += 1;
     }
     None
+}
+
+/// Update only the indicator widgets (dirty dot, ahead count, branch label)
+/// of a single row in-place, without rebuilding the entire list.
+/// This preserves scroll position and tree expansion state.
+pub fn update_indicator_in_place(
+    list_box: &gtk::ListBox,
+    path_str: &str,
+    indicator: &Option<crate::utils::workspace::RepoIndicator>,
+) {
+    // Find the ListBoxRow by widget_name == path_str
+    let mut child = list_box.first_child();
+    let row = loop {
+        let Some(widget) = child else { return };
+        child = widget.next_sibling();
+        if widget.widget_name().as_str() == path_str {
+            // Should be a ListBoxRow, get its first child (row_box)
+            break widget;
+        }
+    };
+    let Ok(list_row) = row.clone().downcast::<gtk::ListBoxRow>() else {
+        return;
+    };
+    let Some(row_box) = list_row.child() else {
+        return;
+    };
+    let Ok(row_box) = row_box.downcast::<gtk::Box>() else {
+        return;
+    };
+
+    // top = first child of row_box
+    let Some(top_widget) = row_box.first_child() else {
+        return;
+    };
+    let Ok(top) = top_widget.downcast::<gtk::Box>() else {
+        return;
+    };
+
+    // Remove existing indicator labels from top
+    let mut to_remove = Vec::new();
+    let mut c = top.first_child();
+    while let Some(w) = c {
+        c = w.next_sibling();
+        let name = w.widget_name();
+        if name == "repo-indicator-dirty" || name == "repo-indicator-ahead" {
+            to_remove.push(w);
+        }
+    }
+    for w in to_remove {
+        top.remove(&w);
+    }
+
+    // Add new indicator labels
+    if let Some(ref ind) = indicator {
+        if ind.is_dirty {
+            let (class, tooltip) = if ind.has_tracked_changes {
+                ("gp-ind-yellow", "Uncommitted changes")
+            } else {
+                ("gp-ind-blue", "Untracked files")
+            };
+            let dirty = gtk::Label::builder()
+                .label("●")
+                .css_classes(["caption", class])
+                .build();
+            dirty.set_tooltip_text(Some(tooltip));
+            dirty.set_widget_name("repo-indicator-dirty");
+            top.append(&dirty);
+        }
+        if ind.ahead > 0 {
+            let ahead = gtk::Label::builder()
+                .label(format!("●{}", ind.ahead))
+                .css_classes(["caption", "gp-ind-green"])
+                .build();
+            ahead.set_tooltip_text(Some(&format!("{} unpushed commit(s)", ind.ahead)));
+            ahead.set_widget_name("repo-indicator-ahead");
+            top.append(&ahead);
+        }
+    }
+
+    // Update branch label (second child of row_box, if it exists)
+    let branch_widget = row_box.first_child().and_then(|c| c.next_sibling());
+    let new_branch = indicator.as_ref().and_then(|ind| ind.branch.clone());
+
+    match branch_widget {
+        Some(w) if w.widget_name() == "repo-branch-label" => {
+            if let Some(branch) = &new_branch {
+                if let Ok(label) = w.clone().downcast::<gtk::Label>() {
+                    label.set_label(branch);
+                }
+            } else {
+                row_box.remove(&w);
+            }
+        }
+        _ => {
+            if let Some(branch) = &new_branch {
+                let branch_label = gtk::Label::builder()
+                    .label(branch)
+                    .xalign(0.0)
+                    .css_classes(["caption", "dim-label"])
+                    .margin_start(22)
+                    .build();
+                branch_label.set_widget_name("repo-branch-label");
+                row_box.append(&branch_label);
+            }
+        }
+    }
 }
