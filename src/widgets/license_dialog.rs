@@ -169,9 +169,18 @@ where
         item.set_child(Some(&label));
     });
     factory.connect_bind(move |_, item| {
-        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-        let obj = item.item().and_downcast::<gtk::StringObject>().unwrap();
-        let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        let item = match item.downcast_ref::<gtk::ListItem>() {
+            Some(i) => i,
+            None => return,
+        };
+        let obj = match item.item().and_downcast::<gtk::StringObject>() {
+            Some(o) => o,
+            None => return,
+        };
+        let label = match item.child().and_downcast::<gtk::Label>() {
+            Some(l) => l,
+            None => return,
+        };
         label.set_label(&obj.string());
     });
     list_view.set_factory(Some(&factory));
@@ -282,7 +291,9 @@ where
         search_entry.connect_search_changed(move |entry| {
             let query = entry.text().to_lowercase();
             let filter = gtk::CustomFilter::new(move |obj| {
-                let s = obj.downcast_ref::<gtk::StringObject>().unwrap();
+                let Some(s) = obj.downcast_ref::<gtk::StringObject>() else {
+                    return false;
+                };
                 s.string().to_lowercase().contains(&query)
             });
             filter_model.set_filter(Some(&filter));
@@ -324,9 +335,11 @@ where
                         placeholder_hint.set_label("");
                     }
 
-                    // Truncate preview if too long
+                    // Truncate preview if too long — use floor_char_boundary to
+                    // avoid slicing a multi-byte character in half.
                     let preview = if filled.len() > 3000 {
-                        format!("{}...\n\n-License truncated for preview-", &filled[..3000])
+                        let end = filled.floor_char_boundary(3000);
+                        format!("{}...\n\n-License truncated for preview-", &filled[..end])
                     } else {
                         filled
                     };
@@ -355,7 +368,8 @@ where
                     let content = &license_contents[idx];
                     let filled = fill_template(content, name, email, year);
                     let preview = if filled.len() > 3000 {
-                        format!("{}...\n\n-License truncated for preview-", &filled[..3000])
+                        let end = filled.floor_char_boundary(3000);
+                        format!("{}...\n\n-License truncated for preview-", &filled[..end])
                     } else {
                         filled
                     };

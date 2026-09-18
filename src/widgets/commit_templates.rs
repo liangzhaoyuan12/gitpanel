@@ -198,14 +198,17 @@ pub fn insert_prefix(buffer: &gtk::TextBuffer, prefix: &str) {
     let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
     let text_str = text.as_str();
 
-    // Check if there's already a conventional prefix
+    // Check if there's already a conventional prefix (only look in the first
+    // 64 characters to avoid matching an embedded ": " deep in the message).
+    let scan = &text_str[..text_str.len().min(64)];
     for pattern in PREFIX_PATTERNS {
         if text_str.starts_with(pattern) {
             // Find the end of existing prefix (after ": " or after "): ")
-            if let Some(colon_pos) = text_str.find(": ") {
-                let end = colon_pos + 2;
+            if let Some(colon_pos) = scan.find(": ") {
+                // Convert byte offset to GTK character offset via char_indices.
+                let char_offset = scan[..colon_pos].chars().count() + 2; // +2 for ": "
                 let mut start_iter = buffer.start_iter();
-                let mut end_iter = buffer.iter_at_offset(end as i32);
+                let mut end_iter = buffer.iter_at_offset(char_offset as i32);
                 buffer.delete(&mut start_iter, &mut end_iter);
                 let mut start_iter = buffer.start_iter();
                 buffer.insert(&mut start_iter, prefix);

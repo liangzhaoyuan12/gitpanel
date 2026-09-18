@@ -6,7 +6,9 @@ use crate::i18n::Language;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub date_format: DateFormat,
+    #[serde(default = "default_refresh_interval")]
     pub refresh_interval_secs: u32,
     #[serde(default = "default_commit_files_limit")]
     pub commit_files_limit: u32,
@@ -22,6 +24,13 @@ pub struct AppConfig {
     /// UI language preference.
     #[serde(default)]
     pub language: Language,
+    /// Config schema version — allows future migrations.
+    #[serde(default)]
+    pub version: u32,
+}
+
+fn default_refresh_interval() -> u32 {
+    30
 }
 
 fn default_commit_files_limit() -> u32 {
@@ -36,18 +45,20 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             date_format: DateFormat::European,
-            refresh_interval_secs: 30,
+            refresh_interval_secs: default_refresh_interval(),
             commit_files_limit: default_commit_files_limit(),
             sidebar_items_limit: default_sidebar_items_limit(),
             recent_workspaces: Vec::new(),
             external_editor: None,
             language: Language::default(),
+            version: 0,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum DateFormat {
+    #[default]
     European,
     Iso,
     American,
@@ -119,13 +130,16 @@ impl AppConfig {
         self.save();
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> bool {
         let path = config_path();
         if let Some(dir) = path.parent() {
-            let _ = fs::create_dir_all(dir);
+            if fs::create_dir_all(dir).is_err() {
+                return false;
+            }
         }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(&path, json);
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => fs::write(&path, json).is_ok(),
+            Err(_) => false,
         }
     }
 }

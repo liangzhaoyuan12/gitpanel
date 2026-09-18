@@ -10,9 +10,29 @@ static CURRENT_LANG: std::sync::LazyLock<Language> = std::sync::LazyLock::new(||
     Language::detect()
 });
 
-thread_local! {
-    /// Runtime-overridable language (set from preferences at startup).
-    static LANG_OVERRIDE: Cell<Option<Language>> = const { Cell::new(None) };
+/// Global runtime language override — stores a `Language` discriminant as a
+/// `u8`. Using a global atomic ensures background threads (e.g. git commands)
+/// see the same language as the UI thread.
+static LANG_OVERRIDE: std::sync::OnceLock<AtomicU8> = std::sync::OnceLock::new();
+
+use std::sync::atomic::{AtomicU8, Ordering};
+
+fn lang_override_store() -> &'static AtomicU8 {
+    LANG_OVERRIDE.get_or_init(|| AtomicU8::new(0))
+}
+
+/// Language discriminant stored as u8 (0 = None/auto-detect).
+fn lang_override_u8() -> Option<Language> {
+    let v = lang_override_store().load(Ordering::Relaxed);
+    if v == 0 {
+        None
+    } else {
+        Some(Language::from_index(v as u32 - 1))
+    }
+}
+
+fn set_lang_override_u8(lang: Language) {
+    lang_override_store().store((lang.index() + 1) as u8, Ordering::Relaxed);
 }
 
 /// All translatable keys used throughout the UI.
@@ -917,19 +937,19 @@ impl Default for Language {
 
 /// Get the currently active language.
 fn current_lang() -> Language {
-    LANG_OVERRIDE.with(|c| c.get()).unwrap_or_else(|| *CURRENT_LANG)
+    lang_override_u8().unwrap_or(*CURRENT_LANG)
 }
 
 /// Set the runtime language override (called when preferences change).
 pub fn set_language(lang: Language) {
     let resolved = lang.resolve();
-    LANG_OVERRIDE.with(|c| c.set(Some(resolved)));
+    set_lang_override_u8(resolved);
 }
 
 /// Initialize the language from config (call once at startup).
 pub fn init_language(lang: Language) {
     let resolved = lang.resolve();
-    LANG_OVERRIDE.with(|c| c.set(Some(resolved)));
+    set_lang_override_u8(resolved);
 }
 
 /// Translate a key to the current locale string.

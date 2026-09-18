@@ -5,7 +5,8 @@ use crate::i18n::{self, Key};
 use crate::model::{BranchInfo, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo};
 
 /// Build a collapsible section: clickable header that toggles list visibility.
-fn build_collapsible_section(parent: &gtk::Box, title: &str, expanded: bool) -> gtk::ListBox {
+/// `id` is a stable, non-localized key used as widget_name for programmatic lookup.
+fn build_collapsible_section(parent: &gtk::Box, title: &str, id: &str, expanded: bool) -> gtk::ListBox {
     let section = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let header_btn = gtk::Button::builder()
@@ -29,7 +30,7 @@ fn build_collapsible_section(parent: &gtk::Box, title: &str, expanded: bool) -> 
         .xalign(0.0)
         .hexpand(true)
         .build();
-    label.set_widget_name(&format!("section-label-{}", title.to_lowercase()));
+    label.set_widget_name(&format!("section-label-{}", id));
     header_box.append(&label);
 
     header_btn.set_child(Some(&header_box));
@@ -95,12 +96,12 @@ pub fn build_branches_tags_panel() -> (gtk::Box, BranchesTagsRefs) {
 
     let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-    let local_list = build_collapsible_section(&inner, i18n::t(Key::branches_local), true);
-    let remote_list = build_collapsible_section(&inner, i18n::t(Key::branches_remote), false);
-    let tags_list = build_collapsible_section(&inner, i18n::t(Key::tags_section), false);
-    let stashes_list = build_collapsible_section(&inner, i18n::t(Key::stashes_section), false);
-    let submodules_list = build_collapsible_section(&inner, i18n::t(Key::submodules_section), false);
-    let worktrees_list = build_collapsible_section(&inner, i18n::t(Key::worktrees_section), false);
+    let local_list = build_collapsible_section(&inner, i18n::t(Key::branches_local), "local", true);
+    let remote_list = build_collapsible_section(&inner, i18n::t(Key::branches_remote), "remote", false);
+    let tags_list = build_collapsible_section(&inner, i18n::t(Key::tags_section), "tags", false);
+    let stashes_list = build_collapsible_section(&inner, i18n::t(Key::stashes_section), "stashes", false);
+    let submodules_list = build_collapsible_section(&inner, i18n::t(Key::submodules_section), "submodules", false);
+    let worktrees_list = build_collapsible_section(&inner, i18n::t(Key::worktrees_section), "worktrees", false);
 
     scrolled.set_child(Some(&inner));
     panel.append(&scrolled);
@@ -217,8 +218,21 @@ pub fn item_name(row: &gtk::ListBoxRow) -> Option<String> {
 }
 
 /// Apply a row limit to a ListBox: hide rows beyond `limit` and add a "Show all" toggle.
-/// If limit is 0, show everything.
+/// If limit is 0, remove any previous toggle and show everything.
 pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
+    // First, clean up any state left by a previous call: remove the
+    // "Show all" toggle and re-show every hidden row so that changing
+    // from limit=N to limit=0 (or vice versa) starts from a clean slate.
+    let mut child = list.first_child();
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        if c.widget_name() == SHOW_MORE_ROW {
+            list.remove(&c);
+        } else {
+            c.set_visible(true);
+        }
+        child = next;
+    }
     if limit == 0 {
         return;
     }
@@ -294,9 +308,10 @@ pub fn apply_row_limit(list: &gtk::ListBox, limit: u32) {
 
 /// Update the section header label to show count, e.g. "Tags (13)".
 /// The list must be inside a section created by `build_collapsible_section`.
-pub fn update_section_header(list: &gtk::ListBox, title: &str, count: usize) {
-    let expected_name = format!("section-label-{}", title.to_lowercase());
-    let section = list.parent();
+pub fn update_section_header(list: &gtk::ListBox, id: &str, title: &str, count: usize) {
+    let expected_name = format!("section-label-{}", id);
+    // list → Revealer → section Box (the one built by build_collapsible_section)
+    let section = list.parent().and_then(|r| r.parent());
     let Some(section) = section else { return };
 
     // Hide entire section if empty

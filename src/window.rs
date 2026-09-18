@@ -107,17 +107,24 @@ fn hash_remote_refs(remote_refs: &HashMap<String, Vec<RefBadge>>) -> u64 {
     hasher.finish()
 }
 
-fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+fn hash_workspace_recursive(entries: &[WorkspaceEntry], hasher: &mut DefaultHasher) {
     for e in entries {
-        e.name.hash(&mut hasher);
-        e.is_git_repo.hash(&mut hasher);
+        e.name.hash(hasher);
+        e.is_git_repo.hash(hasher);
         if let Some(ref ind) = e.indicator {
-            ind.is_dirty.hash(&mut hasher);
-            ind.has_tracked_changes.hash(&mut hasher);
-            ind.ahead.hash(&mut hasher);
+            ind.is_dirty.hash(hasher);
+            ind.has_tracked_changes.hash(hasher);
+            ind.ahead.hash(hasher);
+        }
+        if !e.children.is_empty() {
+            hash_workspace_recursive(&e.children, hasher);
         }
     }
+}
+
+fn hash_workspace(entries: &[WorkspaceEntry]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_workspace_recursive(entries, &mut hasher);
     hasher.finish()
 }
 
@@ -145,21 +152,51 @@ const COMMIT_PAGE_SIZE: usize = 50;
 /// Returns stdout on success, or an anyhow error with stderr on failure.
 fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> {
     use std::process::Command;
+    use std::time::Duration;
 
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .args(args)
         .current_dir(repo_path)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run git: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let timeout = Duration::from_secs(30);
+    let start = std::time::Instant::now();
 
-    if output.status.success() {
-        Ok(stdout)
-    } else {
-        let msg = if stderr.trim().is_empty() { stdout } else { stderr };
-        anyhow::bail!("{}", msg.trim());
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = child.stdout.take().map(|s| {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::BufReader::new(s), &mut buf).ok();
+                    buf
+                }).unwrap_or_default();
+                let stderr = child.stderr.take().map(|s| {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::BufReader::new(s), &mut buf).ok();
+                    buf
+                }).unwrap_or_default();
+
+                if status.success() {
+                    return Ok(stdout);
+                } else {
+                    let msg = if stderr.trim().is_empty() { stdout } else { stderr };
+                    anyhow::bail!("{}", msg.trim());
+                }
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    anyhow::bail!("git command timed out after 30s: git {}", args.join(" "));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to wait for git: {}", e);
+            }
+        }
     }
 }
 
@@ -265,10 +302,11 @@ fn build_primary_menu(recent_workspaces: &[String], editor_label: &str) -> gio::
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace_path.clone());
-        recent_submenu.append(
-            Some(&label),
-            Some(&format!("win.open-recent('{}')", workspace_path.replace('\'', ""))),
-        );
+        // Use GVariant target to avoid shell-quoting pitfalls with special
+        // characters (single quotes, backslashes, non-ASCII) in paths.
+        let item = gio::MenuItem::new(Some(&label), None);
+        item.set_action_and_target_value(Some("win.open-recent"), Some(&workspace_path.to_variant()));
+        recent_submenu.append_item(&item);
     }
     if recent_submenu.n_items() > 0 {
         let section = gio::Menu::new();
@@ -1816,6 +1854,9 @@ impl GitpanelWindow {
         match GitRepo::open(path_str) {
             Ok(repo) => {
                 tracing::info!("Selected repo: {}", path_str);
+                // Switching repositories invalidates any pending staging
+                // history — clear it so undo/redo can never touch the new repo.
+                self.imp().undo_stack.borrow_mut().clear();
                 self.load_repo_data(&repo);
                 *self.imp().repo.borrow_mut() = Some(repo);
                 // On narrow widths the sidebar is shown as an overlay — hide
@@ -1850,6 +1891,7 @@ impl GitpanelWindow {
         }
 
         let path = repo.path().to_string_lossy().to_string();
+        let path_for_guard = path.clone();
 
         let (tx, rx) = async_channel::bounded::<BackgroundRepoData>(1);
         std::thread::spawn(move || {
@@ -1927,6 +1969,11 @@ impl GitpanelWindow {
         let win = self.clone();
         glib::spawn_future_local(async move {
             if let Ok(data) = rx.recv().await {
+                // Guard: if the user switched repos between the spawn and the
+                // result arriving, discard stale data to avoid cross-repo corruption.
+                if win.repo_path_string().as_deref() != Some(path_for_guard.as_str()) {
+                    return;
+                }
                 let imp = win.imp();
 
                 // Update branch & indicators
@@ -2060,9 +2107,32 @@ impl GitpanelWindow {
         let ids: Vec<String> = commits.iter().map(|c| c.id.clone()).collect();
         let remote_map = self.ref_badge_map(&ids);
 
-        // The hash covers the ref badges too: a fetch that only moves remote
-        // refs must repaint the rows even though no commit id changed.
-        let new_hash = hash_commits(commits) ^ hash_remote_refs(&remote_map);
+        // Single hasher for all inputs: commits + tags + HEAD + ahead + remote
+        // refs. Using XOR separately for two hashes can cause cancellation
+        // when both halves change simultaneously.
+        let mut hasher = DefaultHasher::new();
+        for c in commits {
+            c.id.hash(&mut hasher);
+            for p in &c.parent_ids {
+                p.hash(&mut hasher);
+            }
+        }
+        // Tag badges: adding/removing tags must invalidate the row render.
+        let mut tag_keys: Vec<&String> = tags_map.keys().collect();
+        tag_keys.sort();
+        for k in tag_keys {
+            k.hash(&mut hasher);
+            for v in &tags_map[k] {
+                v.hash(&mut hasher);
+            }
+        }
+        // HEAD id and ahead count: amendments that don't change the id
+        // list still need a repaint.
+        imp.head_commit_id.borrow().hash(&mut hasher);
+        ahead.hash(&mut hasher);
+        // Remote ref badges
+        hash_remote_refs(&remote_map).hash(&mut hasher);
+        let new_hash = hasher.finish();
         if new_hash == imp.last_commits_hash.get() {
             return;
         }
@@ -2171,10 +2241,7 @@ impl GitpanelWindow {
                 return;
             };
 
-            let ahead = imp.ahead_label.label()
-                .strip_prefix("▲ ")
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
+            let ahead = imp.last_ahead.get();
             let offset = imp.commits_loaded_count.get();
             let has_more = new_commits.len() >= COMMIT_PAGE_SIZE;
 
@@ -2541,11 +2608,12 @@ impl GitpanelWindow {
     fn on_stage_all(&self) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
+            let repo_path = repo.path().to_string_lossy().to_string();
             if let Err(e) = repo.stage_all() {
                 tracing::error!("Failed to stage all: {}", e);
             }
             drop(repo_ref);
-            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageAll);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageAll(repo_path));
             self.refresh_staging();
         }
     }
@@ -2553,11 +2621,12 @@ impl GitpanelWindow {
     fn on_unstage_all(&self) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
+            let repo_path = repo.path().to_string_lossy().to_string();
             if let Err(e) = repo.unstage_all() {
                 tracing::error!("Failed to unstage all: {}", e);
             }
             drop(repo_ref);
-            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageAll);
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageAll(repo_path));
             self.refresh_staging();
         }
     }
@@ -2565,11 +2634,12 @@ impl GitpanelWindow {
     fn stage_file(&self, path: &str) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
+            let repo_path = repo.path().to_string_lossy().to_string();
             if let Err(e) = repo.stage_file(path) {
                 tracing::error!("Failed to stage {}: {}", path, e);
             }
             drop(repo_ref);
-            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageFile(path.to_string()));
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::StageFile(path.to_string(), repo_path));
             self.refresh_staging();
         }
     }
@@ -2577,11 +2647,12 @@ impl GitpanelWindow {
     fn unstage_file(&self, path: &str) {
         let repo_ref = self.imp().repo.borrow();
         if let Some(ref repo) = *repo_ref {
+            let repo_path = repo.path().to_string_lossy().to_string();
             if let Err(e) = repo.unstage_file(path) {
                 tracing::error!("Failed to unstage {}: {}", path, e);
             }
             drop(repo_ref);
-            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageFile(path.to_string()));
+            self.imp().undo_stack.borrow_mut().push(UndoableOp::UnstageFile(path.to_string(), repo_path));
             self.refresh_staging();
         }
     }
@@ -2610,13 +2681,19 @@ impl GitpanelWindow {
                     // Save content before discard for undo
                     let full_path = repo.path().join(&file_path);
                     let saved_content = std::fs::read(&full_path).unwrap_or_default();
+                    let repo_path = repo.path().to_string_lossy().to_string();
 
                     if let Err(e) = repo.discard_file(&file_path) {
                         tracing::error!("Failed to discard {}: {}", file_path, e);
                     } else {
-                        win.imp().undo_stack.borrow_mut().push(
-                            UndoableOp::Discard(file_path.clone(), saved_content),
+                        let kept = win.imp().undo_stack.borrow_mut().push_discard(
+                            repo_path,
+                            file_path.clone(),
+                            saved_content,
                         );
+                        if !kept {
+                            win.show_toast("File too large to keep in undo memory — this discard cannot be undone");
+                        }
                     }
                     drop(repo_ref);
                     win.refresh_staging();
@@ -2767,14 +2844,27 @@ impl GitpanelWindow {
         let repo_ref = self.imp().repo.borrow();
         let Some(ref repo) = *repo_ref else { return };
 
+        // Guard against cross-repository pollution: an operation recorded in
+        // repo A must never be replayed while repo B is open (it would write
+        // A's file contents into B's working tree).
+        if op.repo_path() != repo.path().to_string_lossy() {
+            self.show_toast("Nothing to undo here — the operation belongs to another repository");
+            return;
+        }
+
         match op {
-            UndoableOp::StageFile(path) => { let _ = repo.unstage_file(&path); }
-            UndoableOp::UnstageFile(path) => { let _ = repo.stage_file(&path); }
-            UndoableOp::StageAll => { let _ = repo.unstage_all(); }
-            UndoableOp::UnstageAll => { let _ = repo.stage_all(); }
-            UndoableOp::Discard(path, content) => {
-                let full_path = repo.path().join(&path);
-                let _ = std::fs::write(&full_path, &content);
+            UndoableOp::StageFile(path, _) => { let _ = repo.unstage_file(&path); }
+            UndoableOp::UnstageFile(path, _) => { let _ = repo.stage_file(&path); }
+            UndoableOp::StageAll(_) => { let _ = repo.unstage_all(); }
+            UndoableOp::UnstageAll(_) => { let _ = repo.stage_all(); }
+            UndoableOp::Discard(_, path, content) => {
+                if content.is_empty() {
+                    // Oversized snapshot was not kept (see UndoStack::push_discard).
+                    self.show_toast("This discard cannot be undone — the file was too large");
+                } else {
+                    let full_path = repo.path().join(&path);
+                    let _ = std::fs::write(&full_path, &content);
+                }
             }
         }
         drop(repo_ref);
@@ -2787,12 +2877,17 @@ impl GitpanelWindow {
         let repo_ref = self.imp().repo.borrow();
         let Some(ref repo) = *repo_ref else { return };
 
+        if op.repo_path() != repo.path().to_string_lossy() {
+            self.show_toast("Nothing to redo here — the operation belongs to another repository");
+            return;
+        }
+
         match op {
-            UndoableOp::StageFile(path) => { let _ = repo.stage_file(&path); }
-            UndoableOp::UnstageFile(path) => { let _ = repo.unstage_file(&path); }
-            UndoableOp::StageAll => { let _ = repo.stage_all(); }
-            UndoableOp::UnstageAll => { let _ = repo.unstage_all(); }
-            UndoableOp::Discard(path, _) => { let _ = repo.discard_file(&path); }
+            UndoableOp::StageFile(path, _) => { let _ = repo.stage_file(&path); }
+            UndoableOp::UnstageFile(path, _) => { let _ = repo.unstage_file(&path); }
+            UndoableOp::StageAll(_) => { let _ = repo.stage_all(); }
+            UndoableOp::UnstageAll(_) => { let _ = repo.unstage_all(); }
+            UndoableOp::Discard(_, path, _) => { let _ = repo.discard_file(&path); }
         }
         drop(repo_ref);
         self.refresh_staging();
@@ -3045,15 +3140,15 @@ impl GitpanelWindow {
 
         if let (Some(ref local), Some(ref remote)) = (local, remote) {
             branches_tags_panel::populate_branches(local, remote, branches);
-            branches_tags_panel::update_section_header(local, "Local", local_count);
-            branches_tags_panel::update_section_header(remote, "Remote", remote_count);
+            branches_tags_panel::update_section_header(local, "local", &i18n::t(Key::branches_local), local_count);
+            branches_tags_panel::update_section_header(remote, "remote", &i18n::t(Key::branches_remote), remote_count);
             branches_tags_panel::apply_row_limit(local, limit);
             branches_tags_panel::apply_row_limit(remote, limit);
         }
 
         if let Some(ref tl) = tags_list {
             branches_tags_panel::populate_tags(tl, tags);
-            branches_tags_panel::update_section_header(tl, "Tags", tags.len());
+            branches_tags_panel::update_section_header(tl, "tags", &i18n::t(Key::tags_section), tags.len());
             branches_tags_panel::apply_row_limit(tl, limit);
         }
 
@@ -3078,7 +3173,7 @@ impl GitpanelWindow {
                 move |idx| win_apply.on_stash_apply(idx),
                 move |idx| win_drop.on_stash_drop(idx),
             );
-            branches_tags_panel::update_section_header(sl, "Stashes", entries.len());
+            branches_tags_panel::update_section_header(sl, "stashes", &i18n::t(Key::stashes_section), entries.len());
             branches_tags_panel::apply_row_limit(sl, limit);
         }
     }
@@ -3098,7 +3193,7 @@ impl GitpanelWindow {
                     }
                 });
             });
-            branches_tags_panel::update_section_header(sl, "Submodules", submodules.len());
+            branches_tags_panel::update_section_header(sl, "submodules", &i18n::t(Key::submodules_section), submodules.len());
             branches_tags_panel::apply_row_limit(sl, limit);
         }
     }
@@ -3116,7 +3211,7 @@ impl GitpanelWindow {
             });
             // Only count extra worktrees (exclude main)
             let extra = if worktrees.len() > 1 { worktrees.len() } else { 0 };
-            branches_tags_panel::update_section_header(wl, "Worktrees", extra);
+            branches_tags_panel::update_section_header(wl, "worktrees", &i18n::t(Key::worktrees_section), extra);
         }
     }
 
@@ -3745,10 +3840,19 @@ impl GitpanelWindow {
             let idx = row.index();
             if let Some(r) = remotes.get(idx as usize) {
                 let name = r.name.clone();
-                let force = matches!(op, RemoteOp::Push { force: true, .. });
-                let tags = tags_check.as_ref().map(|c| c.is_active()).unwrap_or(false);
+                // Carry the operation through unchanged: Fetch stays Fetch and
+                // Pull stays Pull. Only a Push op is augmented with the extra
+                // options the picker exposes (force flag preserved, tags read
+                // from the checkbox).
+                let op = match op {
+                    RemoteOp::Push { force, .. } => RemoteOp::Push {
+                        force,
+                        tags: tags_check.as_ref().map(|c| c.is_active()).unwrap_or(false),
+                    },
+                    other => other,
+                };
                 dialog.close();
-                win.run_remote_op(RemoteOp::Push { force, tags }, &name);
+                win.run_remote_op(op, &name);
             }
         });
     }
@@ -4288,6 +4392,10 @@ impl GitpanelWindow {
                     win.trigger_background_refresh();
                 }
                 Err(e) => {
+                    // `git am` may have left the repo mid-apply (partial commit
+                    // or conflicted state). Abort it first so the fallback
+                    // `git apply` never operates on a dirty am session.
+                    let _ = run_git_cmd(&repo_path, &["am", "--abort"]);
                     // If git am fails, try git apply (for patches without commit metadata)
                     match run_git_cmd(&repo_path, &["apply", "--3way", &path_str]) {
                         Ok(_) => {
@@ -4403,7 +4511,7 @@ impl GitpanelWindow {
         let dialog = adw::AlertDialog::new(
             Some("Restore File?"),
             Some(&format!(
-                "Restore '{}' from commit {}? Current changes to this file in the working tree will be overwritten.",
+                "Restore '{}' from commit {}?\n\nAny uncommitted changes to this file will be permanently discarded and the restored version will be staged. Stash or commit your work first if you need to keep it.",
                 path, short
             )),
         );
@@ -4669,10 +4777,7 @@ impl GitpanelWindow {
                             .and_then(|r| r.tags_by_commit().ok())
                             .unwrap_or_default()
                     };
-                    let ahead = win.imp().ahead_label.label()
-                        .strip_prefix("▲ ")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(0);
+                    let ahead = win.imp().last_ahead.get();
                     // Clear so offset=0 for full rebuild
                     win.imp().commits.borrow_mut().clear();
                     win.populate_commit_list(&commits, ahead, &tags_map);
@@ -4863,10 +4968,16 @@ impl GitpanelWindow {
     }
 
     fn on_stash_pop(&self) {
-        self.run_git_op("Stash Pop", |path| {
+        self.on_stash_pop_index(0);
+    }
+
+    /// Pop a specific stash entry — the popover's Pop button must pass the
+    /// row's own index, otherwise stash@{3} would silently pop stash@{0}.
+    fn on_stash_pop_index(&self, index: usize) {
+        self.run_git_op("Stash Pop", move |path| {
             let mut repo = GitRepo::open(path)?;
-            repo.stash_pop()?;
-            Ok("Stash popped".to_string())
+            repo.stash_pop(index)?;
+            Ok(format!("Popped stash@{{{}}}", index))
         });
     }
 
@@ -4921,9 +5032,10 @@ impl GitpanelWindow {
                                 .build();
                             let win = self.clone();
                             let pp = popover.clone();
+                            let pop_idx = entry.index;
                             pop_btn.connect_clicked(move |_| {
                                 pp.popdown();
-                                win.on_stash_pop();
+                                win.on_stash_pop_index(pop_idx);
                             });
 
                             let drop_btn = gtk::Button::builder()
@@ -5095,12 +5207,7 @@ impl GitpanelWindow {
             let w3 = win.clone();
             checkout_btn.connect_clicked(move |_| {
                 pp3.popdown();
-                let sha = sha_clone.clone();
-                w3.run_git_op("Checkout Commit", move |path| {
-                    let repo = GitRepo::open(path)?;
-                    repo.checkout_detached(&sha)?;
-                    Ok(format!("HEAD detached at {}", &sha[..7]))
-                });
+                w3.confirm_checkout_detached(&sha_clone);
             });
             menu_box.append(&checkout_btn);
 
@@ -5568,6 +5675,45 @@ impl GitpanelWindow {
                 win.run_git_op("Revert", move |path| {
                     let repo = GitRepo::open(path)?;
                     repo.revert_commit(&sha)
+                });
+            }
+        });
+        dialog.present(Some(self));
+    }
+
+    /// Confirm before detaching HEAD at a commit. Detaching moves the working
+    /// tree, so uncommitted changes would block it (safe checkout) — warn the
+    /// user about both facts up front.
+    fn confirm_checkout_detached(&self, sha: &str) {
+        let short = &sha[..7.min(sha.len())];
+        let dialog = adw::AlertDialog::new(
+            Some("Checkout This Commit?"),
+            Some(&format!(
+                "Move HEAD to {} (detached)?\n\nThe working tree will be updated to that commit. Uncommitted changes that conflict with it will abort the checkout — commit or stash your work first. New commits made while detached are not on any branch.",
+                short
+            )),
+        );
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("checkout", "Checkout");
+        dialog.set_response_appearance("checkout", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let win = self.clone();
+        let sha = sha.to_string();
+        dialog.connect_response(None, move |_, response| {
+            if response == "checkout" {
+                let sha = sha.clone();
+                win.run_git_op("Checkout Commit", move |path| {
+                    let repo = GitRepo::open(path)?;
+                    if repo.is_dirty_quick() {
+                        anyhow::bail!(
+                            "You have uncommitted changes. Commit or stash them before checking out {}.",
+                            &sha[..7.min(sha.len())]
+                        );
+                    }
+                    repo.checkout_detached(&sha)?;
+                    Ok(format!("HEAD detached at {}", &sha[..7]))
                 });
             }
         });

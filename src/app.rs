@@ -74,7 +74,7 @@ fn present_window(app: &adw::Application) -> GitpanelWindow {
         }
 
         // Add icon search path for development builds
-        let display = gtk::gdk::Display::default().unwrap();
+        let Some(display) = gtk::gdk::Display::default() else { return };
         let icon_theme = gtk::IconTheme::for_display(&display);
         // Check relative to executable (cargo run)
         let exe_dir = std::env::current_exe()
@@ -93,6 +93,15 @@ fn present_window(app: &adw::Application) -> GitpanelWindow {
             icon_theme.add_search_path(cwd_icons);
         }
     });
+
+    // Reuse an existing window when GApplication re-emits `activate`
+    // (second launch with no arguments).
+    for w in app.windows() {
+        if w.is::<GitpanelWindow>() {
+            w.present();
+            return w.downcast::<GitpanelWindow>().unwrap();
+        }
+    }
 
     let window = GitpanelWindow::new(app);
     window.present();

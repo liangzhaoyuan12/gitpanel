@@ -100,11 +100,29 @@ impl GitRepo {
         let head = self.repo.head()?;
         let local_oid = head.target().context("HEAD has no target")?;
 
-        let branch_name = head.shorthand().context("No branch name")?;
-        let upstream_name = format!("refs/remotes/origin/{}", branch_name);
+        // Honour the branch's real upstream instead of assuming origin.
+        let upstream = if head.is_branch() {
+            head.shorthand()
+                .and_then(|name| self.repo.find_branch(name, git2::BranchType::Local).ok())
+                .and_then(|branch| branch.upstream().ok())
+        } else {
+            None
+        };
 
-        let upstream_ref = self.repo.find_reference(&upstream_name);
-        match upstream_ref {
+        if let Some(upstream) = upstream {
+            if let Some(remote_oid) = upstream.get().target() {
+                let (ahead, behind) = self.repo.graph_ahead_behind(local_oid, remote_oid)?;
+                return Ok((ahead, behind));
+            }
+        }
+
+        // Fallback: legacy refs/remotes/origin/<branch> convention.
+        let branch_name = match head.shorthand() {
+            Some(n) => n,
+            None => return Ok((0, 0)),
+        };
+        let upstream_name = format!("refs/remotes/origin/{}", branch_name);
+        match self.repo.find_reference(&upstream_name) {
             Ok(upstream) => {
                 let remote_oid = upstream.target().context("Upstream has no target")?;
                 let (ahead, behind) = self.repo.graph_ahead_behind(local_oid, remote_oid)?;
@@ -517,8 +535,11 @@ impl GitRepo {
 }
 
 fn git_time_to_datetime(time: git2::Time) -> DateTime<Utc> {
-    Utc.timestamp_opt(time.seconds(), 0)
+    let tz_offset_secs = (time.offset_minutes() as i32) * 60;
+    let tz = chrono::FixedOffset::east_opt(tz_offset_secs).unwrap_or(chrono::FixedOffset::east_opt(0).unwrap());
+    tz.timestamp_opt(time.seconds(), 0)
         .single()
+        .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_default()
 }
 

@@ -752,9 +752,15 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
 
     let is_dark = adw::StyleManager::default().is_dark();
 
-    // Setup diff tags (recreate on each render to handle theme changes)
+    // Setup diff tags — recreated on each render to handle theme changes.
+    // The 6 named tags are always the same; dynamic syn_* tags from the
+    // previous render are simply not looked up (stale names differ by
+    // color), so there is no accumulation.
     let tag_table = buffer.tag_table();
-    for name in &["addition", "deletion", "addition-emph", "deletion-emph", "hunk-header", "lineno"] {
+    for name in &[
+        "addition", "deletion", "addition-emph", "deletion-emph",
+        "hunk-header", "lineno",
+    ] {
         if let Some(tag) = tag_table.lookup(name) {
             tag_table.remove(&tag);
         }
@@ -796,7 +802,8 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
     for hunk in &file.hunks {
         // Hunk header
         let start = iter.offset();
-        buffer.insert(&mut iter, &format!("{}\n", hunk.header));
+        buffer.insert(&mut iter, &hunk.header);
+        if !hunk.header.ends_with('\n') { buffer.insert(&mut iter, "\n"); }
         let start_iter = buffer.iter_at_offset(start);
         buffer.apply_tag_by_name("hunk-header", &start_iter, &iter);
 
@@ -810,8 +817,9 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
             };
 
             let line_start = iter.offset();
-            let text = format!("{}{}\n", prefix, line.content);
+            let text = format!("{}{}", prefix, line.content);
             buffer.insert(&mut iter, &text);
+            if !line.content.ends_with('\n') { buffer.insert(&mut iter, "\n"); }
 
             // Apply diff background tag
             let diff_tag = match line.kind {
@@ -827,7 +835,18 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
             // Apply syntax highlighting on top (foreground only, higher priority)
             if let Some(ref hl) = highlights {
                 if let Some(spans) = hl.get(global_line_idx) {
-                    let content_offset = line_start + prefix.len() as i32;
+                    // prefix.len() is bytes but GTK offsets are character-based;
+                    // syntect spans are also byte offsets — convert both.
+                    let prefix_chars = prefix.chars().count() as i32;
+                    let content_offset = line_start + prefix_chars;
+
+                    // Build a byte→char offset map for the line content.
+                    let byte_to_char: Vec<(usize, i32)> = line.content
+                        .char_indices()
+                        .map(|(b, _)| (b, line.content[..b].chars().count() as i32))
+                        .chain(std::iter::once((line.content.len(), line.content.chars().count() as i32)))
+                        .collect();
+
                     for span in spans {
                         let tag_name = format!("syn_{:02x}{:02x}{:02x}", span.fg.0, span.fg.1, span.fg.2);
                         if tag_table.lookup(&tag_name).is_none() {
@@ -839,8 +858,16 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
                                 .build();
                             tag_table.add(&tag);
                         }
-                        let s = buffer.iter_at_offset(content_offset + span.start as i32);
-                        let e = buffer.iter_at_offset(content_offset + span.end as i32);
+                        let s_char = byte_to_char.iter()
+                            .find(|(b, _)| *b >= span.start)
+                            .map(|(_, c)| *c)
+                            .unwrap_or(0);
+                        let e_char = byte_to_char.iter()
+                            .find(|(b, _)| *b >= span.end)
+                            .map(|(_, c)| *c)
+                            .unwrap_or(line.content.chars().count() as i32);
+                        let s = buffer.iter_at_offset(content_offset + s_char);
+                        let e = buffer.iter_at_offset(content_offset + e_char);
                         buffer.apply_tag_by_name(&tag_name, &s, &e);
                     }
                 }
@@ -848,7 +875,7 @@ pub fn render_file_diff(textview: &gtk::TextView, file: &DiffFile) {
 
             hunk_rendered.push(RenderedLine {
                 kind: line.kind,
-                content_start: line_start + prefix.len() as i32,
+                content_start: line_start + prefix.chars().count() as i32,
                 content: line.content.clone(),
             });
 
@@ -942,9 +969,9 @@ pub fn populate_hunk_actions(
     row.set_margin_bottom(2);
     row.set_widget_name("hunk-buttons-row");
 
-    // Hunk-level buttons (always show if multiple hunks)
-    if num_hunks > 1 {
-        for i in 0..num_hunks {
+    // Hunk-level buttons — always show so users can stage individual hunks
+    // even when a file has only one hunk.
+    for i in 0..num_hunks {
             let label = if is_staged {
                 crate::i18n::FmtKey::unstage_hunk_n(i + 1).render()
             } else {
@@ -962,7 +989,6 @@ pub fn populate_hunk_actions(
             btn.set_widget_name(&name);
             row.append(&btn);
         }
-    }
 
     // "Select Lines" toggle — opens line-level selection UI
     let select_lines_btn = gtk::Button::builder()

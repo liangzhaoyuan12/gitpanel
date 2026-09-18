@@ -101,16 +101,17 @@ impl GitRepo {
     }
 
     /// Checkout a specific commit in detached HEAD mode.
+    /// Uses a safe checkout so uncommitted work is never silently destroyed;
+    /// callers must check dirtiness / confirm with the user beforehand.
     pub fn checkout_detached(&self, commit_id: &str) -> Result<()> {
         let repo = self.inner();
-        let oid = git2::Oid::from_str(commit_id)
-            .context("Invalid commit SHA")?;
-        let commit = repo.find_commit(oid)
-            .context("Commit not found")?;
+        let oid = git2::Oid::from_str(commit_id).context("Invalid commit SHA")?;
+        let commit = repo.find_commit(oid).context("Commit not found")?;
         repo.set_head_detached(commit.id())?;
-        repo.checkout_head(Some(
-            git2::build::CheckoutBuilder::new().force(),
-        ))?;
+        repo.checkout_tree(
+            commit.as_object(),
+            Some(git2::build::CheckoutBuilder::new().safe()),
+        )?;
         Ok(())
     }
 
@@ -125,8 +126,13 @@ impl GitRepo {
         let path = std::path::Path::new(file_path);
         let mut builder = git2::build::CheckoutBuilder::new();
         builder.path(path);
+        // `force` here only means "overwrite the working-tree file with the
+        // committed version" — that IS the documented behaviour of restoring a
+        // file from a commit (git checkout <commit> -- <path>). The UI warns
+        // the user that local modifications to this file will be discarded.
+        // Keep update_index so the change also appears staged (CLI parity),
+        // but do NOT touch any other path.
         builder.force();
-        // Update index too so the change appears as staged (matches git CLI behavior)
         builder.update_index(true);
 
         repo.checkout_tree(tree.as_object(), Some(&mut builder))
@@ -172,14 +178,28 @@ impl GitRepo {
             .find_branch(name, BranchType::Local)
             .context("Branch not found")?;
 
-        if force {
-            branch.delete().context("Failed to delete branch")?;
-        } else {
-            // Check if branch is merged before deleting
-            if !branch.is_head() {
-                branch.delete().context("Failed to delete branch. Use force to delete unmerged branches.")?;
+        if !force {
+            // libgit2's git_branch_delete never performs a merged check, so we
+            // must do it ourselves: refuse deletion unless the branch tip is an
+            // ancestor of HEAD (i.e. fully merged into the current branch).
+            if let Ok(head) = repo.head() {
+                if let Ok(target_commit) = branch.get().peel_to_commit() {
+                    let head_id = head.peel_to_commit()?.id();
+                    let merged = repo
+                        .merge_base(head_id, target_commit.id())
+                        .map(|mb| mb == target_commit.id())
+                        .unwrap_or(false);
+                    if !merged {
+                        bail!(
+                            "branch '{}' is not fully merged into HEAD. Use force delete only if you are sure its commits are no longer needed.",
+                            name
+                        );
+                    }
+                }
             }
         }
+
+        branch.delete().context("Failed to delete branch")?;
 
         Ok(())
     }

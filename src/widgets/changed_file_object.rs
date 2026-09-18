@@ -17,7 +17,6 @@ mod imp {
         pub status: Cell<FileStatusKind>,
         pub is_staged: Cell<bool>,
         pub expanded: Cell<bool>,
-        pub diff_loaded: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -61,14 +60,6 @@ impl ChangedFileObject {
 
     pub fn set_expanded(&self, v: bool) {
         self.imp().expanded.set(v);
-    }
-
-    pub fn diff_loaded(&self) -> bool {
-        self.imp().diff_loaded.get()
-    }
-
-    pub fn set_diff_loaded(&self, v: bool) {
-        self.imp().diff_loaded.set(v);
     }
 }
 

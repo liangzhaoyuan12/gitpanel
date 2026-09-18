@@ -17,10 +17,10 @@ impl GitRepo {
         Ok(format!("Stashed: {}", &oid.to_string()[..7]))
     }
 
-    /// Pop the top stash entry.
-    pub fn stash_pop(&mut self) -> Result<()> {
+    /// Pop a stash entry by index (`stash_pop(0)` pops the top of the stack).
+    pub fn stash_pop(&mut self, index: usize) -> Result<()> {
         let repo = self.inner_mut();
-        repo.stash_pop(0, None)?;
+        repo.stash_pop(index, None)?;
         Ok(())
     }
 

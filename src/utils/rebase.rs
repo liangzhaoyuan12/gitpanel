@@ -61,6 +61,10 @@ impl GitRepo {
         let output = std::process::Command::new("git")
             .args(["rebase", "-i", onto])
             .env("GIT_SEQUENCE_EDITOR", script_path.to_string_lossy().as_ref())
+            // Prevent `reword`/`edit` actions from launching $EDITOR and hanging
+            // the background thread, and suppress any credential prompts.
+            .env("GIT_EDITOR", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(&repo_path)
             .output()
             .context("Failed to run git rebase")?;

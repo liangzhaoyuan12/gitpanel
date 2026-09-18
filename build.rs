@@ -31,9 +31,9 @@ fn main() {
     out.push_str("    vec![\n");
 
     for (name, content) in &entries {
-        // Use raw string literal to avoid escaping issues
+        // Use r##"..."## to tolerate any `"#` sequences inside license text
         out.push_str(&format!(
-            "        LicenseTemplate {{ name: \"{}\", content: r#\"{}\"# }},\n",
+            "        LicenseTemplate {{ name: \"{}\", content: r##\"{}\"## }},\n",
             name.replace('\\', "\\\\").replace('"', "\\\""),
             content
         ));

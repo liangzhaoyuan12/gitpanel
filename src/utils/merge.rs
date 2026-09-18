@@ -52,6 +52,8 @@ impl GitRepo {
         let path = self.path().to_string_lossy().to_string();
         let output = std::process::Command::new("git")
             .args(["merge", "--continue"])
+            .env("GIT_EDITOR", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(&path)
             .output()
             .context("Failed to continue merge")?;
@@ -69,6 +71,8 @@ impl GitRepo {
         let path = self.path().to_string_lossy().to_string();
         let output = std::process::Command::new("git")
             .args(["rebase", "--continue"])
+            .env("GIT_EDITOR", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(&path)
             .output()
             .context("Failed to continue rebase")?;

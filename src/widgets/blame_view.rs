@@ -110,8 +110,9 @@ fn setup_blame_tags(buffer: &gtk::TextBuffer, is_dark: bool) {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}…", &s[..max - 1])
+    if s.chars().count() > max {
+        let end = s.char_indices().nth(max - 1).map(|(i, _)| i).unwrap_or(s.len());
+        format!("{}…", &s[..end])
     } else {
         s.to_string()
     }

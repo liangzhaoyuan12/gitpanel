@@ -117,6 +117,13 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<WorkspaceEntry>> {
     Ok(entries)
 }
 
+/// Directories skipped during workspace scanning (heavyweight or
+/// version-control-internal directories that should never be recursed into).
+const SKIP_DIRS: &[&str] = &[
+    "node_modules", "target", ".cache", ".gradle", "Pods",
+    "__pycache__", "dist", "build", ".venv", "venv",
+];
+
 /// Scan a directory recursively, building a tree of entries.
 fn scan_dir_recursive(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<WorkspaceEntry>> {
     let mut entries: Vec<WorkspaceEntry> = Vec::new();
@@ -125,12 +132,18 @@ fn scan_dir_recursive(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<
     for entry in read_dir {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
+        // Use file_type() to avoid following symlinks — symlink cycles would
+        // otherwise cause exponential expansion even with a depth limit.
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() {
             continue;
         }
 
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') {
+            continue;
+        }
+        if SKIP_DIRS.contains(&name.as_str()) {
             continue;
         }
 

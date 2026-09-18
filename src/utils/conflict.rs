@@ -19,6 +19,7 @@ pub fn parse_conflict_markers(content: &str) -> Vec<ConflictChunk> {
     enum State {
         Normal,
         InOurs,
+        InBase,
         InTheirs,
     }
 
@@ -50,10 +51,19 @@ pub fn parse_conflict_markers(content: &str) -> Vec<ConflictChunk> {
                 if line.starts_with("=======") {
                     state = State::InTheirs;
                 } else if line.starts_with("|||||||") {
-                    // diff3 ancestor marker — skip these lines
+                    // diff3 ancestor marker — switch to base mode so base
+                    // lines are discarded instead of leaking into ours.
+                    state = State::InBase;
                 } else {
                     ours_lines.push(line.to_string());
                 }
+            }
+            State::InBase => {
+                // Discard all base lines until the next ======= separator.
+                if line.starts_with("=======") {
+                    state = State::InTheirs;
+                }
+                // else: skip base line
             }
             State::InTheirs => {
                 if line.starts_with(">>>>>>>") {

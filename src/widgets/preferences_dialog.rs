@@ -271,6 +271,7 @@ where
         let choices = choices.clone();
         let lang_row = lang_row.clone();
         let recent = config.recent_workspaces.clone();
+        let config_version = config.version;
         // Sandboxed builds show no editor picker, so the combo sits at "Not
         // configured" and would otherwise wipe a command set outside Flatpak.
         let preserved_editor = config.external_editor.clone();
@@ -293,6 +294,7 @@ where
                 }
             },
             language: Language::from_index(lang_row.selected()),
+            version: config_version,
         }
     };
 

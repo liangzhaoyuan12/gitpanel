@@ -47,12 +47,13 @@ impl GitRepo {
         parse_diff(&diff)
     }
 
-    /// Diff of staged changes (index vs HEAD)
+    /// Diff of staged changes (index vs HEAD).
+    /// Returns an empty diff on an unborn HEAD (no commits yet).
     pub fn diff_staged(&self) -> Result<Vec<DiffFile>> {
         let repo = self.inner();
-        let head_tree = repo.head()?.peel_to_tree()?;
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         let diff = repo.diff_tree_to_index(
-            Some(&head_tree),
+            head_tree.as_ref(),
             None,
             Some(DiffOptions::new().patience(true)),
         )?;

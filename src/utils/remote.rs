@@ -48,12 +48,53 @@ fn credentials_callback(
 }
 
 impl GitRepo {
-    /// Fetch from origin remote.
+    /// Resolve the real upstream ref for the current branch, honouring its
+    /// configured tracking branch instead of assuming `origin`. Falls back to
+    /// `refs/remotes/origin/<branch>` when no upstream is configured.
+    ///
+    /// Returns the upstream ref name in `remote/branch` form (e.g. `origin/main`).
+    fn resolve_upstream(&self) -> Result<String> {
+        let repo = self.inner();
+        let head = repo.head().context("No HEAD")?;
+        let branch_name = head.shorthand().context("HEAD is not a branch")?;
+        let branch = repo.find_branch(branch_name, BranchType::Local)?;
+        if let Ok(upstream) = branch.upstream() {
+            let up_name = upstream
+                .name()?
+                .context("Upstream branch has no name")?
+                .to_string();
+            return Ok(up_name);
+        }
+        // Fallback: legacy origin/<branch> convention, if such a ref exists.
+        let fallback = format!("refs/remotes/origin/{}", branch_name);
+        let upstream = repo.find_reference(&fallback).context(
+            "No upstream tracking branch configured (and no origin/<branch> fallback)",
+        )?;
+        Ok(upstream
+            .shorthand()
+            .unwrap_or(&format!("origin/{}", branch_name))
+            .to_string())
+    }
+
+    /// The remote name the current branch tracks (e.g. "origin"), if any.
+    pub fn upstream_remote_name(&self) -> Option<String> {
+        self.resolve_upstream()
+            .ok()
+            .and_then(|name| name.split('/').next().map(String::from))
+    }
+
+    /// Fetch from a specific remote (defaults are decided by the caller).
     pub fn fetch(&self) -> Result<()> {
+        let remote_name = self.upstream_remote_name().unwrap_or_else(|| "origin".to_string());
+        self.fetch_from(&remote_name)
+    }
+
+    /// Fetch from the named remote.
+    pub fn fetch_from(&self, remote_name: &str) -> Result<()> {
         let repo = self.inner();
         let mut remote = repo
-            .find_remote("origin")
-            .context("No 'origin' remote found")?;
+            .find_remote(remote_name)
+            .with_context(|| format!("No '{}' remote found", remote_name))?;
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(credentials_callback);
@@ -76,20 +117,26 @@ impl GitRepo {
     }
 
     /// Pull: fetch + fast-forward merge. Fails if not fast-forward.
+    ///
+    /// Never touches uncommitted work: a dirty tracked state aborts the pull
+    /// up front, and the checkout uses a safe strategy so any local change
+    /// conflicting with the incoming tree fails loudly instead of being
+    /// silently overwritten.
     pub fn pull(&self) -> Result<String> {
+        // Refuse to fast-forward over uncommitted changes to tracked files.
+        if self.dirty_kinds().0 {
+            bail!("You have uncommitted changes. Commit or stash them before pulling.");
+        }
+
         self.fetch()?;
 
         let repo = self.inner();
         let head = repo.head().context("No HEAD")?;
-        let branch_name = head
-            .shorthand()
-            .context("HEAD is not a branch")?
-            .to_string();
 
-        let upstream_name = format!("refs/remotes/origin/{}", branch_name);
+        let upstream_name = self.resolve_upstream()?;
         let upstream_ref = repo
-            .find_reference(&upstream_name)
-            .context("No upstream tracking branch")?;
+            .find_reference(&format!("refs/remotes/{}", upstream_name))
+            .with_context(|| format!("No upstream tracking branch '{}'", upstream_name))?;
         let upstream_oid = upstream_ref
             .target()
             .context("Upstream ref has no target")?;
@@ -111,13 +158,21 @@ impl GitRepo {
             bail!("Cannot fast-forward. Use merge or rebase manually.");
         }
 
-        // Fast-forward
+        // Fast-forward. Move HEAD only after the working tree could be
+        // updated safely, so a failure never leaves HEAD ahead of the tree.
+        // update_index keeps index/tree/HEAD consistent after the switch.
         let upstream_commit = repo.find_commit(upstream_oid)?;
+        let mut cb = git2::build::CheckoutBuilder::new();
+        cb.safe();
+        cb.update_index(true);
+        repo.checkout_tree(upstream_commit.as_object(), Some(&mut cb))
+            .context(
+                "Working tree has local changes that would be overwritten — commit or stash them first",
+            )?;
         let mut head_ref = repo.head()?;
-        head_ref.set_target(upstream_oid, &format!("pull: fast-forward to {}", upstream_oid))?;
-        repo.checkout_tree(
-            upstream_commit.as_object(),
-            Some(git2::build::CheckoutBuilder::new().force()),
+        head_ref.set_target(
+            upstream_oid,
+            &format!("pull: fast-forward to {}", upstream_oid),
         )?;
 
         Ok(format!(
@@ -126,12 +181,13 @@ impl GitRepo {
         ))
     }
 
-    /// Push current branch to origin.
+    /// Push current branch to its tracked remote (falls back to `origin`).
     pub fn push(&self, force: bool) -> Result<()> {
         let repo = self.inner();
+        let remote_name = self.upstream_remote_name().unwrap_or_else(|| "origin".to_string());
         let mut remote = repo
-            .find_remote("origin")
-            .context("No 'origin' remote found")?;
+            .find_remote(&remote_name)
+            .with_context(|| format!("No '{}' remote found", remote_name))?;
 
         let head = repo.head().context("No HEAD")?;
         let branch_name = head.shorthand().context("HEAD is not a branch")?;

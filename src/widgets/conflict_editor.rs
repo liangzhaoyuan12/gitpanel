@@ -104,8 +104,9 @@ where
             ours_text.push('\n');
             theirs_text.push_str(&theirs_section);
             theirs_text.push('\n');
-            // Result starts with ours by default — user can edit
-            result_text.push_str("<<<< CONFLICT — edit this section >>>>\n");
+            // Result starts with ours by default — user can edit. Do NOT embed
+            // any marker line: the user must never be able to hit "Mark
+            // Resolved" without editing and get marker text written to disk.
             result_text.push_str(&ours_section);
             result_text.push('\n');
         } else {
@@ -145,14 +146,39 @@ where
 
     dialog.set_child(Some(&toolbar_view));
 
-    // Resolve handler
+    // Resolve handler — refuse to write content that still carries conflict
+    // markers (either git's standard markers or the editor's placeholder).
     {
         let result_tv = result_view.1.clone();
         let dialog_weak = dialog.downgrade();
+        let dialog_for_msg = dialog.clone();
         resolve_btn.connect_clicked(move |_| {
             let buf = result_tv.buffer();
             let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-            on_resolve(text.to_string());
+            let text = text.to_string();
+
+            let has_markers = text.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with("<<<<<<<")
+                    || l.starts_with("=======")
+                    || l.starts_with(">>>>>>>")
+                    || l.starts_with("|||||||")
+                    || l.starts_with("<<<<") && l.contains("CONFLICT")
+            });
+            if has_markers {
+                let msg = adw::AlertDialog::new(
+                    Some("Conflict markers still present"),
+                    Some(
+                        "The result still contains conflict markers (<<<<<<<, ======= or >>>>>>>). \
+                         Edit or remove them before marking the file as resolved.",
+                    ),
+                );
+                msg.add_response("ok", "OK");
+                msg.present(Some(&dialog_for_msg));
+                return;
+            }
+
+            on_resolve(text);
             if let Some(d) = dialog_weak.upgrade() {
                 d.close();
             }
