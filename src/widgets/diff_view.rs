@@ -316,4 +316,64 @@ mod tests {
         // The light palette is the one this renderer shipped with.
         assert_eq!(light.addition_bg, "#d4edda");
     }
+
+    fn binary_file() -> DiffFile {
+        DiffFile {
+            path: "logo.png".into(),
+            hunks: vec![],
+            stats: crate::model::DiffStats {
+                insertions: 0,
+                deletions: 0,
+            },
+            is_binary: true,
+        }
+    }
+
+    /// Unified view must render the i18n message for a binary file, not an
+    /// empty buffer — this is what made binary diffs "sometimes invisible".
+    #[test]
+    #[serial]
+    fn unified_renders_binary_message() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let text = test_support::on_gtk_thread(|| {
+            let buffer = gtk::TextBuffer::new(None);
+            render_unified(&buffer, &[binary_file()]);
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string()
+        });
+
+        assert!(
+            text.contains(crate::i18n::t(crate::i18n::Key::binary_diff_not_supported)),
+            "unified view must show the binary message, got: {text:?}"
+        );
+    }
+
+    /// Split view must show the message on both panes.
+    #[test]
+    #[serial]
+    fn side_by_side_renders_binary_message_on_both_panes() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (left, right) = test_support::on_gtk_thread(|| {
+            let left = gtk::TextBuffer::new(None);
+            let right = gtk::TextBuffer::new(None);
+            render_side_by_side(&left, &right, &[binary_file()]);
+            let msg = crate::i18n::t(crate::i18n::Key::binary_diff_not_supported).to_string();
+            let t = |b: &gtk::TextBuffer| {
+                b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+            };
+            (t(&left).contains(&msg), t(&right).contains(&msg))
+        });
+
+        assert!(left, "left pane must show the binary message");
+        assert!(right, "right pane must show the binary message");
+    }
 }

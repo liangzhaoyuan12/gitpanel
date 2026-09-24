@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::collections::HashSet;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -21,6 +22,8 @@ const ROW_OUTER_CSS: &str = "gp-file-row";
 pub struct ChangesViewRefs {
     pub list_view: gtk::ListView,
     pub store: gio::ListStore,
+    /// Kept so the window can attach a per-row render callback after setup.
+    pub factory: gtk::SignalListItemFactory,
     pub stage_all_btn: gtk::Button,
     pub unstage_all_btn: gtk::Button,
     pub trash_all_btn: gtk::Button,
@@ -198,6 +201,7 @@ pub fn build_changes_view(
     let refs = ChangesViewRefs {
         list_view,
         store,
+        factory,
         stage_all_btn,
         unstage_all_btn,
         trash_all_btn,
@@ -298,13 +302,31 @@ pub fn populate_file_lists(
     };
     update_header_label(list_view, "changes-header", &label);
 
+    // Carry expansion across the rebuild: `splice` replaces every object, and
+    // a fresh object would silently collapse rows the user had open — the
+    // "refresh loses my place" bug class (see GOAL 5.1).
+    let mut expanded: HashSet<String> = HashSet::new();
+    for i in 0..store.n_items() {
+        if let Some(o) = store.item(i).and_then(|x| x.downcast::<ChangedFileObject>().ok()) {
+            if o.expanded() {
+                expanded.insert(o.path());
+            }
+        }
+    }
+
     // Sort staged first, then unstaged, preserving original order within each group.
     let mut ordered: Vec<&ChangedFileEntry> = files.iter().filter(|f| f.is_staged).collect();
     ordered.extend(files.iter().filter(|f| !f.is_staged));
 
     let objects: Vec<glib::Object> = ordered
         .into_iter()
-        .map(|f| ChangedFileObject::new(f.path.clone(), f.status, f.is_staged).upcast())
+        .map(|f| {
+            let o = ChangedFileObject::new(f.path.clone(), f.status, f.is_staged);
+            if expanded.contains(&f.path) {
+                o.set_expanded(true);
+            }
+            o.upcast()
+        })
         .collect();
     store.splice(0, store.n_items(), &objects);
 }
@@ -317,7 +339,23 @@ pub fn set_row_button_callback(list_view: &gtk::ListView, on_button: RowButtonCa
     }
 }
 
-const ROW_CB_KEY: &str = "gp-row-button-cb";
+pub const ROW_CB_KEY: &str = "gp-row-button-cb";
+
+/// Per-row render callback: re-renders a row's diff pane when the row is
+/// (re)bound already-expanded. `populate_file_lists` splices the whole store
+/// on every refresh and `connect_unbind` clears the pane, so without this an
+/// open diff would come back empty after any background refresh.
+pub type RowRenderCallback = Rc<dyn Fn(&gtk::Box, &str)>;
+
+const ROW_RENDER_KEY: &str = "gp-row-render-cb";
+
+/// Store the render callback on the *factory* (not the ListView): the factory
+/// closure needs it at bind time, before the row has any parent to walk up.
+pub fn set_row_render_callback(factory: &gtk::SignalListItemFactory, on_render: RowRenderCallback) {
+    unsafe {
+        factory.set_data::<RowRenderCallback>(ROW_RENDER_KEY, on_render);
+    }
+}
 
 fn list_view_for_widget(widget: &gtk::Widget) -> Option<gtk::ListView> {
     let mut cur = widget.parent();
@@ -372,7 +410,7 @@ fn build_row_factory() -> gtk::SignalListItemFactory {
         // a Cell on the outer Box that toggle_file_diff_outer reads.
     });
 
-    factory.connect_bind(|_, list_item| {
+    factory.connect_bind(|factory, list_item| {
         let item = list_item.downcast_ref::<gtk::ListItem>().expect("ListItem");
         let outer = item
             .child()
@@ -383,6 +421,16 @@ fn build_row_factory() -> gtk::SignalListItemFactory {
             .and_then(|o| o.downcast::<ChangedFileObject>().ok())
             .expect("ChangedFileObject");
         bind_row_widgets(&outer, &obj);
+
+        // A row bound already-expanded is one restored across a refresh whose
+        // pane `connect_unbind` just cleared — re-render it from fresh caches.
+        if obj.expanded() {
+            let ptr = unsafe { factory.data::<RowRenderCallback>(ROW_RENDER_KEY) };
+            if let Some(ptr) = ptr {
+                let cb = unsafe { ptr.as_ref() };
+                cb(&outer, &obj.path());
+            }
+        }
     });
 
     factory.connect_unbind(|_, list_item| {
@@ -1232,5 +1280,83 @@ mod tests {
             !stale_stage,
             "stale Stage button must not survive the re-bind"
         );
+    }
+
+    /// The changes-view renderer must show the i18n message for a binary
+    /// file instead of an empty (or garbled) diff pane.
+    #[test]
+    #[serial]
+    fn render_file_diff_shows_binary_message() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let text = test_support::on_gtk_thread(|| {
+            let tv = gtk::TextView::new();
+            let file = DiffFile {
+                path: "data.bin".into(),
+                hunks: vec![],
+                stats: crate::model::DiffStats {
+                    insertions: 0,
+                    deletions: 0,
+                },
+                is_binary: true,
+            };
+            render_file_diff(&tv, &file);
+            tv.buffer()
+                .text(&tv.buffer().start_iter(), &tv.buffer().end_iter(), false)
+                .to_string()
+        });
+
+        assert!(
+            text.contains(i18n::t(Key::binary_diff_not_supported)),
+            "changes view must show the binary message, got: {text:?}"
+        );
+    }
+
+    /// Background refreshes splice the whole store; a row the user had open
+    /// must stay expanded across the rebuild (GOAL 5.1).
+    #[test]
+    #[serial]
+    fn populate_preserves_expanded_rows_across_refresh() {
+        test_support::ensure_gtk_init();
+        if !test_support::gtk_available() {
+            return;
+        }
+
+        let (expanded_after, collapsed_other) = test_support::on_gtk_thread(|| {
+            let store = gio::ListStore::new::<ChangedFileObject>();
+            let list_view = gtk::ListView::default();
+
+            let files = vec![
+                ChangedFileEntry {
+                    path: "src/a.rs".into(),
+                    status: FileStatusKind::Modified,
+                    is_staged: false,
+                },
+                ChangedFileEntry {
+                    path: "src/b.rs".into(),
+                    status: FileStatusKind::Modified,
+                    is_staged: false,
+                },
+            ];
+
+            populate_file_lists(&store, &files, &list_view);
+            // User expands the first row.
+            let first = store.item(0).unwrap().downcast::<ChangedFileObject>().unwrap();
+            first.set_expanded(true);
+            drop(first);
+
+            // Background refresh rebuilds the store with the same paths.
+            populate_file_lists(&store, &files, &list_view);
+
+            let first = store.item(0).unwrap().downcast::<ChangedFileObject>().unwrap();
+            let second = store.item(1).unwrap().downcast::<ChangedFileObject>().unwrap();
+            (first.expanded(), second.expanded())
+        });
+
+        assert!(expanded_after, "expanded row must stay expanded after a refresh");
+        assert!(!collapsed_other, "other rows must not inherit expansion");
     }
 }

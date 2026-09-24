@@ -9,9 +9,24 @@ impl GitRepo {
     pub fn diff_untracked(&self, path: &str) -> Result<DiffFile> {
         let repo_path = self.path();
         let full_path = repo_path.join(path);
-        let content = std::fs::read_to_string(&full_path)
+        let bytes = std::fs::read(&full_path)
             .with_context(|| format!("Failed to read untracked file: {}", path))?;
 
+        // Binary untracked file: return a flagged entry so the UI shows the
+        // "binary diff not supported" message. The old read_to_string failed
+        // here and callers swallowed the error, rendering nothing at all.
+        if looks_binary(&bytes) {
+            return Ok(DiffFile {
+                path: path.to_string(),
+                hunks: Vec::new(),
+                stats: DiffStats::default(),
+                is_binary: true,
+            });
+        }
+
+        // Not binary — decode leniently so a non-UTF-8 *text* file still gets
+        // a diff instead of a hard read error.
+        let content = String::from_utf8_lossy(&bytes);
         let lines: Vec<DiffLine> = content
             .lines()
             .enumerate()
@@ -106,8 +121,32 @@ impl GitRepo {
     }
 }
 
+/// Git's own heuristic: a NUL byte within the first 8000 bytes means binary.
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&b| b == 0)
+}
+
 fn parse_diff(diff: &git2::Diff<'_>) -> Result<Vec<DiffFile>> {
     let mut files: Vec<DiffFile> = Vec::new();
+
+    // Seed one entry per delta up front. A binary file can print no patch
+    // lines at all, and the BINARY flag lives on the delta — without seeding,
+    // such a file silently vanished from the list instead of showing the
+    // "binary diff not supported" message.
+    for delta in diff.deltas() {
+        let path = delta
+            .new_file()
+            .path()
+            .or(delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        files.push(DiffFile {
+            path,
+            hunks: Vec::new(),
+            stats: DiffStats::default(),
+            is_binary: delta.flags().contains(git2::DiffFlags::BINARY),
+        });
+    }
 
     diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
         let path = delta
@@ -117,19 +156,30 @@ fn parse_diff(diff: &git2::Diff<'_>) -> Result<Vec<DiffFile>> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // Find or create the file entry
-        let file = if files.last().map(|f| f.path == path).unwrap_or(false) {
-            files.last_mut().unwrap()
+        // Locate the seeded entry — fast path is the previous file, since a
+        // patch prints one file contiguously.
+        let idx = if files.last().map(|f| f.path == path).unwrap_or(false) {
+            files.len() - 1
         } else {
-            let is_binary = delta.flags().contains(git2::DiffFlags::BINARY);
-            files.push(DiffFile {
-                path: path.clone(),
-                hunks: Vec::new(),
-                stats: DiffStats::default(),
-                is_binary,
-            });
-            files.last_mut().unwrap()
+            match files.iter().position(|f| f.path == path) {
+                Some(i) => i,
+                // Not in deltas() (shouldn't happen) — keep old behaviour and
+                // create it rather than dropping lines on the floor.
+                None => {
+                    files.push(DiffFile {
+                        path: path.clone(),
+                        hunks: Vec::new(),
+                        stats: DiffStats::default(),
+                        is_binary: false,
+                    });
+                    files.len() - 1
+                }
+            }
         };
+        let file = &mut files[idx];
+        // libgit2 decides "binary" once it has read content — keep OR-ing it
+        // in so a flag that arrives after seeding is not lost.
+        file.is_binary |= delta.flags().contains(git2::DiffFlags::BINARY);
 
         // Handle hunk header
         if let Some(hunk) = hunk {

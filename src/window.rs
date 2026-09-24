@@ -56,18 +56,87 @@ struct BackgroundRefreshResult {
     staged_diffs: Vec<DiffFile>,
 }
 
-fn hash_status(status: &RepoStatus) -> u64 {
+/// Concurrency gate for background refreshes: at most one run at a time, and
+/// a request that arrives while a run is in progress is *queued* rather than
+/// dropped — external edits made mid-refresh still get picked up.
+#[derive(Default)]
+pub struct RefreshGate {
+    in_progress: Cell<bool>,
+    queued: Cell<bool>,
+}
+
+impl RefreshGate {
+    /// `true` → caller may start a refresh now; `false` → request was queued.
+    fn try_begin(&self) -> bool {
+        if self.in_progress.get() {
+            self.queued.set(true);
+            return false;
+        }
+        self.in_progress.set(true);
+        true
+    }
+
+    /// A run finished. `true` → a queued request wants another run now.
+    fn finish(&self) -> bool {
+        self.in_progress.set(false);
+        self.queued.replace(false)
+    }
+}
+
+/// (Re)arm the monitor debounce: every event restarts a one-shot timer, so a
+/// burst of filesystem events collapses into a single refresh `after` the last
+/// event. Shared slot = only one pending refresh ever.
+fn arm_monitor_debounce<F: FnOnce() + 'static>(
+    slot: &Rc<RefCell<Option<glib::SourceId>>>,
+    fire: F,
+) {
+    if let Some(old) = slot.borrow_mut().take() {
+        old.remove();
+    }
+    let mut fire = Some(fire);
+    let slot_for_cb = slot.clone();
+    let id = glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+        *slot_for_cb.borrow_mut() = None;
+        if let Some(f) = fire.take() {
+            f();
+        }
+        glib::ControlFlow::Break
+    });
+    *slot.borrow_mut() = Some(id);
+}
+
+/// Hash a status *including on-disk identity* (size + mtime) of every listed
+/// path. Hashing the path set alone blind-spots the most common case: a file
+/// that is already in the list getting edited again — the path set is
+/// identical, so the refresh was skipped and the UI kept showing the old
+/// diff. See GOAL 5.1.
+fn hash_status(status: &RepoStatus, root: &std::path::Path) -> u64 {
     let mut hasher = DefaultHasher::new();
     for f in &status.unstaged {
-        f.path.hash(&mut hasher);
+        hash_entry(&f.path, root, &mut hasher);
     }
     for f in &status.staged {
-        f.path.hash(&mut hasher);
+        hash_entry(&f.path, root, &mut hasher);
     }
     for p in &status.untracked {
-        p.hash(&mut hasher);
+        hash_entry(p, root, &mut hasher);
     }
     hasher.finish()
+}
+
+/// Fold `rel`'s path, size and mtime into the hash. Metadata is best-effort:
+/// a file deleted between status and stat degrades to path-only (the path set
+/// changing is itself a hash change).
+fn hash_entry(rel: &str, root: &std::path::Path, hasher: &mut DefaultHasher) {
+    rel.hash(hasher);
+    if let Ok(md) = std::fs::metadata(root.join(rel)) {
+        md.len().hash(hasher);
+        if let Ok(mtime) = md.modified() {
+            if let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                d.as_nanos().hash(hasher);
+            }
+        }
+    }
 }
 
 fn hash_commits(commits: &[CommitInfo]) -> u64 {
@@ -387,8 +456,13 @@ mod imp {
         pub last_commits_hash: Cell<u64>,
         /// Hash of last graph input (commit ids + parent ids) to skip redundant graph recomputes.
         pub last_graph_hash: Cell<u64>,
-        /// Guard to prevent concurrent background refreshes.
-        pub refresh_in_progress: Cell<bool>,
+        /// Concurrency gate for background refreshes (at most one run; extra
+        /// requests queue instead of being dropped).
+        pub refresh_gate: RefreshGate,
+        /// Filesystem monitors for the open repo (workdir + .git subtree).
+        pub repo_monitors: RefCell<Vec<gio::FileMonitor>>,
+        /// Debounce timer that coalesces monitor event bursts.
+        pub monitor_debounce_id: Rc<RefCell<Option<glib::SourceId>>>,
         /// Tick counter for throttling workspace scans.
         pub refresh_tick: Cell<u32>,
         /// Consecutive ticks where workspace hash was unchanged (controls scan throttle).
@@ -491,7 +565,9 @@ mod imp {
                 last_workspace_hash: Cell::new(0),
                 last_commits_hash: Cell::new(0),
                 last_graph_hash: Cell::new(0),
-                refresh_in_progress: Cell::new(false),
+                refresh_gate: RefreshGate::default(),
+                repo_monitors: RefCell::new(Vec::new()),
+                monitor_debounce_id: Rc::new(RefCell::new(None)),
                 refresh_tick: Cell::new(0),
                 workspace_idle_streak: Cell::new(0),
                 last_ahead: Cell::new(0),
@@ -1024,6 +1100,15 @@ impl GitpanelWindow {
             win_for_btn.dispatch_row_button(path, name);
         });
         changes_view::set_row_button_callback(&changes_refs.list_view, cb);
+
+        // Rows re-bound still-expanded after a background refresh repaint via
+        // this callback (their pane was cleared by unbind).
+        let win_for_render = self.clone();
+        let render_cb: changes_view::RowRenderCallback =
+            Rc::new(move |outer: &gtk::Box, path: &str| {
+                win_for_render.render_row_diff(outer, path);
+            });
+        changes_view::set_row_render_callback(&changes_refs.factory, render_cb);
 
         // Store changes file list refs
         *imp.changed_file_list.borrow_mut() = Some(changes_refs.list_view.clone());
@@ -1883,6 +1968,10 @@ impl GitpanelWindow {
     fn load_repo_data(&self, repo: &GitRepo) {
         let imp = self.imp();
 
+        // (Re)arm filesystem monitors for this repo: every open path goes
+        // through load_repo_data, so this also re-targets monitors on switch.
+        self.setup_repo_watchers(repo.path());
+
         // Reset search immediately
         *imp.selected_commit_id.borrow_mut() = None;
         imp.search_entry.set_text("");
@@ -1894,7 +1983,10 @@ impl GitpanelWindow {
         let path_for_guard = path.clone();
 
         let (tx, rx) = async_channel::bounded::<BackgroundRepoData>(1);
+        let load_span = tracing::info_span!("load_repo_data", repo = %path);
         std::thread::spawn(move || {
+            let _span = load_span.enter();
+            let t0 = std::time::Instant::now();
             let Ok(mut repo) = GitRepo::open(&path) else { return };
 
             // Collect quick scalar data on this thread
@@ -1942,6 +2034,7 @@ impl GitpanelWindow {
             let (status, branches, unstaged_diffs, staged_diffs) =
                 status_handle.join().unwrap_or((None, Vec::new(), Vec::new(), Vec::new()));
 
+            tracing::debug!(elapsed_ms = t0.elapsed().as_millis() as u64, "repo data loaded");
             tx.send_blocking(BackgroundRepoData {
                 commits,
                 tags_map,
@@ -3041,42 +3134,56 @@ impl GitpanelWindow {
         obj.set_expanded(expanded);
 
         if expanded {
-            let repo_ref = self.imp().repo.borrow();
-            let Some(ref repo) = *repo_ref else { return };
+            self.render_row_diff(&outer, &file_path);
+        }
+    }
 
-            // Determine if file is staged
-            let is_staged = {
-                let diffs = self.imp().cached_staged_diffs.borrow();
-                diffs.iter().any(|f| f.path == file_path)
-            };
+    /// Render a file's diff (and its hunk buttons) into an expanded row.
+    /// Shared by row activation and the factory's re-bind path (a row that is
+    /// re-bound still-expanded after a background refresh must repaint from
+    /// the refreshed diff caches).
+    fn render_row_diff(&self, outer: &gtk::Box, file_path: &str) {
+        let repo_ref = self.imp().repo.borrow();
+        let Some(ref repo) = *repo_ref else { return };
 
-            // Try to get diff for this file
-            let diff_file = self.get_file_diff(repo, &file_path);
+        // Determine if file is staged
+        let is_staged = {
+            let diffs = self.imp().cached_staged_diffs.borrow();
+            diffs.iter().any(|f| f.path == file_path)
+        };
 
-            if let Some(ref file) = diff_file {
-                if let Some(tv) = changes_view::get_diff_textview(&outer) {
-                    changes_view::render_file_diff(&tv, file);
-                }
-                // Populate hunk action buttons
-                if let Some(hunk_box) = changes_view::get_hunk_actions_box(&outer) {
-                    changes_view::populate_hunk_actions(&hunk_box, &file.hunks, is_staged);
-                    let win = self.clone();
-                    let fp = file_path.clone();
-                    changes_view::wire_hunk_button_signals(&hunk_box, move |name| {
-                        if let Some(idx_str) = name.strip_prefix("stage-hunk-") {
-                            if let Ok(idx) = idx_str.parse::<usize>() {
-                                win.stage_hunk(&fp, idx);
-                            }
-                        } else if let Some(idx_str) = name.strip_prefix("unstage-hunk-") {
-                            if let Ok(idx) = idx_str.parse::<usize>() {
-                                win.unstage_hunk(&fp, idx);
-                            }
-                        } else if name == "stage-selected-lines" || name == "unstage-selected-lines" {
-                            win.stage_selected_lines(&fp, name == "unstage-selected-lines");
-                        }
-                    });
-                }
+        // Try to get diff for this file
+        let diff_file = self.get_file_diff(repo, file_path);
+
+        if let Some(ref file) = diff_file {
+            if let Some(tv) = changes_view::get_diff_textview(outer) {
+                changes_view::render_file_diff(&tv, file);
             }
+            // Populate hunk action buttons
+            if let Some(hunk_box) = changes_view::get_hunk_actions_box(outer) {
+                changes_view::populate_hunk_actions(&hunk_box, &file.hunks, is_staged);
+                let win = self.clone();
+                let fp = file_path.to_string();
+                changes_view::wire_hunk_button_signals(&hunk_box, move |name| {
+                    if let Some(idx_str) = name.strip_prefix("stage-hunk-") {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            win.stage_hunk(&fp, idx);
+                        }
+                    } else if let Some(idx_str) = name.strip_prefix("unstage-hunk-") {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            win.unstage_hunk(&fp, idx);
+                        }
+                    } else if name == "stage-selected-lines" || name == "unstage-selected-lines" {
+                        win.stage_selected_lines(&fp, name == "unstage-selected-lines");
+                    }
+                });
+            }
+        } else if let Some(tv) = changes_view::get_diff_textview(outer) {
+            // Diff could not be read (deleted file, permission, race with
+            // an external tool) — say so instead of rendering nothing.
+            let buffer = tv.buffer();
+            buffer.set_text(i18n::t(Key::diff_unavailable));
+            tv.set_height_request(24);
         }
     }
 
@@ -4071,6 +4178,72 @@ impl GitpanelWindow {
         });
     }
 
+    /// Watch the open repo on disk so external changes (editor saves, git
+    /// commands run elsewhere) refresh the UI without waiting for the 30 s
+    /// timer or a focus change. Monitors cover the workdir plus the mutable
+    /// parts of `.git`; `setup_repo_watchers` re-arms them on every repo open.
+    fn setup_repo_watchers(&self, workdir: &std::path::Path) {
+        let imp = self.imp();
+
+        // Retarget: drop monitors from the previously-open repo.
+        imp.repo_monitors.borrow_mut().clear();
+        if let Some(old) = imp.monitor_debounce_id.borrow_mut().take() {
+            old.remove();
+        }
+
+        let mut targets: Vec<(std::path::PathBuf, bool)> = vec![(workdir.to_path_buf(), true)];
+        let git_dir = workdir.join(".git");
+        if git_dir.is_dir() {
+            // Directory monitors: `.git` itself (index, HEAD, MERGE_HEAD…) and
+            // `refs` — per-directory watches don't recurse, so ref updates one
+            // level down (refs/heads/*) need their own monitor.
+            targets.push((git_dir.clone(), true));
+            targets.push((git_dir.join("refs"), true));
+            targets.push((git_dir.join("refs/heads"), true));
+            targets.push((git_dir.join("refs/tags"), true));
+        }
+
+        let mut monitors = Vec::new();
+        for (path, is_dir) in targets {
+            if !path.exists() {
+                continue;
+            }
+            let file = gio::File::for_path(&path);
+            let flags = gio::FileMonitorFlags::NONE;
+            let res = if is_dir {
+                file.monitor_directory(flags, None::<&gio::Cancellable>)
+            } else {
+                file.monitor_file(flags, None::<&gio::Cancellable>)
+            };
+            match res {
+                Ok(mon) => monitors.push(mon),
+                Err(e) => tracing::warn!("file monitor failed for {}: {e}", path.display()),
+            }
+        }
+
+        // Debounce: git operations fire bursts of events (index write, ref
+        // write, HEAD write); refresh once after the burst settles.
+        let debounce_slot = imp.monitor_debounce_id.clone();
+        let weak = self.downgrade();
+        for mon in &monitors {
+            let slot = debounce_slot.clone();
+            let weak = weak.clone();
+            mon.connect_changed(move |_, _, _, _| {
+                // Clone per event: `connect_changed` is `Fn`, the debounce
+                // callback is `FnOnce` and may consume its capture.
+                let weak = weak.clone();
+                arm_monitor_debounce(&slot, move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.trigger_background_refresh();
+                    }
+                });
+            });
+        }
+
+        tracing::debug!("watching {} paths under {}", monitors.len(), workdir.display());
+        *imp.repo_monitors.borrow_mut() = monitors;
+    }
+
     fn start_refresh_timer(&self, interval_secs: u32) {
         // Remove old timer if any
         if let Some(old_id) = self.imp().refresh_source_id.borrow_mut().take() {
@@ -4788,11 +4961,10 @@ impl GitpanelWindow {
     fn trigger_background_refresh(&self) {
         let imp = self.imp();
 
-        // Guard against concurrent refreshes
-        if imp.refresh_in_progress.get() {
+        // At most one refresh at a time; requests during a run are queued.
+        if !imp.refresh_gate.try_begin() {
             return;
         }
-        imp.refresh_in_progress.set(true);
 
         // Collect paths needed for background work
         let repo_path = {
@@ -4811,7 +4983,15 @@ impl GitpanelWindow {
         let scan_workspace = tick.is_multiple_of(modulus);
         let (tx, rx) = async_channel::bounded::<BackgroundRefreshResult>(1);
 
+        let refresh_span = tracing::info_span!(
+            "background_refresh",
+            repo = repo_path.as_deref().unwrap_or("-"),
+            scan_workspace,
+        );
         std::thread::spawn(move || {
+            let _span = refresh_span.enter();
+            let t_start = std::time::Instant::now();
+
             // Run workspace scan only every Nth tick to reduce CPU
             let workspace_handle = if scan_workspace {
                 workspace_root.map(|root| {
@@ -4826,7 +5006,10 @@ impl GitpanelWindow {
                     if let Ok(repo) = GitRepo::open(p) {
                         // Fast change detect: status(false) collapses untracked dirs.
                         let probe = repo.status(false).ok();
-                        let probe_hash = probe.as_ref().map(hash_status).unwrap_or(0);
+                        let probe_hash = probe
+                            .as_ref()
+                            .map(|s| hash_status(s, repo.path()))
+                            .unwrap_or(0);
                         let (a, b) = repo.ahead_behind().unwrap_or((0, 0));
                         if probe_hash == prev_status_hash {
                             // No change — skip recursive scan and diff recompute.
@@ -4850,6 +5033,12 @@ impl GitpanelWindow {
                 .flatten();
             let workspace_hash = workspace_entries.as_ref().map(|e| hash_workspace(e)).unwrap_or(0);
 
+            tracing::debug!(
+                elapsed_ms = t_start.elapsed().as_millis() as u64,
+                changed = status.is_some(),
+                "refresh probe done"
+            );
+
             tx.send_blocking(BackgroundRefreshResult {
                 status,
                 status_hash,
@@ -4864,11 +5053,21 @@ impl GitpanelWindow {
 
         let win = self.clone();
         glib::spawn_future_local(async move {
+            let t_apply = std::time::Instant::now();
             let result = rx.recv().await;
             let imp = win.imp();
-            imp.refresh_in_progress.set(false);
+            // Release the gate and learn whether a request was queued meanwhile.
+            let rerun = imp.refresh_gate.finish();
 
-            let Ok(result) = result else { return };
+            let result = match result {
+                Ok(r) => r,
+                Err(_) => {
+                    if rerun {
+                        win.trigger_background_refresh();
+                    }
+                    return;
+                }
+            };
 
             // Apply status only if changed
             if let Some(status) = result.status {
@@ -4937,6 +5136,17 @@ impl GitpanelWindow {
                     imp.workspace_idle_streak
                         .set(imp.workspace_idle_streak.get().saturating_add(1));
                 }
+            }
+
+            tracing::debug!(
+                elapsed_ms = t_apply.elapsed().as_millis() as u64,
+                "refresh applied on UI thread"
+            );
+
+            // A refresh event arrived while this one was running — run it now
+            // so external changes made during a refresh are never lost.
+            if rerun {
+                win.trigger_background_refresh();
             }
         });
     }
@@ -6079,5 +6289,124 @@ mod tests {
             .expect("Tools is a submenu");
         assert!(labels(&tools).contains(&i18n::t(Key::menu_stash).to_string()));
         assert_eq!(labels(&tools).len(), 8);
+    }
+
+    // =========================================
+    // REFRESH GATE / DEBOUNCE (GOAL 5.1)
+    // =========================================
+
+    /// A request that arrives while a refresh is running must be queued and
+    /// handed back on finish — never dropped.
+    #[test]
+    fn refresh_gate_queues_request_during_a_run() {
+        let gate = RefreshGate::default();
+        assert!(gate.try_begin(), "first request starts a refresh");
+        assert!(!gate.try_begin(), "second request during the run must not start concurrently");
+        assert!(gate.finish(), "the queued request must be replayed");
+        assert!(gate.try_begin(), "replayed request now gets its own run");
+        assert!(!gate.finish(), "nothing queued this time — no extra run");
+    }
+
+    /// status hash must react to a *content* edit of an already-listed file
+    /// (same path set) — the original "code changed but UI didn't" bug.
+    #[test]
+    fn status_hash_sees_content_edits_of_same_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), "v1").expect("write");
+        let status = RepoStatus {
+            staged: vec![],
+            unstaged: vec![crate::model::FileStatus {
+                path: "a.txt".into(),
+                status: crate::model::FileStatusKind::Modified,
+            }],
+            untracked: vec![],
+        };
+
+        let h1 = hash_status(&status, dir.path());
+        let h1_again = hash_status(&status, dir.path());
+        assert_eq!(h1, h1_again, "unchanged file must hash stably");
+
+        // Same path, different content. Bump mtime explicitly so the test is
+        // immune to coarse filesystem timestamps.
+        std::fs::write(dir.path().join("a.txt"), "v2-longer").expect("rewrite");
+        let f = std::fs::File::options()
+            .write(true)
+            .open(dir.path().join("a.txt"))
+            .expect("open");
+        f.set_times(std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now()))
+            .expect("set mtime");
+        drop(f);
+
+        let h2 = hash_status(&status, dir.path());
+        assert_ne!(h1, h2, "editing a listed file must change the status hash");
+    }
+
+    /// Monitor events arrive in bursts (git writes index+refs+HEAD together);
+    /// N re-arms inside the window must collapse to exactly one fire.
+    ///
+    /// Runs on the GTK thread: `timeout_add_local` must acquire the default
+    /// main context, and parallel GTK tests hold it from their own threads.
+    #[test]
+    fn monitor_debounce_collapses_event_bursts() {
+        crate::test_support::ensure_gtk_init();
+        if !crate::test_support::gtk_available() {
+            return;
+        }
+        let outcome = crate::test_support::on_gtk_thread(debounce_burst_scenario);
+        outcome();
+    }
+
+    /// Body of the debounce test — kept separate so it can run on the GTK
+    /// thread; returns the final assertion closure.
+    fn debounce_burst_scenario() -> impl FnOnce() {
+        use std::cell::Cell as StdCell;
+        use std::rc::Rc as StdRc;
+
+        let ctx = glib::MainContext::default();
+        let slot: StdRc<RefCell<Option<glib::SourceId>>> = StdRc::new(RefCell::new(None));
+        let fired = StdRc::new(StdCell::new(0u32));
+
+        // Burst: re-arm 5 times; only the last one survives.
+        for _ in 0..5 {
+            let slot_c = slot.clone();
+            let fired_c = fired.clone();
+            arm_monitor_debounce(&slot_c, move || {
+                fired_c.set(fired_c.get() + 1);
+            });
+            // Pump briefly so a naive "no cancel" implementation would fire.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+            while std::time::Instant::now() < deadline {
+                ctx.iteration(false);
+            }
+        }
+        assert!(slot.borrow().is_some(), "a timer must be pending after the burst");
+
+        // Wait for the single fire (400ms debounce + slack).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        while fired.get() == 0 && std::time::Instant::now() < deadline {
+            ctx.iteration(false);
+        }
+        let fired1 = fired.get();
+        assert!(slot.borrow().is_none(), "fired timer must clear its slot");
+
+        // And a later event still fires (debounce is reusable).
+        let slot_c = slot.clone();
+        let fired_c = fired.clone();
+        arm_monitor_debounce(&slot_c, move || {
+            fired_c.set(fired_c.get() + 1);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        while fired.get() < 2 && std::time::Instant::now() < deadline {
+            ctx.iteration(false);
+        }
+        let fired2 = fired.get();
+
+        // Assertions run back on the test thread (a panic inside the GTK
+        // thread would lose its message).
+        move || {
+            assert_eq!(fired1, 1, "burst of 5 events must fire exactly once");
+            assert_eq!(fired2, 2, "debounce must be reusable after firing");
+        }
     }
 }
