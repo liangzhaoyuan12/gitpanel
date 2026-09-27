@@ -52,7 +52,7 @@ impl GitRepo {
         let path = self.path().to_string_lossy().to_string();
         let output = crate::utils::process::command("git")
             .args(["merge", "--continue"])
-            .env("GIT_EDITOR", "true")
+            .env("GIT_EDITOR", ":")
             .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(&path)
             .output()
@@ -71,7 +71,7 @@ impl GitRepo {
         let path = self.path().to_string_lossy().to_string();
         let output = crate::utils::process::command("git")
             .args(["rebase", "--continue"])
-            .env("GIT_EDITOR", "true")
+            .env("GIT_EDITOR", ":")
             .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(&path)
             .output()
