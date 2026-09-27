@@ -227,8 +227,8 @@ where
 
     dialog.add(&page);
 
-    // Probing the host for installed editors costs a `flatpak-spawn` round
-    // trip, so it runs off the UI thread and refills the combo on arrival.
+    // Probing the host for installed editors costs a PATH scan, so it
+    // runs off the UI thread and refills the combo on arrival.
     if !sandboxed {
         let (tx, rx) = async_channel::bounded::<Vec<DetectedEditor>>(1);
         std::thread::spawn(move || {

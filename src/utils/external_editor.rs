@@ -10,8 +10,8 @@
 //! desktop portal to pick an application instead — no permission required.
 //! See `GitpanelWindow::open_with_portal`.
 
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::{anyhow, Result};
 
@@ -143,13 +143,93 @@ pub fn build_argv(command_line: &str, repo_path: &str) -> Result<Vec<String>> {
     Ok(argv)
 }
 
-/// Shell snippet that prints, one per line, whichever of `commands` resolves.
+/// 探测用的可执行目录：PATH + 平台补充目录。
 ///
-/// One probe for the whole list rather than one per command — ~25 process
-/// spawns to answer a single question would be wasteful.
-pub fn detect_script(commands: &[&str]) -> String {
-    let list = commands.join(" ");
-    format!("for c in {list}; do command -v \"$c\" >/dev/null 2>&1 && printf '%s\\n' \"$c\"; done")
+/// macOS 上 Finder/Dock 启动的 GUI 进程只有 launchd 的极简 PATH，
+/// Homebrew/MacPorts 目录不在里面，GUI 宿主必须自己补。
+pub fn executable_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    #[cfg(target_os = "macos")]
+    for extra in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+        let p = PathBuf::from(extra);
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    }
+    dirs
+}
+
+/// Windows 的可执行后缀表（PATHEXT）；非 Windows 返回空表，
+/// 空表即“Unix 模式”（要求可执行位）。
+pub fn pathext() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        return raw
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_uppercase())
+            .collect();
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// Unix：文件存在且带可执行位（对齐 `command -v` 语义）。
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+/// 在给定目录表里解析一个命令名，纯函数，便于测试。
+///
+/// - 名字含路径分隔符 → 当作显式路径，存在即用；
+/// - Windows 模式（`pathext` 非空）→ 依次尝试 `名+后缀`（Windows 文件系统
+///   大小写不敏感，后缀大小写不用管）；
+/// - Unix 模式 → 直接拼接并检查可执行位。
+pub fn which_in(name: &str, dirs: &[PathBuf], pathext: &[String]) -> Option<PathBuf> {
+    if name.contains('/') || name.contains('\\') {
+        let p = PathBuf::from(name);
+        return p.is_file().then_some(p);
+    }
+    for dir in dirs {
+        if pathext.is_empty() {
+            let p = dir.join(name);
+            if is_executable_file(&p) {
+                return Some(p);
+            }
+        } else {
+            for ext in pathext {
+                // PATHEXT 惯例是大写（.EXE），实际文件名常是小写（code.cmd）。
+                // Windows 文件系统大小写不敏感所以无所谓，但本函数要在
+                // 大小写敏感的系统上也能被测到，原样和小写都试一遍。
+                for suffix in [ext.clone(), ext.to_lowercase()] {
+                    let p = dir.join(format!("{name}{suffix}"));
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 解析当前平台上的一个命令名。
+pub fn which(name: &str) -> Option<PathBuf> {
+    which_in(name, &executable_dirs(), &pathext())
 }
 
 /// Map the probe output back onto [`KNOWN_EDITORS`], keeping catalogue order and
@@ -195,6 +275,8 @@ pub fn label_for_command(command_line: &str) -> String {
 
 /// Probe the system for installed editors. Blocking — call from a worker thread.
 ///
+/// 纯 Rust 扫描 PATH，不经过 `sh -c command -v`（Windows 没有 sh）。
+///
 /// Returns nothing under Flatpak: the sandbox has its own PATH, so a probe
 /// would only ever find the runtime's binaries, never the user's editor.
 pub fn detect_installed() -> Vec<DetectedEditor> {
@@ -202,24 +284,11 @@ pub fn detect_installed() -> Vec<DetectedEditor> {
         return Vec::new();
     }
 
-    let all: Vec<&str> = KNOWN_EDITORS
+    let found: Vec<String> = KNOWN_EDITORS
         .iter()
         .flat_map(|e| e.commands.iter().copied())
-        .collect();
-    let script = detect_script(&all);
-
-    let output = match Command::new("sh").arg("-c").arg(&script).output() {
-        Ok(out) => out,
-        Err(e) => {
-            tracing::warn!("Editor detection failed: {e}");
-            return Vec::new();
-        }
-    };
-
-    let found: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
+        .filter(|c| which(c).is_some())
+        .map(|c| c.to_string())
         .collect();
 
     match_detected(&found)
@@ -236,17 +305,31 @@ pub fn launch(command_line: &str, repo_path: &Path) -> Result<()> {
         ));
     }
 
-    let argv = build_argv(command_line, &repo_path.to_string_lossy())?;
+    let mut argv = build_argv(command_line, &repo_path.to_string_lossy())?;
+    let program = argv.remove(0);
 
-    tracing::info!("Opening {} with: {}", repo_path.display(), argv.join(" "));
+    // Windows 上 CreateProcess 只补 .exe，`code` 这种 .cmd 光靠 std 解析不到，
+    // 必须自己按 PATHEXT 落到完整路径；解析不到就回退原名，让 spawn 报原始错误。
+    let resolved = if program.contains('/') || program.contains('\\') {
+        PathBuf::from(&program)
+    } else {
+        which(&program).unwrap_or_else(|| PathBuf::from(&program))
+    };
 
-    let child = Command::new(&argv[0])
-        .args(&argv[1..])
+    tracing::info!(
+        "Opening {} with: {} {:?}",
+        repo_path.display(),
+        resolved.display(),
+        argv
+    );
+
+    let child = crate::utils::process::command(&resolved)
+        .args(&argv)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| anyhow!("Could not run `{}`: {e}", argv[0]))?;
+        .map_err(|e| anyhow!("Could not run `{}`: {e}", resolved.display()))?;
 
     // Reap the child so long-running sessions do not accumulate zombies.
     std::thread::spawn(move || {
@@ -324,9 +407,45 @@ mod tests {
     }
 
     #[test]
-    fn detect_script_probes_every_candidate_once() {
-        let script = detect_script(&["code", "zed"]);
-        assert!(script.contains("for c in code zed;"));
-        assert!(script.contains("command -v"));
+    fn which_finds_executable_in_unix_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("code");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let dirs = vec![dir.path().to_path_buf()];
+        assert_eq!(which_in("code", &dirs, &[]), Some(bin));
+    }
+
+    #[test]
+    fn which_skips_non_executable_in_unix_mode() {
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("code");
+            std::fs::write(&bin, "#!/bin/sh\n").unwrap(); // 0644，默认无执行位
+            let dirs = vec![dir.path().to_path_buf()];
+            assert_eq!(which_in("code", &dirs, &[]), None);
+        }
+    }
+
+    #[test]
+    fn which_simulated_windows_tries_pathext_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("code.cmd");
+        std::fs::write(&bin, "@echo off\r\n").unwrap();
+        let dirs = vec![dir.path().to_path_buf()];
+        let exts = vec![".COM".to_string(), ".EXE".to_string(), ".CMD".to_string()];
+        assert_eq!(which_in("code", &dirs, &exts), Some(bin));
+        assert_eq!(which_in("codium", &dirs, &exts), None);
+    }
+
+    #[test]
+    fn which_honours_explicit_paths_verbatim() {
+        let dirs: Vec<PathBuf> = vec![];
+        assert_eq!(which_in("/no/such/place/tool", &dirs, &[]), None);
     }
 }
