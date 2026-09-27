@@ -173,6 +173,8 @@ pub fn build_argv(command_line: &str, repo_path: &str) -> Result<Vec<String>> {
 /// macOS 上 Finder/Dock 启动的 GUI 进程只有 launchd 的极简 PATH，
 /// Homebrew/MacPorts 目录不在里面，GUI 宿主必须自己补。
 pub fn executable_dirs() -> Vec<PathBuf> {
+    // `mut` 只在 macOS 补目录分支里用到，其他平台是死的。
+    #[allow(unused_mut)]
     let mut dirs: Vec<PathBuf> =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
     #[cfg(target_os = "macos")]

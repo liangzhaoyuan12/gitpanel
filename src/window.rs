@@ -4305,10 +4305,11 @@ impl GitpanelWindow {
                 .output();
             let result = match output {
                 Ok(o) if o.status.success() => {
-                    // Derive cloned repo name from URL
+                    // Derive cloned repo name from URL or local path
+                    // （Windows 本地路径用 `\` 分隔，两种都要认）
                     let name = url
-                        .trim_end_matches('/')
-                        .rsplit('/')
+                        .trim_end_matches(['/', '\\'])
+                        .rsplit(['/', '\\'])
                         .next()
                         .unwrap_or("")
                         .trim_end_matches(".git")
