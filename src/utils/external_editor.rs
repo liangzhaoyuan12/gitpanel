@@ -204,20 +204,21 @@ pub fn pathext() -> Vec<String> {
 }
 
 /// Unix：文件存在且带可执行位（对齐 `command -v` 语义）。
+/// Windows 没有可执行位，后缀（PATHEXT）即权限，由调用方判定。
 fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return path
-            .metadata()
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
+        path.is_file()
+            && path
+                .metadata()
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
     }
     #[cfg(not(unix))]
-    true
+    {
+        path.is_file()
+    }
 }
 
 /// 在给定目录表里解析一个命令名，纯函数，便于测试。
