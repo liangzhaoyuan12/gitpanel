@@ -70,35 +70,59 @@ pub fn in_flatpak() -> bool {
 /// backslash escapes. Users type things like `flatpak run com.foo.Bar --new`
 /// into the custom-command field, and splitting on whitespace alone would break
 /// any path containing a space.
+///
+/// 反斜杠规则（与旧实现的关键差异，为了 Windows 路径）：
+/// - 引号外：只有 `\` 后跟空白 / 引号 / 另一个 `\` 时才算转义
+///   （保住 `/opt/my\ dir` 的老行为，同时让 `C:\Users\...` 原样存活；
+///   `\\` 仍然折叠成 `\`）；
+/// - 双引号内：只有 `\"` 和 `\\` 是转义（对齐 POSIX sh 在双引号内的语义，
+///   `"C:\Program Files\x"` 里的反斜杠不再被吃掉）；
+/// - 单引号内：一切字面量（POSIX 语义，不变）。
 pub fn split_command(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
     let mut argv = Vec::new();
     let mut current = String::new();
     let mut has_token = false;
     let mut quote: Option<char> = None;
-    let mut escaped = false;
+    let mut i = 0;
 
-    for ch in line.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        match quote {
-            Some(q) => {
-                if ch == q {
+    while i < chars.len() {
+        let ch = chars[i];
+        if let Some(q) = quote {
+            match ch {
+                c if c == q => {
                     quote = None;
-                } else if ch == '\\' && q == '"' {
-                    escaped = true;
-                } else {
-                    current.push(ch);
+                    has_token = true;
+                }
+                '\\'
+                    if q == '"' && i + 1 < chars.len() && matches!(chars[i + 1], '"' | '\\') =>
+                {
+                    current.push(chars[i + 1]);
+                    i += 1;
+                    has_token = true;
+                }
+                c => {
+                    current.push(c);
+                    has_token = true;
                 }
             }
-            None => match ch {
+        } else {
+            match ch {
                 '\'' | '"' => {
                     quote = Some(ch);
                     has_token = true;
                 }
-                '\\' => escaped = true,
+                '\\'
+                    if i + 1 < chars.len()
+                        && (chars[i + 1].is_whitespace()
+                            || chars[i + 1] == '\''
+                            || chars[i + 1] == '"'
+                            || chars[i + 1] == '\\') =>
+                {
+                    current.push(chars[i + 1]);
+                    i += 1;
+                    has_token = true;
+                }
                 c if c.is_whitespace() => {
                     if has_token {
                         argv.push(std::mem::take(&mut current));
@@ -109,8 +133,9 @@ pub fn split_command(line: &str) -> Vec<String> {
                     current.push(c);
                     has_token = true;
                 }
-            },
+            }
         }
+        i += 1;
     }
 
     if has_token {
@@ -265,8 +290,9 @@ pub fn label_for_command(command_line: &str) -> String {
     }
 
     // Custom command: show the executable's basename, not the whole line.
+    // Windows 路径用反斜杠，两种分隔符都要认。
     program
-        .rsplit('/')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(program)
@@ -404,6 +430,41 @@ mod tests {
     fn custom_commands_are_labelled_by_basename() {
         assert_eq!(label_for_command("/opt/tools/bin/myide --flag"), "myide");
         assert_eq!(label_for_command(""), "External Editor");
+    }
+
+    #[test]
+    fn windows_path_without_spaces_survives_unquoted() {
+        // 无引号含空格按空格拆（与 POSIX 一致）；反斜杠不能被当转义符吃掉。
+        assert_eq!(
+            split_command(r"C:\tools\IDE\ide.exe {path}"),
+            vec![r"C:\tools\IDE\ide.exe", "{path}"]
+        );
+    }
+
+    #[test]
+    fn windows_path_inside_double_quotes_keeps_backslashes() {
+        assert_eq!(
+            split_command(r#""C:\Program Files\IDE\ide.exe" --flag"#),
+            vec![r"C:\Program Files\IDE\ide.exe", "--flag"]
+        );
+    }
+
+    #[test]
+    fn posix_backslash_space_escape_still_works() {
+        assert_eq!(
+            split_command(r"/opt/my\ dir/x --go"),
+            vec!["/opt/my dir/x", "--go"]
+        );
+    }
+
+    #[test]
+    fn doubled_backslash_collapses_to_one() {
+        assert_eq!(split_command(r"C:\\tools\\ide --x"), vec![r"C:\tools\ide", "--x"]);
+    }
+
+    #[test]
+    fn label_handles_backslash_paths() {
+        assert_eq!(label_for_command(r"C:\tools\myide.exe --flag"), "myide.exe");
     }
 
     #[test]
