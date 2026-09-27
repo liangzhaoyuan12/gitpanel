@@ -40,7 +40,7 @@ impl GitRepo {
     /// Update a submodule (init + checkout). Uses git CLI for reliability.
     pub fn submodule_update(&self, name: &str) -> Result<String> {
         let path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["submodule", "update", "--init", name])
             .current_dir(&path)
             .output()

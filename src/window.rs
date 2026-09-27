@@ -220,10 +220,9 @@ const COMMIT_PAGE_SIZE: usize = 50;
 /// Run a git CLI command with a 30-second timeout.
 /// Returns stdout on success, or an anyhow error with stderr on failure.
 fn run_git_cmd(repo_path: &str, args: &[&str]) -> Result<String, anyhow::Error> {
-    use std::process::Command;
     use std::time::Duration;
 
-    let mut child = Command::new("git")
+    let mut child = crate::utils::process::command("git")
         .args(args)
         .current_dir(repo_path)
         .stdout(std::process::Stdio::piped())
@@ -4300,8 +4299,7 @@ impl GitpanelWindow {
         let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
 
         std::thread::spawn(move || {
-            use std::process::Command;
-            let output = Command::new("git")
+            let output = crate::utils::process::command("git")
                 .args(["clone", "--progress", &url])
                 .current_dir(&dest_dir)
                 .output();

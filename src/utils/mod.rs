@@ -22,6 +22,7 @@ pub mod workspace;
 pub mod worktrees;
 
 pub mod config;
+pub mod process;
 pub mod undo;
 pub mod external_editor;
 pub mod logging;

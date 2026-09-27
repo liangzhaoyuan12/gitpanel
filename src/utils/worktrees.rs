@@ -48,7 +48,7 @@ impl GitRepo {
         }
         args.push(path);
 
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(&args)
             .current_dir(&repo_path)
             .output()
@@ -65,7 +65,7 @@ impl GitRepo {
     /// Remove a worktree by its filesystem path. Uses git CLI for reliability.
     pub fn remove_worktree(&self, path: &str) -> Result<String> {
         let repo_path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["worktree", "remove", path])
             .current_dir(&repo_path)
             .output()

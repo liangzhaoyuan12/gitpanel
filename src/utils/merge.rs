@@ -50,7 +50,7 @@ impl GitRepo {
     /// Continue an in-progress merge (create the merge commit).
     pub fn continue_merge(&self) -> Result<String> {
         let path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["merge", "--continue"])
             .env("GIT_EDITOR", "true")
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -69,7 +69,7 @@ impl GitRepo {
     /// Continue an in-progress rebase.
     pub fn continue_rebase(&self) -> Result<String> {
         let path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["rebase", "--continue"])
             .env("GIT_EDITOR", "true")
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -88,7 +88,7 @@ impl GitRepo {
     /// Abort an in-progress merge.
     pub fn abort_merge(&self) -> Result<()> {
         let path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["merge", "--abort"])
             .current_dir(&path)
             .output()
@@ -104,7 +104,7 @@ impl GitRepo {
     /// Abort an in-progress rebase.
     pub fn abort_rebase(&self) -> Result<()> {
         let path = self.path().to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
+        let output = crate::utils::process::command("git")
             .args(["rebase", "--abort"])
             .current_dir(&path)
             .output()
