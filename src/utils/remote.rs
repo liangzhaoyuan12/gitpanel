@@ -27,13 +27,15 @@ fn credentials_callback(
         if let Ok(cred) = Cred::ssh_key_from_agent(username) {
             return Ok(cred);
         }
-        // Fallback: default SSH key
-        let home = std::env::var("HOME").unwrap_or_default();
-        let key_path = std::path::Path::new(&home).join(".ssh/id_ed25519");
+        // Fallback: default SSH key.
+        // dirs::home_dir() 三平台通用（Windows 取 USERPROFILE），
+        // env HOME 在 Windows 上通常不存在。
+        let home = dirs::home_dir().unwrap_or_default();
+        let key_path = home.join(".ssh").join("id_ed25519");
         let key_path = if key_path.exists() {
             key_path
         } else {
-            std::path::Path::new(&home).join(".ssh/id_rsa")
+            home.join(".ssh").join("id_rsa")
         };
         if key_path.exists() {
             return Cred::ssh_key(username, None, &key_path, None);
