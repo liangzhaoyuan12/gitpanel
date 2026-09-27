@@ -1,6 +1,6 @@
 # GitPanel 性能优化与测试 · 目标文档 (GOAL.md)
 
-项目: gitpanel 1.4.0 — GTK4/libadwaita + git2 的 Git GUI 客户端 (Rust, edition 2021)
+项目: gitpanel 2.0.0 — GTK4/libadwaita + git2 的 Git GUI 客户端 (Rust, edition 2021)
 平台: Deepin 25 / LoongArch64 (3A5000, 性能敏感, 无独显加速预期)
 
 ---
