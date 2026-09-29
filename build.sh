@@ -44,12 +44,21 @@ arch_to_deb() {
 }
 
 arch_to_rpm() {
+    # rpm 的架构名以 `rpm --eval '%{_arch}'` / `rpmbuild --showrc` 的
+    # compatible build archs 为准（loongarch 上是 loongarch64，不是 loong64）
     case "$1" in
-        x86_64)       echo "x86_64" ;;
-        aarch64)      echo "aarch64" ;;
         armv7)        echo "armv7hl" ;;
         armv6)        echo "armv6hl" ;;
-        riscv64)      echo "riscv64" ;;
+        loongarch64)  echo "loongarch64" ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+arch_to_pacman() {
+    # Arch Linux 的 CARCH（makepkg 使用的架构名）
+    case "$1" in
+        armv7)        echo "armv7h" ;;
+        armv6)        echo "armv6h" ;;
         loongarch64)  echo "loong64" ;;
         *)            echo "$1" ;;
     esac
@@ -58,10 +67,11 @@ arch_to_rpm() {
 HOST_ARCH=$(detect_arch)
 DEB_ARCH=$(arch_to_deb "$HOST_ARCH")
 RPM_ARCH=$(arch_to_rpm "$HOST_ARCH")
+PACMAN_ARCH=$(arch_to_pacman "$HOST_ARCH")
 
 echo "=== GitPanel Build Script ==="
 echo "Version:  $VERSION"
-echo "Arch:     $HOST_ARCH (deb=$DEB_ARCH, rpm=$RPM_ARCH)"
+echo "Arch:     $HOST_ARCH (deb=$DEB_ARCH, rpm=$RPM_ARCH, pacman=$PACMAN_ARCH)"
 
 # ── 构建前依赖检查 ────────────────────────────────
 # libgit2 由 libgit2-sys 从源码静态编译进二进制，运行时不需要。
@@ -242,16 +252,18 @@ EOF
 
 rpmbuild --define "_topdir $RPM_DIR" -bb "$SPEC_FILE"
 RPM_FILE=$(find "$RPM_DIR/RPMS" -name "${PKG_NAME}-${VERSION}*.rpm" -print -quit 2>/dev/null || true)
-if [ -n "$RPM_FILE" ]; then
-    mv "$RPM_FILE" "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.rpm"
+if [ -z "$RPM_FILE" ]; then
+    echo "ERROR: rpmbuild produced no .rpm file"
+    exit 1
 fi
+mv "$RPM_FILE" "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.rpm"
 echo "    -> $BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.rpm"
 
 # ──────────────────────────────────────────────────
 # pacman (Arch Linux / Manjaro)
 # ──────────────────────────────────────────────────
 echo ""
-echo ">>> Building .pkg.tar.zst ($RPM_ARCH) ..."
+echo ">>> Building .pkg.tar.zst ($PACMAN_ARCH) ..."
 PACMAN_DIR="$BUILD_DIR/pacman"
 mkdir -p "$PACMAN_DIR/usr/bin"
 mkdir -p "$PACMAN_DIR/usr/share/applications"
@@ -269,7 +281,7 @@ url = https://github.com/liangzhaoyuan12/gitpanel
 builddate = $(date +%s)
 packager = liangzhaoyuan12
 size = $BINARY_SIZE
-arch = $RPM_ARCH
+arch = $PACMAN_ARCH
 license = GPL-3.0-or-later
 depend = gtk4
 depend = libadwaita
@@ -282,19 +294,19 @@ makepkgopt = !strip
 EOF
 
 cd "$PACMAN_DIR"
-tar -cf "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar" \
+tar -cf "$BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar" \
     .PKGINFO usr/
 cd "$PROJECT_DIR"
 if command -v zstd >/dev/null 2>&1; then
-    zstd -q --rm -c "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar" \
-        > "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar.zst"
-    rm -f "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar"
+    zstd -q --rm -c "$BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar" \
+        > "$BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar.zst"
+    rm -f "$BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar"
+    echo "    -> $BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar.zst"
 else
-    gzip -9 "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar"
-    mv "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar.gz" \
-       "$BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar.zst"
+    # 没有 zstd 就老实产出 .pkg.tar.gz（Arch 同样接受），不要改名成 .zst
+    gzip -9n "$BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar"
+    echo "    -> $BUILD_DIR/${PKG_NAME}_${VERSION}_${PACMAN_ARCH}.pkg.tar.gz (zstd 未安装)"
 fi
-echo "    -> $BUILD_DIR/${PKG_NAME}_${VERSION}_${RPM_ARCH}.pkg.tar.zst"
 
 # ──────────────────────────────────────────────────
 # tar.gz（通用 Linux）
@@ -383,4 +395,4 @@ echo "    -> $BUILD_DIR/${PKG_NAME}_${VERSION}_${DEB_ARCH}.tar.gz"
 echo ""
 echo "=== All packages built successfully ==="
 echo ""
-ls -lh "$BUILD_DIR"/*.{deb,rpm,pkg.tar.zst,tar.gz} 2>/dev/null || echo "(some packages may not have been generated)"
+ls -lh "$BUILD_DIR" | grep -E '\.(deb|rpm|pkg\.tar\.(zst|gz)|tar\.gz)$' || echo "(some packages may not have been generated)"
