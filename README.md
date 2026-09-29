@@ -1,9 +1,22 @@
 # Gitpanel
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 **A fast, native Git client for GNOME.** Written in Rust with GTK4 and libadwaita — small binary, low memory, no telemetry, no cloud, no terminal required.
 
 ![Gitpanel — light theme](data/screenshots/light.png)
 ![Gitpanel — dark theme](data/screenshots/dark.png)
+
+## Download
+
+Gitpanel is available on the Microsoft Store:
+
+<a href="https://get.microsoft.com/installer/download/9P5JLDQSM5S2?referrer=appbadge" target="_self" >
+  <img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
+</a>
+
+> **Windows users:** releases no longer distribute Windows binaries. Please
+> download Gitpanel from the Microsoft Store instead.
 
 ## Why Gitpanel
 
@@ -242,6 +255,14 @@ sudo pacman -S gtk4 libadwaita
 ```
 
 ## Install
+
+**Windows users:** download from the Microsoft Store (releases no longer ship Windows installers):
+
+<a href="https://get.microsoft.com/installer/download/9P5JLDQSM5S2?referrer=appbadge" target="_self" >
+  <img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
+</a>
+
+**Linux:**
 
 ```sh
 make install   # builds release and installs to ~/.local
